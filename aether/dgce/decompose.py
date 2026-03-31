@@ -141,6 +141,18 @@ class SectionExecutionStampInput(BaseModel):
     execution_timestamp: str = "1970-01-01T00:00:00Z"
 
 
+DGCE_LIFECYCLE_ORDER = [
+    "preview",
+    "review",
+    "approval",
+    "preflight",
+    "gate",
+    "alignment",
+    "execution",
+    "outputs",
+]
+
+
 def decompose_section(section: DGCESection) -> List[ClassificationRequest]:
     """Convert one DGCE section into a small deterministic set of Aether requests."""
     project_id = "DGCE"
@@ -1034,6 +1046,117 @@ def _collect_orchestrator_artifact_paths(project_root: Path, section_id: str) ->
     return {
         key: path.relative_to(project_root).as_posix() if path.exists() else None
         for key, path in sorted(artifact_locations.items(), key=lambda item: str(item[0]))
+    }
+
+
+def _load_section_artifacts(workspace_root: Path, section_id: str) -> dict[str, Any]:
+    """Load persisted workspace artifacts and normalized paths for one section."""
+    project_root = workspace_root.parent
+    artifact_paths = _collect_orchestrator_artifact_paths(project_root, section_id)
+    payloads: dict[str, dict[str, Any]] = {}
+    for artifact_key, artifact_path in artifact_paths.items():
+        if artifact_path is None or not artifact_path.endswith(".json"):
+            payloads[artifact_key] = {}
+            continue
+        absolute_path = project_root / Path(artifact_path)
+        payloads[artifact_key] = json.loads(absolute_path.read_text(encoding="utf-8")) if absolute_path.exists() else {}
+    return {
+        "artifact_paths": artifact_paths,
+        "payloads": payloads,
+        "section_id": section_id,
+    }
+
+
+def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dict[str, Any]) -> list[dict[str, Any]]:
+    artifact_paths = section_artifacts["artifact_paths"]
+    payloads = section_artifacts["payloads"]
+    stage_specs = [
+        ("preview", "preview_path", payloads["preview_path"].get("preview_outcome_class"), ["input_path", "review_path", "approval_path"]),
+        (
+            "review",
+            "review_path",
+            "review_available" if artifact_paths.get("review_path") is not None else None,
+            ["preview_path", "approval_path"],
+        ),
+        (
+            "approval",
+            "approval_path",
+            payloads["approval_path"].get("approval_status"),
+            ["preview_path", "review_path", "preflight_path"],
+        ),
+        (
+            "preflight",
+            "preflight_path",
+            payloads["preflight_path"].get("preflight_status"),
+            ["approval_path", "preview_path", "review_path", "execution_gate_path"],
+        ),
+        (
+            "gate",
+            "execution_gate_path",
+            payloads["execution_gate_path"].get("gate_status"),
+            ["preflight_path", "stale_check_path", "alignment_path", "execution_path"],
+        ),
+        (
+            "alignment",
+            "alignment_path",
+            payloads["alignment_path"].get("alignment_status"),
+            ["approval_path", "execution_gate_path", "execution_path"],
+        ),
+        (
+            "execution",
+            "execution_path",
+            payloads["execution_path"].get("execution_status"),
+            ["approval_path", "preflight_path", "execution_gate_path", "alignment_path", "output_path"],
+        ),
+        ("outputs", "output_path", payloads["output_path"].get("run_outcome_class"), ["execution_path"]),
+    ]
+    return [
+        {
+            "artifact_path": artifact_paths.get(artifact_key),
+            "artifact_present": artifact_paths.get(artifact_key) is not None,
+            "linkage": [{"ref_name": ref_name, "ref_path": artifact_paths.get(ref_name)} for ref_name in linkage_names],
+            "stage": stage_name,
+            "stage_order": stage_index,
+            "stage_status": stage_status,
+        }
+        for stage_index, (stage_name, artifact_key, stage_status, linkage_names) in enumerate(stage_specs, start=1)
+    ]
+
+
+def _build_section_convergence_summary(section_artifacts: dict[str, Any], trace_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    section_id = str(section_artifacts["section_id"])
+    artifact_paths = section_artifacts["artifact_paths"]
+    payloads = section_artifacts["payloads"]
+    preview_payload = payloads["preview_path"]
+    approval_payload = payloads["approval_path"]
+    present_entries = [entry for entry in trace_entries if entry["artifact_present"]]
+    latest_entry = present_entries[-1] if present_entries else None
+    latest_decision = approval_payload.get("selected_mode") or preview_payload.get("recommended_mode")
+    latest_decision_source = "approval" if approval_payload.get("selected_mode") is not None else (
+        "preview_recommendation" if preview_payload.get("recommended_mode") is not None else None
+    )
+    return {
+        "approval_status": approval_payload.get("approval_status"),
+        "decision_source": latest_decision_source,
+        "latest_decision": latest_decision,
+        "latest_decision_source": latest_decision_source,
+        "latest_stage": latest_entry["stage"] if latest_entry else None,
+        "latest_stage_status": latest_entry["stage_status"] if latest_entry else None,
+        "review_status": "review_available" if artifact_paths.get("review_path") is not None else None,
+        "section_id": section_id,
+        "summary_sources": {
+            "approval_status": "approval" if artifact_paths.get("approval_path") is not None else None,
+            "latest_decision": (
+                "approval.selected_mode"
+                if approval_payload.get("selected_mode") is not None
+                else "preview.recommended_mode"
+                if preview_payload.get("recommended_mode") is not None
+                else None
+            ),
+            "latest_stage": "lifecycle_trace",
+            "latest_stage_status": "lifecycle_trace",
+            "review_status": "review" if artifact_paths.get("review_path") is not None else None,
+        },
     }
 
 
@@ -2945,67 +3068,96 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
     """Build a deterministic review index from known section preview/review artifacts."""
     sections: list[dict[str, Any]] = []
     for section_id in sorted(section_ids):
-        preview_path = workspace_root / "plans" / f"{section_id}.preview.json"
-        review_path = workspace_root / "reviews" / f"{section_id}.review.md"
-        approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
-        preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
-        stale_check_path = workspace_root / "preflight" / f"{section_id}.stale_check.json"
-        execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
-        alignment_path = workspace_root / "preflight" / f"{section_id}.alignment.json"
-        execution_path = workspace_root / "execution" / f"{section_id}.execution.json"
+        section_artifacts = _load_section_artifacts(workspace_root, section_id)
+        artifact_paths = section_artifacts["artifact_paths"]
         if not any(
-            path.exists()
-            for path in (
-                preview_path,
-                review_path,
-                approval_path,
-                preflight_path,
-                stale_check_path,
-                execution_gate_path,
-                alignment_path,
-                execution_path,
+            artifact_paths.get(path_key) is not None
+            for path_key in (
+                "preview_path",
+                "review_path",
+                "approval_path",
+                "preflight_path",
+                "stale_check_path",
+                "execution_gate_path",
+                "alignment_path",
+                "execution_path",
             )
         ):
             continue
-
-        preview_payload = json.loads(preview_path.read_text(encoding="utf-8")) if preview_path.exists() else {}
-        approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
-        preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else {}
-        stale_check_payload = json.loads(stale_check_path.read_text(encoding="utf-8")) if stale_check_path.exists() else {}
-        execution_gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
-        alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8")) if alignment_path.exists() else {}
-        execution_payload = json.loads(execution_path.read_text(encoding="utf-8")) if execution_path.exists() else {}
+        payloads = section_artifacts["payloads"]
+        section_summary = _build_section_convergence_summary(
+            section_artifacts,
+            _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts),
+        )
         sections.append(
             {
+                "entry_order": len(sections) + 1,
                 "section_id": section_id,
-                "preview_path": preview_path.relative_to(workspace_root.parent).as_posix() if preview_path.exists() else None,
-                "review_path": review_path.relative_to(workspace_root.parent).as_posix() if review_path.exists() else None,
-                "preview_outcome_class": preview_payload.get("preview_outcome_class"),
-                "recommended_mode": preview_payload.get("recommended_mode"),
-                "approval_path": approval_path.relative_to(workspace_root.parent).as_posix() if approval_path.exists() else None,
-                "approval_status": approval_payload.get("approval_status"),
-                "selected_mode": approval_payload.get("selected_mode"),
-                "execution_permitted": approval_payload.get("execution_permitted"),
-                "preflight_path": preflight_path.relative_to(workspace_root.parent).as_posix() if preflight_path.exists() else None,
-                "preflight_status": preflight_payload.get("preflight_status"),
-                "stale_check_path": stale_check_path.relative_to(workspace_root.parent).as_posix() if stale_check_path.exists() else None,
-                "stale_status": stale_check_payload.get("stale_status"),
-                "stale_detected": stale_check_payload.get("stale_detected"),
-                "execution_allowed": preflight_payload.get("execution_allowed"),
-                "execution_gate_path": execution_gate_path.relative_to(workspace_root.parent).as_posix() if execution_gate_path.exists() else None,
-                "gate_status": execution_gate_payload.get("gate_status"),
-                "execution_blocked": execution_gate_payload.get("execution_blocked"),
-                "alignment_path": alignment_path.relative_to(workspace_root.parent).as_posix() if alignment_path.exists() else None,
-                "alignment_status": alignment_payload.get("alignment_status"),
-                "alignment_blocked": alignment_payload.get("alignment_blocked"),
-                "execution_path": execution_path.relative_to(workspace_root.parent).as_posix() if execution_path.exists() else None,
-                "execution_status": execution_payload.get("execution_status"),
-                "approval_consumed": execution_payload.get("approval_consumed"),
-                "approval_status_after": execution_payload.get("approval_status_after"),
+                "preview_path": artifact_paths.get("preview_path"),
+                "review_path": artifact_paths.get("review_path"),
+                "preview_outcome_class": payloads["preview_path"].get("preview_outcome_class"),
+                "recommended_mode": payloads["preview_path"].get("recommended_mode"),
+                "approval_path": artifact_paths.get("approval_path"),
+                "approval_status": section_summary["approval_status"],
+                "selected_mode": payloads["approval_path"].get("selected_mode"),
+                "execution_permitted": payloads["approval_path"].get("execution_permitted"),
+                "preflight_path": artifact_paths.get("preflight_path"),
+                "preflight_status": payloads["preflight_path"].get("preflight_status"),
+                "stale_check_path": artifact_paths.get("stale_check_path"),
+                "stale_status": payloads["stale_check_path"].get("stale_status"),
+                "stale_detected": payloads["stale_check_path"].get("stale_detected"),
+                "execution_allowed": payloads["preflight_path"].get("execution_allowed"),
+                "execution_gate_path": artifact_paths.get("execution_gate_path"),
+                "gate_status": payloads["execution_gate_path"].get("gate_status"),
+                "execution_blocked": payloads["execution_gate_path"].get("execution_blocked"),
+                "alignment_path": artifact_paths.get("alignment_path"),
+                "alignment_status": payloads["alignment_path"].get("alignment_status"),
+                "alignment_blocked": payloads["alignment_path"].get("alignment_blocked"),
+                "execution_path": artifact_paths.get("execution_path"),
+                "execution_status": payloads["execution_path"].get("execution_status"),
+                "approval_consumed": payloads["execution_path"].get("approval_consumed"),
+                "approval_status_after": payloads["execution_path"].get("approval_status_after"),
+                "approval_timestamp": payloads["approval_path"].get("approval_timestamp"),
+                "decision_source": section_summary["decision_source"],
+                "review_status": section_summary["review_status"],
+                "latest_decision": section_summary["latest_decision"],
+                "latest_decision_source": section_summary["latest_decision_source"],
+                "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+                "output_path": artifact_paths.get("output_path"),
+                "review_approval_summary": {
+                    "approval_status": section_summary["approval_status"],
+                    "decision_source": section_summary["decision_source"],
+                    "latest_decision": section_summary["latest_decision"],
+                    "latest_decision_source": section_summary["latest_decision_source"],
+                    "review_status": section_summary["review_status"],
+                },
+                "section_summary": section_summary,
+                "navigation_links": [
+                    {"link_role": "preview", "path": artifact_paths.get("preview_path")},
+                    {"link_role": "review", "path": artifact_paths.get("review_path")},
+                    {"link_role": "approval", "path": artifact_paths.get("approval_path")},
+                    {"link_role": "lifecycle_trace", "path": ".dce/lifecycle_trace.json"},
+                    {"link_role": "execution", "path": artifact_paths.get("execution_path")},
+                    {"link_role": "outputs", "path": artifact_paths.get("output_path")},
+                ],
             }
         )
 
-    return {"sections": sorted(sections, key=lambda entry: str(entry["section_id"]))}
+    sections = sorted(sections, key=lambda entry: str(entry["section_id"]))
+    for entry_order, entry in enumerate(sections, start=1):
+        entry["entry_order"] = entry_order
+
+    return {
+        "section_order": [entry["section_id"] for entry in sections],
+        "sections": sections,
+        "summary": {
+            "sections_with_approval": sum(1 for entry in sections if entry["approval_path"] is not None),
+            "sections_with_execution": sum(1 for entry in sections if entry["execution_path"] is not None),
+            "sections_with_outputs": sum(1 for entry in sections if entry["output_path"] is not None),
+            "sections_with_review": sum(1 for entry in sections if entry["review_path"] is not None),
+            "total_sections_seen": len(sections),
+        },
+    }
 
 
 def _build_workspace_summary(workspace_root: Path, section_ids: List[str]) -> dict:
@@ -3028,13 +3180,19 @@ def _build_workspace_summary(workspace_root: Path, section_ids: List[str]) -> di
 
     sections: list[dict] = []
     for section_id in sorted(known_section_ids):
-        output_path = workspace_root / "outputs" / f"{section_id}.json"
-        payload = json.loads(output_path.read_text(encoding="utf-8")) if output_path.exists() else {}
+        section_artifacts = _load_section_artifacts(workspace_root, section_id)
+        artifact_paths = section_artifacts["artifact_paths"]
+        payloads = section_artifacts["payloads"]
+        payload = payloads["output_path"]
         execution_outcome = payload.get("execution_outcome", {})
         advisory = payload.get("advisory")
         validation = execution_outcome.get("validation_summary", {})
         execution = execution_outcome.get("execution_summary", {})
         review_entry = review_sections.get(section_id, {})
+        section_summary = _build_section_convergence_summary(
+            section_artifacts,
+            _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts),
+        )
         sections.append(
             {
                 "section_id": payload.get("section_id") or section_id,
@@ -3071,6 +3229,13 @@ def _build_workspace_summary(workspace_root: Path, section_ids: List[str]) -> di
                 "execution_status": review_entry.get("execution_status"),
                 "approval_consumed": review_entry.get("approval_consumed"),
                 "approval_status_after": review_entry.get("approval_status_after"),
+                "decision_source": section_summary["decision_source"],
+                "review_status": section_summary["review_status"],
+                "latest_decision": section_summary["latest_decision"],
+                "latest_decision_source": section_summary["latest_decision_source"],
+                "latest_stage": section_summary["latest_stage"],
+                "latest_stage_status": section_summary["latest_stage_status"],
+                "section_summary": section_summary,
             }
         )
 
@@ -3082,16 +3247,6 @@ def _build_workspace_summary(workspace_root: Path, section_ids: List[str]) -> di
 
 
 def _build_lifecycle_trace(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:
-    lifecycle_order = [
-        "preview",
-        "review",
-        "approval",
-        "preflight",
-        "gate",
-        "alignment",
-        "execution",
-        "outputs",
-    ]
     known_section_ids = set(section_ids)
     for output_path in (workspace_root / "outputs").glob("*.json"):
         try:
@@ -3104,84 +3259,142 @@ def _build_lifecycle_trace(workspace_root: Path, section_ids: List[str]) -> dict
 
     sections: list[dict[str, Any]] = []
     for section_id in sorted(known_section_ids):
-        trace_entries = _build_section_lifecycle_trace_entries(workspace_root, section_id)
+        section_artifacts = _load_section_artifacts(workspace_root, section_id)
+        trace_entries = _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts)
         if not any(entry["artifact_present"] for entry in trace_entries):
             continue
+        section_summary = _build_section_convergence_summary(section_artifacts, trace_entries)
         sections.append(
             {
                 "section_id": section_id,
+                "approval_status": section_summary["approval_status"],
+                "decision_source": section_summary["decision_source"],
+                "review_status": section_summary["review_status"],
+                "latest_decision": section_summary["latest_decision"],
+                "latest_decision_source": section_summary["latest_decision_source"],
+                "latest_stage": section_summary["latest_stage"],
+                "latest_stage_status": section_summary["latest_stage_status"],
+                "section_summary": section_summary,
                 "trace_entries": trace_entries,
-                "trace_summary": _build_section_lifecycle_trace_summary(section_id, trace_entries),
+                "trace_summary": _build_section_lifecycle_trace_summary(section_summary, trace_entries),
             }
         )
 
     return {
-        "lifecycle_order": lifecycle_order,
+        "lifecycle_order": DGCE_LIFECYCLE_ORDER,
         "total_sections_seen": len(sections),
         "sections": sections,
     }
 
 
 def _build_section_lifecycle_trace_entries(workspace_root: Path, section_id: str) -> list[dict[str, Any]]:
-    project_root = workspace_root.parent
-    artifact_paths = _collect_orchestrator_artifact_paths(project_root, section_id)
-    preview_path = workspace_root / "plans" / f"{section_id}.preview.json"
-    review_path = workspace_root / "reviews" / f"{section_id}.review.md"
-    approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
-    preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
-    execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
-    alignment_path = workspace_root / "preflight" / f"{section_id}.alignment.json"
-    execution_path = workspace_root / "execution" / f"{section_id}.execution.json"
-    output_path = workspace_root / "outputs" / f"{section_id}.json"
-
-    preview_payload = json.loads(preview_path.read_text(encoding="utf-8")) if preview_path.exists() else {}
-    approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
-    preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else {}
-    gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
-    alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8")) if alignment_path.exists() else {}
-    execution_payload = json.loads(execution_path.read_text(encoding="utf-8")) if execution_path.exists() else {}
-    output_payload = json.loads(output_path.read_text(encoding="utf-8")) if output_path.exists() else {}
-
-    stage_specs = [
-        ("preview", "preview_path", preview_payload.get("preview_outcome_class"), ["input_path", "review_path", "approval_path"]),
-        ("review", "review_path", "review_available" if review_path.exists() else None, ["preview_path", "approval_path"]),
-        ("approval", "approval_path", approval_payload.get("approval_status"), ["preview_path", "review_path", "preflight_path"]),
-        ("preflight", "preflight_path", preflight_payload.get("preflight_status"), ["approval_path", "preview_path", "review_path", "execution_gate_path"]),
-        ("gate", "execution_gate_path", gate_payload.get("gate_status"), ["preflight_path", "stale_check_path", "alignment_path", "execution_path"]),
-        ("alignment", "alignment_path", alignment_payload.get("alignment_status"), ["approval_path", "execution_gate_path", "execution_path"]),
-        ("execution", "execution_path", execution_payload.get("execution_status"), ["approval_path", "preflight_path", "execution_gate_path", "alignment_path", "output_path"]),
-        ("outputs", "output_path", output_payload.get("run_outcome_class"), ["execution_path"]),
-    ]
-
-    return [
-        {
-            "artifact_path": artifact_paths.get(artifact_key),
-            "artifact_present": artifact_paths.get(artifact_key) is not None,
-            "linkage": [
-                {
-                    "ref_name": ref_name,
-                    "ref_path": artifact_paths.get(ref_name),
-                }
-                for ref_name in linkage_names
-            ],
-            "stage": stage_name,
-            "stage_order": stage_index,
-            "stage_status": stage_status,
-        }
-        for stage_index, (stage_name, artifact_key, stage_status, linkage_names) in enumerate(stage_specs, start=1)
-    ]
+    return _build_section_lifecycle_trace_entries_from_artifacts(_load_section_artifacts(workspace_root, section_id))
 
 
-def _build_section_lifecycle_trace_summary(section_id: str, trace_entries: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_section_lifecycle_trace_summary(section_summary: dict[str, Any], trace_entries: list[dict[str, Any]]) -> dict[str, Any]:
     present_entries = [entry for entry in trace_entries if entry["artifact_present"]]
-    latest_entry = present_entries[-1] if present_entries else None
     return {
         "available_artifact_count": len(present_entries),
+        "approval_status": section_summary["approval_status"],
         "completed_stage_count": len(present_entries),
-        "latest_stage": latest_entry["stage"] if latest_entry else None,
-        "latest_stage_status": latest_entry["stage_status"] if latest_entry else None,
-        "section_id": section_id,
+        "decision_source": section_summary["decision_source"],
+        "latest_decision": section_summary["latest_decision"],
+        "latest_decision_source": section_summary["latest_decision_source"],
+        "latest_stage": section_summary["latest_stage"],
+        "latest_stage_status": section_summary["latest_stage_status"],
+        "review_status": section_summary["review_status"],
+        "section_id": section_summary["section_id"],
         "trace_entry_count": len(trace_entries),
+    }
+
+
+def _build_workspace_index(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:
+    workspace_summary = _build_workspace_summary(workspace_root, section_ids)
+    lifecycle_trace = _build_lifecycle_trace(workspace_root, section_ids)
+    trace_sections = {
+        str(entry.get("section_id")): dict(entry)
+        for entry in lifecycle_trace.get("sections", [])
+        if entry.get("section_id")
+    }
+    summary_sections = {
+        str(entry.get("section_id")): dict(entry)
+        for entry in workspace_summary.get("sections", [])
+        if entry.get("section_id")
+    }
+    known_section_ids = sorted(set(summary_sections) | set(trace_sections))
+    latest_stage_counts = {stage: 0 for stage in DGCE_LIFECYCLE_ORDER}
+    section_entries: list[dict[str, Any]] = []
+    for entry_order, section_id in enumerate(known_section_ids, start=1):
+        summary_entry = summary_sections.get(section_id, {})
+        trace_entry = trace_sections.get(section_id, {})
+        trace_summary = dict(trace_entry.get("trace_summary", {}))
+        section_summary = dict(summary_entry.get("section_summary", trace_entry.get("section_summary", {})))
+        latest_stage = trace_summary.get("latest_stage")
+        if latest_stage in latest_stage_counts:
+            latest_stage_counts[str(latest_stage)] += 1
+        artifact_paths = _collect_orchestrator_artifact_paths(workspace_root.parent, section_id)
+        artifact_links = [
+            {
+                "artifact_role": artifact_role,
+                "path": artifact_path,
+            }
+            for artifact_role, artifact_path in (
+                ("preview", artifact_paths.get("preview_path")),
+                ("review", artifact_paths.get("review_path")),
+                ("approval", artifact_paths.get("approval_path")),
+                ("preflight", artifact_paths.get("preflight_path")),
+                ("stale_check", artifact_paths.get("stale_check_path")),
+                ("gate", artifact_paths.get("execution_gate_path")),
+                ("alignment", artifact_paths.get("alignment_path")),
+                ("execution", artifact_paths.get("execution_path")),
+                ("outputs", artifact_paths.get("output_path")),
+            )
+            if artifact_path is not None
+        ]
+        section_entries.append(
+            {
+                "artifact_links": artifact_links,
+                "entry_order": entry_order,
+                "execution_path": artifact_paths.get("execution_path"),
+                "execution_status": summary_entry.get("execution_status"),
+                "approval_status": section_summary.get("approval_status"),
+                "decision_source": section_summary.get("decision_source"),
+                "review_status": section_summary.get("review_status"),
+                "latest_decision": section_summary.get("latest_decision"),
+                "latest_decision_source": section_summary.get("latest_decision_source"),
+                "latest_run_outcome_class": summary_entry.get("latest_run_outcome_class"),
+                "latest_stage": latest_stage,
+                "latest_stage_status": trace_summary.get("latest_stage_status"),
+                "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+                "output_path": artifact_paths.get("output_path"),
+                "section_id": section_id,
+                "section_summary": section_summary,
+                "trace_entry_count": trace_summary.get("trace_entry_count"),
+                "trace_summary": trace_summary,
+            }
+        )
+
+    return {
+        "artifact_paths": {
+            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+            "review_index_path": ".dce/reviews/index.json",
+            "workspace_summary_path": ".dce/workspace_summary.json",
+        },
+        "section_order": [entry["section_id"] for entry in section_entries],
+        "sections": section_entries,
+        "summary": {
+            "latest_stage_counts": [
+                {
+                    "section_count": latest_stage_counts[stage],
+                    "stage": stage,
+                }
+                for stage in DGCE_LIFECYCLE_ORDER
+            ],
+            "sections_with_execution": sum(1 for entry in section_entries if entry["execution_path"] is not None),
+            "sections_with_lifecycle_trace": len(section_entries),
+            "sections_with_outputs": sum(1 for entry in section_entries if entry["output_path"] is not None),
+            "total_sections_seen": len(section_entries),
+        },
     }
 
 
@@ -3190,6 +3403,7 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], section_ids))
     _write_json(workspace["root"] / "workspace_summary.json", _build_workspace_summary(workspace["root"], section_ids))
     _write_json(workspace["root"] / "lifecycle_trace.json", _build_lifecycle_trace(workspace["root"], section_ids))
+    _write_json(workspace["root"] / "workspace_index.json", _build_workspace_index(workspace["root"], section_ids))
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:

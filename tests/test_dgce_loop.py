@@ -73,6 +73,41 @@ def _data_model_section() -> DGCESection:
     )
 
 
+def _expected_section_summary(
+    *,
+    section_id: str,
+    approval_status=None,
+    decision_source=None,
+    latest_decision=None,
+    latest_stage=None,
+    latest_stage_status=None,
+    review_status=None,
+):
+    return {
+        "approval_status": approval_status,
+        "decision_source": decision_source,
+        "latest_decision": latest_decision,
+        "latest_decision_source": decision_source,
+        "latest_stage": latest_stage,
+        "latest_stage_status": latest_stage_status,
+        "review_status": review_status,
+        "section_id": section_id,
+        "summary_sources": {
+            "approval_status": "approval" if approval_status is not None else None,
+            "latest_decision": (
+                "approval.selected_mode"
+                if decision_source == "approval"
+                else "preview.recommended_mode"
+                if decision_source == "preview_recommendation"
+                else None
+            ),
+            "latest_stage": "lifecycle_trace",
+            "latest_stage_status": "lifecycle_trace",
+            "review_status": "review" if review_status is not None else None,
+        },
+    }
+
+
 def _api_surface_section() -> DGCESection:
     return DGCESection(
         section_type="system_component",
@@ -3482,8 +3517,100 @@ def test_dgce_workspace_summary_single_section_success(monkeypatch):
                 "execution_status": "execution_not_governed",
                 "approval_consumed": False,
                 "approval_status_after": None,
+                "decision_source": None,
+                "review_status": None,
+                "latest_decision": None,
+                "latest_decision_source": None,
+                "latest_stage": "outputs",
+                "latest_stage_status": "success_create_only",
+                "section_summary": _expected_section_summary(
+                    section_id="mission-board",
+                    latest_stage="outputs",
+                    latest_stage_status="success_create_only",
+                ),
             }
         ],
+    }
+
+
+def test_dgce_review_index_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_review_index_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+
+    assert payload == {
+        "section_order": ["mission-board"],
+        "sections": [
+            {
+                "entry_order": 1,
+                "section_id": "mission-board",
+                "preview_path": None,
+                "review_path": None,
+                "preview_outcome_class": None,
+                "recommended_mode": None,
+                "approval_path": None,
+                "approval_status": None,
+                "selected_mode": None,
+                "execution_permitted": None,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": ".dce/execution/mission-board.execution.json",
+                "execution_status": "execution_not_governed",
+                "approval_consumed": False,
+                "approval_status_after": None,
+                "decision_source": None,
+                "approval_timestamp": None,
+                "review_status": None,
+                "latest_decision": None,
+                "latest_decision_source": None,
+                "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+                "output_path": ".dce/outputs/mission-board.json",
+                "review_approval_summary": {
+                    "approval_status": None,
+                    "decision_source": None,
+                    "latest_decision": None,
+                    "latest_decision_source": None,
+                    "review_status": None,
+                },
+                "section_summary": _expected_section_summary(
+                    section_id="mission-board",
+                    latest_stage="outputs",
+                    latest_stage_status="success_create_only",
+                ),
+                "navigation_links": [
+                    {"link_role": "preview", "path": None},
+                    {"link_role": "review", "path": None},
+                    {"link_role": "approval", "path": None},
+                    {"link_role": "lifecycle_trace", "path": ".dce/lifecycle_trace.json"},
+                    {"link_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
+                    {"link_role": "outputs", "path": ".dce/outputs/mission-board.json"},
+                ],
+            }
+        ],
+        "summary": {
+            "sections_with_approval": 0,
+            "sections_with_execution": 1,
+            "sections_with_outputs": 1,
+            "sections_with_review": 0,
+            "total_sections_seen": 1,
+        },
     }
 
 
@@ -3512,13 +3639,30 @@ def test_dgce_lifecycle_trace_single_section_success(monkeypatch):
     assert payload["total_sections_seen"] == 1
     section_trace = payload["sections"][0]
     assert section_trace["section_id"] == "mission-board"
+    assert section_trace["section_summary"] == _expected_section_summary(
+        section_id="mission-board",
+        latest_stage="outputs",
+        latest_stage_status="success_create_only",
+    )
+    assert section_trace["approval_status"] is None
+    assert section_trace["decision_source"] is None
+    assert section_trace["review_status"] is None
+    assert section_trace["latest_decision"] is None
+    assert section_trace["latest_decision_source"] is None
+    assert section_trace["latest_stage"] == "outputs"
+    assert section_trace["latest_stage_status"] == "success_create_only"
     assert [entry["stage"] for entry in section_trace["trace_entries"]] == payload["lifecycle_order"]
     assert [entry["stage_order"] for entry in section_trace["trace_entries"]] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert section_trace["trace_summary"] == {
         "available_artifact_count": 2,
+        "approval_status": None,
         "completed_stage_count": 2,
+        "decision_source": None,
+        "latest_decision": None,
+        "latest_decision_source": None,
         "latest_stage": "outputs",
         "latest_stage_status": "success_create_only",
+        "review_status": None,
         "section_id": "mission-board",
         "trace_entry_count": 8,
     }
@@ -3536,6 +3680,91 @@ def test_dgce_lifecycle_trace_single_section_success(monkeypatch):
             "ref_path": ".dce/execution/mission-board.execution.json",
         }
     ]
+
+
+def test_dgce_workspace_index_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_workspace_index_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+
+    assert payload == {
+        "artifact_paths": {
+            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+            "review_index_path": ".dce/reviews/index.json",
+            "workspace_summary_path": ".dce/workspace_summary.json",
+        },
+        "section_order": ["mission-board"],
+        "sections": [
+            {
+                "artifact_links": [
+                    {
+                        "artifact_role": "execution",
+                        "path": ".dce/execution/mission-board.execution.json",
+                    },
+                    {
+                        "artifact_role": "outputs",
+                        "path": ".dce/outputs/mission-board.json",
+                    },
+                ],
+                "entry_order": 1,
+                "execution_path": ".dce/execution/mission-board.execution.json",
+                "execution_status": "execution_not_governed",
+                "approval_status": None,
+                "decision_source": None,
+                "review_status": None,
+                "latest_decision": None,
+                "latest_decision_source": None,
+                "latest_run_outcome_class": "success_create_only",
+                "latest_stage": "outputs",
+                "latest_stage_status": "success_create_only",
+                "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+                "output_path": ".dce/outputs/mission-board.json",
+                "section_id": "mission-board",
+                "section_summary": _expected_section_summary(
+                    section_id="mission-board",
+                    latest_stage="outputs",
+                    latest_stage_status="success_create_only",
+                ),
+                "trace_entry_count": 8,
+                "trace_summary": {
+                    "available_artifact_count": 2,
+                    "approval_status": None,
+                    "completed_stage_count": 2,
+                    "decision_source": None,
+                    "latest_decision": None,
+                    "latest_decision_source": None,
+                    "latest_stage": "outputs",
+                    "latest_stage_status": "success_create_only",
+                    "review_status": None,
+                    "section_id": "mission-board",
+                    "trace_entry_count": 8,
+                },
+            }
+        ],
+        "summary": {
+            "latest_stage_counts": [
+                {"section_count": 0, "stage": "preview"},
+                {"section_count": 0, "stage": "review"},
+                {"section_count": 0, "stage": "approval"},
+                {"section_count": 0, "stage": "preflight"},
+                {"section_count": 0, "stage": "gate"},
+                {"section_count": 0, "stage": "alignment"},
+                {"section_count": 0, "stage": "execution"},
+                {"section_count": 1, "stage": "outputs"},
+            ],
+            "sections_with_execution": 1,
+            "sections_with_lifecycle_trace": 1,
+            "sections_with_outputs": 1,
+            "total_sections_seen": 1,
+        },
+    }
 
 
 def test_dgce_workspace_summary_is_sorted_when_multiple_outputs_exist(monkeypatch):
