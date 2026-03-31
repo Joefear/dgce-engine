@@ -40,31 +40,15 @@ tests/.tmp/
 .pytest_tmp/
 
 # DGCE runtime artifacts (engine root)
-.dce/execution/
-.dce/preflight/
-.dce/reviews/
-.dce/plans/
-.dce/outputs/
-.dce/state/
-.dce/advisory_index.json
-.dce/index.yaml
-.dce/ownership_index.json
-.dce/workspace_summary.json
+.dce/
 
 # DGCE runtime artifacts in engine internals
 aether_core/.dce/
 
-# DGCE runtime artifacts in example workspace
-defiant-sky/.dce/execution/
-defiant-sky/.dce/preflight/
-defiant-sky/.dce/reviews/
-defiant-sky/.dce/plans/
-defiant-sky/.dce/outputs/
-defiant-sky/.dce/state/
-defiant-sky/.dce/advisory_index.json
-defiant-sky/.dce/index.yaml
-defiant-sky/.dce/ownership_index.json
-defiant-sky/.dce/workspace_summary.json
+# DGCE workspace artifacts (defiant-sky)
+defiant-sky/.dce/*
+!defiant-sky/.dce/input/
+!defiant-sky/.dce/input/**
 
 # Runtime logs / local data
 .runtime/
