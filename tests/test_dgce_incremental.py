@@ -497,6 +497,21 @@ def _assert_consumer_contract_has_no_cross_section_leakage(project_root: Path, *
         assert section_id not in contract_text
 
 
+def _assert_reference_aligns_with_contract(project_root: Path) -> None:
+    consumer_contract = _consumer_contract_payload(project_root)
+    reference_text = _consumer_contract_reference_text(project_root)
+    assert reference_text == _expected_consumer_contract_reference(consumer_contract)
+    assert [line.removeprefix("### ") for line in reference_text.splitlines() if line.startswith("### ")] == [
+        entry["artifact_type"] for entry in consumer_contract["supported_artifacts"]
+    ]
+    assert [line.removeprefix("- path: ") for line in reference_text.splitlines() if line.startswith("- path: ")] == [
+        entry["artifact_path"] for entry in consumer_contract["supported_artifacts"]
+    ]
+    assert [line.removeprefix("- schema_version: ") for line in reference_text.splitlines() if line.startswith("- schema_version: ")][1:] == [
+        entry["schema_version"] for entry in consumer_contract["supported_artifacts"]
+    ]
+
+
 def _assert_workspace_index_links_resolve_to_manifest(project_root: Path) -> None:
     manifest_by_path = _artifact_manifest_by_path(project_root)
     workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
@@ -7684,6 +7699,8 @@ def test_consumer_contract_reference_is_deterministic_and_derived_from_consumer_
     assert first_reference == _expected_consumer_contract_reference(first_contract)
     assert first_reference == second_reference
     assert _consumer_contract_reference_text(first_root) == (second_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8")
+    _assert_reference_aligns_with_contract(first_root)
+    _assert_reference_aligns_with_contract(second_root)
 
 
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
@@ -8237,6 +8254,7 @@ def test_cross_artifact_section_summaries_converge_across_mixed_section_states(m
     _assert_workspace_index_links_resolve_to_manifest(project_root)
     _assert_review_and_trace_links_resolve_to_manifest(project_root)
     _assert_consumer_contract_aligns_with_manifest(project_root)
+    _assert_reference_aligns_with_contract(project_root)
     _assert_consumer_contract_has_no_cross_section_leakage(project_root, "alpha-section", "mission-board")
 
 

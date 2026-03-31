@@ -4432,6 +4432,30 @@ def _build_consumer_contract(
     return _with_artifact_metadata("consumer_contract", {"supported_artifacts": supported_artifacts})
 
 
+def _artifact_manifest_entries_by_path(artifact_manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(_normalize_artifact_path(entry.get("artifact_path"))): dict(entry)
+        for entry in artifact_manifest.get("artifacts", [])
+        if isinstance(entry, dict) and _normalize_artifact_path(entry.get("artifact_path")) is not None
+    }
+
+
+def _assert_contract_aligns_with_manifest(artifact_manifest: dict[str, Any], consumer_contract: dict[str, Any]) -> None:
+    manifest_entries = _artifact_manifest_entries_by_path(artifact_manifest)
+    for index, contract_entry in enumerate(consumer_contract.get("supported_artifacts", [])):
+        if not isinstance(contract_entry, dict):
+            raise ValueError(f"consumer_contract supported_artifacts[{index}] must be a dict")
+        artifact_path = _normalize_artifact_path(contract_entry.get("artifact_path"))
+        if artifact_path is None or artifact_path not in manifest_entries:
+            raise ValueError(f"consumer_contract supported_artifacts[{index}] must resolve to artifact_manifest")
+        manifest_entry = manifest_entries[artifact_path]
+        for key in ("artifact_type", "schema_version"):
+            if str(contract_entry.get(key)) != str(manifest_entry.get(key)):
+                raise ValueError(
+                    f"consumer_contract supported_artifacts[{index}].{key} must match artifact_manifest for {artifact_path}"
+                )
+
+
 def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str:
     lines = [
         "# DGCE Consumer Contract Reference",
@@ -4466,6 +4490,43 @@ def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str
     return "\n".join(lines)
 
 
+def _assert_reference_aligns_with_contract(consumer_contract: dict[str, Any], consumer_contract_reference: str) -> None:
+    lines = consumer_contract_reference.split("\n")
+    expected_lines = [
+        "# DGCE Consumer Contract Reference",
+        "",
+        "## Metadata",
+        f"- schema_version: {consumer_contract['schema_version']}",
+        f"- generated_by: {consumer_contract['generated_by']}",
+        "",
+        "## Supported Artifacts",
+        "",
+    ]
+    line_index = 0
+    for expected_line in expected_lines:
+        if line_index >= len(lines) or lines[line_index] != expected_line:
+            raise ValueError("consumer_contract_reference.md metadata must match consumer_contract.json")
+        line_index += 1
+    for artifact in consumer_contract.get("supported_artifacts", []):
+        artifact_lines = [
+            f"### {artifact['artifact_type']}",
+            f"- path: {artifact['artifact_path']}",
+            f"- schema_version: {artifact['schema_version']}",
+            f"- contract_stability: {artifact['contract_stability']}",
+        ]
+        if artifact.get("consumer_scopes"):
+            artifact_lines.append(f"- consumer_scopes: {', '.join(str(scope) for scope in artifact['consumer_scopes'])}")
+        artifact_lines.extend(["", "#### Supported Fields"])
+        artifact_lines.extend(f"- {field_name}" for field_name in artifact.get("supported_fields", []))
+        artifact_lines.append("")
+        for expected_line in artifact_lines:
+            if line_index >= len(lines) or lines[line_index] != expected_line:
+                raise ValueError("consumer_contract_reference.md entries must match consumer_contract.json in order")
+            line_index += 1
+    if line_index != len(lines):
+        raise ValueError("consumer_contract_reference.md must not include extra content")
+
+
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
     review_index = _build_review_index(workspace["root"], section_ids)
@@ -4482,7 +4543,9 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
         dashboard,
         artifact_manifest,
     )
+    _assert_contract_aligns_with_manifest(artifact_manifest, consumer_contract)
     consumer_contract_reference = _build_consumer_contract_reference(consumer_contract)
+    _assert_reference_aligns_with_contract(consumer_contract, consumer_contract_reference)
     _write_json(workspace["reviews"] / "index.json", review_index)
     _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)
     _write_json(workspace["root"] / "lifecycle_trace.json", lifecycle_trace)
