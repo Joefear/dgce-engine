@@ -3398,12 +3398,118 @@ def _build_workspace_index(workspace_root: Path, section_ids: List[str]) -> dict
     }
 
 
+def _count_summary_values(
+    sections: list[dict[str, Any]],
+    field_name: str,
+    *,
+    allowed_values: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    if allowed_values is not None:
+        counts = {value: 0 for value in allowed_values}
+    for section in sections:
+        raw_value = section.get(field_name)
+        normalized_value = "none" if raw_value is None else str(raw_value)
+        if normalized_value not in counts:
+            counts[normalized_value] = 0
+        counts[normalized_value] += 1
+    ordered_values = list(allowed_values) if allowed_values is not None else sorted(counts)
+    for value in sorted(counts):
+        if value not in ordered_values:
+            ordered_values.append(value)
+    return [{"section_count": counts[value], "value": value} for value in ordered_values]
+
+
+def _build_dashboard_view(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:
+    review_index = _build_review_index(workspace_root, section_ids)
+    lifecycle_trace = _build_lifecycle_trace(workspace_root, section_ids)
+    workspace_index = _build_workspace_index(workspace_root, section_ids)
+    review_sections = {
+        str(entry.get("section_id")): dict(entry)
+        for entry in review_index.get("sections", [])
+        if entry.get("section_id")
+    }
+    trace_sections = {
+        str(entry.get("section_id")): dict(entry)
+        for entry in lifecycle_trace.get("sections", [])
+        if entry.get("section_id")
+    }
+    index_sections = {
+        str(entry.get("section_id")): dict(entry)
+        for entry in workspace_index.get("sections", [])
+        if entry.get("section_id")
+    }
+    known_section_ids = sorted(set(review_sections) | set(trace_sections) | set(index_sections))
+    section_cards: list[dict[str, Any]] = []
+    for entry_order, section_id in enumerate(known_section_ids, start=1):
+        review_entry = review_sections.get(section_id, {})
+        trace_entry = trace_sections.get(section_id, {})
+        index_entry = index_sections.get(section_id, {})
+        section_summary = dict(
+            index_entry.get("section_summary", trace_entry.get("section_summary", review_entry.get("section_summary", {})))
+        )
+        trace_summary = dict(trace_entry.get("trace_summary", {}))
+        artifact_links = {
+            str(link.get("link_role")): link.get("path")
+            for link in review_entry.get("navigation_links", [])
+            if isinstance(link, dict) and link.get("link_role")
+        }
+        section_cards.append(
+            {
+                "approval_status": section_summary.get("approval_status"),
+                "current_stage": section_summary.get("latest_stage"),
+                "decision_source": section_summary.get("decision_source"),
+                "entry_order": entry_order,
+                "latest_decision": section_summary.get("latest_decision"),
+                "progress": {
+                    "available_artifact_count": trace_summary.get("available_artifact_count", 0),
+                    "completed_stage_count": trace_summary.get("completed_stage_count", 0),
+                    "lifecycle_stage_count": len(DGCE_LIFECYCLE_ORDER),
+                    "trace_entry_count": trace_summary.get("trace_entry_count", 0),
+                },
+                "navigation_links": {
+                    "approval": artifact_links.get("approval"),
+                    "execution": artifact_links.get("execution"),
+                    "lifecycle_trace": review_entry.get("lifecycle_trace_path", ".dce/lifecycle_trace.json"),
+                    "outputs": artifact_links.get("outputs"),
+                    "review": artifact_links.get("review"),
+                },
+                "review_status": section_summary.get("review_status"),
+                "section_id": section_id,
+                "section_summary": section_summary,
+                "stage_status": section_summary.get("latest_stage_status"),
+            }
+        )
+
+    return {
+        "artifact_paths": {
+            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+            "review_index_path": ".dce/reviews/index.json",
+            "workspace_index_path": ".dce/workspace_index.json",
+        },
+        "section_order": [entry["section_id"] for entry in section_cards],
+        "sections": section_cards,
+        "summary": {
+            "approval_status_counts": _count_summary_values(section_cards, "approval_status"),
+            "current_stage_counts": _count_summary_values(
+                section_cards,
+                "current_stage",
+                allowed_values=DGCE_LIFECYCLE_ORDER,
+            ),
+            "review_status_counts": _count_summary_values(section_cards, "review_status"),
+            "stage_status_counts": _count_summary_values(section_cards, "stage_status"),
+            "total_sections": len(section_cards),
+        },
+    }
+
+
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
     _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], section_ids))
     _write_json(workspace["root"] / "workspace_summary.json", _build_workspace_summary(workspace["root"], section_ids))
     _write_json(workspace["root"] / "lifecycle_trace.json", _build_lifecycle_trace(workspace["root"], section_ids))
     _write_json(workspace["root"] / "workspace_index.json", _build_workspace_index(workspace["root"], section_ids))
+    _write_json(workspace["root"] / "dashboard.json", _build_dashboard_view(workspace["root"], section_ids))
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:

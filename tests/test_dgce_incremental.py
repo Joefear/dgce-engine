@@ -130,7 +130,9 @@ def _artifact_section_map(project_root: Path) -> dict[str, dict[str, dict]]:
     workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
     lifecycle_trace = json.loads((project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"))
     workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+    dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
     return {
+        "dashboard": {entry["section_id"]: entry for entry in dashboard["sections"]},
         "review_index": {entry["section_id"]: entry for entry in review_index["sections"]},
         "workspace_summary": {entry["section_id"]: entry for entry in workspace_summary["sections"]},
         "lifecycle_trace": {entry["section_id"]: entry for entry in lifecycle_trace["sections"]},
@@ -144,11 +146,13 @@ def _assert_cross_artifact_section_consistency(project_root: Path, section_id: s
     workspace_summary_entry = artifacts["workspace_summary"][section_id]
     lifecycle_entry = artifacts["lifecycle_trace"][section_id]
     workspace_index_entry = artifacts["workspace_index"][section_id]
+    dashboard_entry = artifacts["dashboard"][section_id]
     expected_summary = review_entry["section_summary"]
 
     assert workspace_summary_entry["section_summary"] == expected_summary
     assert lifecycle_entry["section_summary"] == expected_summary
     assert workspace_index_entry["section_summary"] == expected_summary
+    assert dashboard_entry["section_summary"] == expected_summary
     assert lifecycle_entry["trace_summary"]["latest_stage"] == expected_summary["latest_stage"]
     assert lifecycle_entry["trace_summary"]["latest_stage_status"] == expected_summary["latest_stage_status"]
     assert lifecycle_entry["trace_summary"]["latest_decision"] == expected_summary["latest_decision"]
@@ -161,6 +165,12 @@ def _assert_cross_artifact_section_consistency(project_root: Path, section_id: s
     assert workspace_index_entry["latest_stage_status"] == expected_summary["latest_stage_status"]
     assert workspace_index_entry["latest_decision"] == expected_summary["latest_decision"]
     assert workspace_index_entry["decision_source"] == expected_summary["decision_source"]
+    assert dashboard_entry["current_stage"] == expected_summary["latest_stage"]
+    assert dashboard_entry["stage_status"] == expected_summary["latest_stage_status"]
+    assert dashboard_entry["latest_decision"] == expected_summary["latest_decision"]
+    assert dashboard_entry["decision_source"] == expected_summary["decision_source"]
+    assert dashboard_entry["approval_status"] == expected_summary["approval_status"]
+    assert dashboard_entry["review_status"] == expected_summary["review_status"]
 
 
 def _stub_executor_output(content: str) -> str:
@@ -7049,6 +7059,100 @@ def test_cross_artifact_section_summaries_converge_for_governed_run(monkeypatch)
     _assert_cross_artifact_section_consistency(project_root, "mission-board")
 
 
+def test_dashboard_artifact_is_deterministic_for_repeated_governed_runs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_dashboard_repeat_a")
+    second_root = _workspace_dir("dgce_dashboard_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+            execution_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    first_dashboard = json.loads((first_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+    second_dashboard = json.loads((second_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+
+    assert first_dashboard == second_dashboard
+    assert (first_root / ".dce" / "dashboard.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "dashboard.json"
+    ).read_text(encoding="utf-8")
+    assert first_dashboard == {
+        "artifact_paths": {
+            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+            "review_index_path": ".dce/reviews/index.json",
+            "workspace_index_path": ".dce/workspace_index.json",
+        },
+        "section_order": ["mission-board"],
+        "sections": [
+            {
+                "approval_status": "superseded",
+                "current_stage": "outputs",
+                "decision_source": "approval",
+                "entry_order": 1,
+                "latest_decision": "create_only",
+                "navigation_links": {
+                    "approval": ".dce/approvals/mission-board.approval.json",
+                    "execution": ".dce/execution/mission-board.execution.json",
+                    "lifecycle_trace": ".dce/lifecycle_trace.json",
+                    "outputs": ".dce/outputs/mission-board.json",
+                    "review": ".dce/reviews/mission-board.review.md",
+                },
+                "progress": {
+                    "available_artifact_count": 8,
+                    "completed_stage_count": 8,
+                    "lifecycle_stage_count": 8,
+                    "trace_entry_count": 8,
+                },
+                "review_status": "review_available",
+                "section_id": "mission-board",
+                "section_summary": _expected_section_summary(
+                    section_id="mission-board",
+                    approval_status="superseded",
+                    decision_source="approval",
+                    latest_decision="create_only",
+                    latest_stage="outputs",
+                    latest_stage_status="success_create_only",
+                    review_status="review_available",
+                ),
+                "stage_status": "success_create_only",
+            }
+        ],
+        "summary": {
+            "approval_status_counts": [{"section_count": 1, "value": "superseded"}],
+            "current_stage_counts": [
+                {"section_count": 0, "value": "preview"},
+                {"section_count": 0, "value": "review"},
+                {"section_count": 0, "value": "approval"},
+                {"section_count": 0, "value": "preflight"},
+                {"section_count": 0, "value": "gate"},
+                {"section_count": 0, "value": "alignment"},
+                {"section_count": 0, "value": "execution"},
+                {"section_count": 1, "value": "outputs"},
+            ],
+            "review_status_counts": [{"section_count": 1, "value": "review_available"}],
+            "stage_status_counts": [{"section_count": 1, "value": "success_create_only"}],
+            "total_sections": 1,
+        },
+    }
+
+
 def test_run_section_with_workspace_workspace_index_is_deterministic_and_governed(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     first_root = _workspace_dir("dgce_incremental_v3_2_index_repeat_a")
@@ -7331,6 +7435,98 @@ def test_cross_artifact_section_summaries_converge_across_mixed_section_states(m
 
     _assert_cross_artifact_section_consistency(project_root, "alpha-section")
     _assert_cross_artifact_section_consistency(project_root, "mission-board")
+
+
+def test_dashboard_artifact_has_stable_multi_section_ordering_and_summary_counts(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_dashboard_multi_section")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section_named("Mission Board"), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    run_section_with_workspace(
+        _section_named("Mission Board"),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    run_section_with_workspace(_section_named("Alpha Section"), project_root, incremental_mode="incremental_v2")
+
+    payload = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+
+    assert payload["section_order"] == ["alpha-section", "mission-board"]
+    assert [entry["section_id"] for entry in payload["sections"]] == ["alpha-section", "mission-board"]
+    assert [entry["entry_order"] for entry in payload["sections"]] == [1, 2]
+    assert payload["summary"] == {
+        "approval_status_counts": [
+            {"section_count": 1, "value": "none"},
+            {"section_count": 1, "value": "superseded"},
+        ],
+        "current_stage_counts": [
+            {"section_count": 1, "value": "preview"},
+            {"section_count": 0, "value": "review"},
+            {"section_count": 0, "value": "approval"},
+            {"section_count": 0, "value": "preflight"},
+            {"section_count": 0, "value": "gate"},
+            {"section_count": 0, "value": "alignment"},
+            {"section_count": 0, "value": "execution"},
+            {"section_count": 1, "value": "outputs"},
+        ],
+        "review_status_counts": [
+            {"section_count": 1, "value": "none"},
+            {"section_count": 1, "value": "review_available"},
+        ],
+        "stage_status_counts": [
+            {"section_count": 1, "value": "preview_blocked_modify_disabled"},
+            {"section_count": 1, "value": "success_create_only"},
+        ],
+        "total_sections": 2,
+    }
+
+    alpha_entry = payload["sections"][0]
+    mission_entry = payload["sections"][1]
+
+    assert alpha_entry["navigation_links"] == {
+        "approval": None,
+        "execution": None,
+        "lifecycle_trace": ".dce/lifecycle_trace.json",
+        "outputs": None,
+        "review": None,
+    }
+    assert mission_entry["navigation_links"] == {
+        "approval": ".dce/approvals/mission-board.approval.json",
+        "execution": ".dce/execution/mission-board.execution.json",
+        "lifecycle_trace": ".dce/lifecycle_trace.json",
+        "outputs": ".dce/outputs/mission-board.json",
+        "review": ".dce/reviews/mission-board.review.md",
+    }
+    assert alpha_entry["section_summary"] == _expected_section_summary(
+        section_id="alpha-section",
+        decision_source="preview_recommendation",
+        latest_decision="review_required",
+        latest_stage="preview",
+        latest_stage_status="preview_blocked_modify_disabled",
+    )
+    assert mission_entry["section_summary"] == _expected_section_summary(
+        section_id="mission-board",
+        approval_status="superseded",
+        decision_source="approval",
+        latest_decision="create_only",
+        latest_stage="outputs",
+        latest_stage_status="success_create_only",
+        review_status="review_available",
+    )
 
 
 def test_build_run_outcome_class_treats_skipped_modify_zero_write_run_as_execution_no_changes():

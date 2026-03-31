@@ -3767,6 +3767,74 @@ def test_dgce_workspace_index_single_section_success(monkeypatch):
     }
 
 
+def test_dgce_dashboard_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_dashboard_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+
+    assert payload == {
+        "artifact_paths": {
+            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
+            "review_index_path": ".dce/reviews/index.json",
+            "workspace_index_path": ".dce/workspace_index.json",
+        },
+        "section_order": ["mission-board"],
+        "sections": [
+            {
+                "approval_status": None,
+                "current_stage": "outputs",
+                "decision_source": None,
+                "entry_order": 1,
+                "latest_decision": None,
+                "navigation_links": {
+                    "approval": None,
+                    "execution": ".dce/execution/mission-board.execution.json",
+                    "lifecycle_trace": ".dce/lifecycle_trace.json",
+                    "outputs": ".dce/outputs/mission-board.json",
+                    "review": None,
+                },
+                "progress": {
+                    "available_artifact_count": 2,
+                    "completed_stage_count": 2,
+                    "lifecycle_stage_count": 8,
+                    "trace_entry_count": 8,
+                },
+                "review_status": None,
+                "section_id": "mission-board",
+                "section_summary": _expected_section_summary(
+                    section_id="mission-board",
+                    latest_stage="outputs",
+                    latest_stage_status="success_create_only",
+                ),
+                "stage_status": "success_create_only",
+            }
+        ],
+        "summary": {
+            "approval_status_counts": [{"section_count": 1, "value": "none"}],
+            "current_stage_counts": [
+                {"section_count": 0, "value": "preview"},
+                {"section_count": 0, "value": "review"},
+                {"section_count": 0, "value": "approval"},
+                {"section_count": 0, "value": "preflight"},
+                {"section_count": 0, "value": "gate"},
+                {"section_count": 0, "value": "alignment"},
+                {"section_count": 0, "value": "execution"},
+                {"section_count": 1, "value": "outputs"},
+            ],
+            "review_status_counts": [{"section_count": 1, "value": "none"}],
+            "stage_status_counts": [{"section_count": 1, "value": "success_create_only"}],
+            "total_sections": 1,
+        },
+    }
+
+
 def test_dgce_workspace_summary_is_sorted_when_multiple_outputs_exist(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _scaffold_dir("dgce_workspace_summary_sorted")
