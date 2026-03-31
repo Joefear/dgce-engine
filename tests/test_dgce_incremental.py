@@ -5668,6 +5668,240 @@ def test_record_section_alignment_truth_table_and_linkage(monkeypatch):
     assert workspace_summary["sections"][0]["alignment_blocked"] is False
 
 
+def test_record_section_alignment_emits_deterministic_structured_contract(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_alignment_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="safe_modify",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    alignment = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+    )
+
+    assert sorted(alignment.keys()) == [
+        "alignment_blocked",
+        "alignment_reason",
+        "alignment_status",
+        "alignment_timestamp",
+        "approval_path",
+        "checks",
+        "compared_artifacts",
+        "created_written_count",
+        "effective_execution_mode",
+        "execution_gate_path",
+        "gate_status",
+        "mismatches",
+        "modify_written_count",
+        "remediation_summary",
+        "require_preflight_pass",
+        "section_id",
+        "selected_mode",
+        "written_file_count",
+    ]
+    assert [entry["artifact_role"] for entry in alignment["compared_artifacts"]] == ["approval", "execution_gate"]
+    assert [entry["present"] for entry in alignment["compared_artifacts"]] == [True, True]
+    assert [check["check_id"] for check in alignment["checks"]] == [
+        "selected_mode_known",
+        "gate_context_available",
+        "selected_mode_matches_effective_execution",
+    ]
+    assert [check["result"] for check in alignment["checks"]] == ["passed", "passed", "passed"]
+    assert all(
+        sorted(check.keys()) == [
+            "category",
+            "check_id",
+            "checked_artifact_path",
+            "checked_artifact_role",
+            "detail",
+            "issue_code",
+            "result",
+        ]
+        for check in alignment["checks"]
+    )
+    assert alignment["mismatches"] == []
+    assert alignment["remediation_summary"] == {
+        "alignment_reason": "safe_modify_permitted",
+        "alignment_status": "alignment_pass",
+        "compared_artifact_count": 2,
+        "effective_execution_mode": "safe_modify",
+        "failed_check_count": 0,
+        "mismatch_count": 0,
+        "next_action": "proceed_to_execution",
+        "not_evaluated_check_count": 0,
+        "passed_check_count": 3,
+        "selected_mode": "safe_modify",
+        "total_check_count": 3,
+    }
+
+
+def test_record_section_alignment_normalizes_mismatches_and_remediation(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_alignment_blocking_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="create_only",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    alignment = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+    )
+
+    assert alignment["alignment_status"] == "alignment_blocked"
+    assert alignment["alignment_blocked"] is True
+    assert [check["result"] for check in alignment["checks"]] == ["passed", "passed", "failed"]
+    assert alignment["mismatches"] == [
+        {
+            "category": "execution_mode",
+            "checked_artifact_path": ".dce/approvals/mission-board.approval.json",
+            "checked_artifact_role": "approval",
+            "issue_code": "modify_write_detected",
+            "message": "effective execution mode mismatched: safe_modify",
+            "mismatch_id": "03_selected_mode_matches_effective_execution",
+            "section_id": "mission-board",
+            "severity": "error",
+        }
+    ]
+    assert alignment["remediation_summary"] == {
+        "alignment_reason": "modify_write_detected",
+        "alignment_status": "alignment_blocked",
+        "compared_artifact_count": 2,
+        "effective_execution_mode": "safe_modify",
+        "failed_check_count": 1,
+        "mismatch_count": 1,
+        "next_action": "review_alignment_mismatch",
+        "not_evaluated_check_count": 0,
+        "passed_check_count": 2,
+        "selected_mode": "create_only",
+        "total_check_count": 3,
+    }
+
+
+def test_record_section_alignment_unknown_selected_mode_does_not_emit_extra_execution_mismatch(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_8_alignment_unknown_mode_a")
+    second_root = _workspace_dir("dgce_incremental_v2_8_alignment_unknown_mode_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(
+                approval_status="approved",
+                selected_mode="operator_override",
+                approval_timestamp="2026-03-26T00:00:00Z",
+            ),
+        )
+        record_section_execution_gate(
+            root,
+            "mission-board",
+            require_preflight_pass=True,
+            gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+            preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+        )
+
+    first_alignment = record_section_alignment(
+        first_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 1, "modify_written_count": 0}},
+    )
+    second_alignment = record_section_alignment(
+        second_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 1, "modify_written_count": 0}},
+    )
+
+    assert first_alignment == second_alignment
+    assert first_alignment["alignment_reason"] == "unknown_selected_mode"
+    assert [check["result"] for check in first_alignment["checks"]] == ["failed", "passed", "not_evaluated"]
+    assert first_alignment["checks"][2]["check_id"] == "selected_mode_matches_effective_execution"
+    assert first_alignment["checks"][2]["result"] == "not_evaluated"
+    assert first_alignment["checks"][2]["issue_code"] is None
+    assert first_alignment["mismatches"] == [
+        {
+            "category": "approval_mode",
+            "checked_artifact_path": ".dce/approvals/mission-board.approval.json",
+            "checked_artifact_role": "approval",
+            "issue_code": "unknown_selected_mode",
+            "message": "selected mode is unknown: operator_override",
+            "mismatch_id": "01_selected_mode_known",
+            "section_id": "mission-board",
+            "severity": "critical",
+        }
+    ]
+    assert first_alignment["remediation_summary"] == {
+        "alignment_reason": "unknown_selected_mode",
+        "alignment_status": "alignment_blocked",
+        "compared_artifact_count": 2,
+        "effective_execution_mode": "create_only",
+        "failed_check_count": 1,
+        "mismatch_count": 1,
+        "next_action": "review_alignment_mismatch",
+        "not_evaluated_check_count": 1,
+        "passed_check_count": 1,
+        "selected_mode": "operator_override",
+        "total_check_count": 3,
+    }
+    assert (first_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "preflight" / "mission-board.alignment.json"
+    ).read_text(encoding="utf-8")
+
+
 def test_run_section_with_workspace_alignment_not_executed_when_preflight_not_required(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_v2_7_alignment_not_required")

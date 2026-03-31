@@ -2558,9 +2558,12 @@ def _build_alignment_artifact(
 ) -> dict[str, Any]:
     """Build a deterministic alignment artifact from approved mode plus effective write behavior."""
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
+    execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
     approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
+    gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
     selected_mode = approval_payload.get("selected_mode")
     effective_execution_mode = _effective_execution_mode(write_transparency)
+    written_file_count, modify_written_count, created_written_count = _write_summary_counts(write_transparency)
 
     if selected_mode == "review_required":
         alignment_status = "alignment_blocked"
@@ -2591,15 +2594,218 @@ def _build_alignment_artifact(
         alignment_blocked = True
         alignment_reason = "unknown_selected_mode"
 
+    approval_path_str = approval_path.relative_to(workspace_root.parent).as_posix() if approval_path.exists() else None
+    execution_gate_path_str = execution_gate_path.relative_to(workspace_root.parent).as_posix() if execution_gate_path.exists() else None
+    compared_artifacts = [
+        {
+            "artifact_role": "approval",
+            "artifact_path": approval_path_str,
+            "present": approval_path.exists(),
+        },
+        {
+            "artifact_role": "execution_gate",
+            "artifact_path": execution_gate_path_str,
+            "present": execution_gate_path.exists(),
+        },
+    ]
+    checks = _build_alignment_checks(
+        selected_mode=selected_mode,
+        effective_execution_mode=effective_execution_mode,
+        approval_path=approval_path_str,
+        execution_gate_path=execution_gate_path_str,
+        gate_status=gate_payload.get("gate_status"),
+    )
+    mismatches = _build_alignment_mismatches(section_id, checks)
+    remediation_summary = _build_alignment_remediation_summary(
+        compared_artifacts=compared_artifacts,
+        checks=checks,
+        mismatches=mismatches,
+        alignment_status=alignment_status,
+        alignment_reason=alignment_reason,
+        selected_mode=selected_mode,
+        effective_execution_mode=effective_execution_mode,
+    )
+
     return {
         "section_id": section_id,
         "alignment_status": alignment_status,
         "alignment_blocked": alignment_blocked,
+        "compared_artifacts": compared_artifacts,
+        "checks": checks,
+        "mismatches": mismatches,
+        "remediation_summary": remediation_summary,
         "selected_mode": selected_mode,
         "effective_execution_mode": effective_execution_mode,
+        "written_file_count": written_file_count,
+        "modify_written_count": modify_written_count,
+        "created_written_count": created_written_count,
+        "approval_path": approval_path_str,
+        "execution_gate_path": execution_gate_path_str,
+        "gate_status": gate_payload.get("gate_status"),
         "alignment_reason": alignment_reason,
         "require_preflight_pass": require_preflight_pass,
         "alignment_timestamp": str(alignment_input.alignment_timestamp),
+    }
+
+
+def _build_alignment_checks(
+    *,
+    selected_mode: Any,
+    effective_execution_mode: str,
+    approval_path: str | None,
+    execution_gate_path: str | None,
+    gate_status: Any,
+) -> list[dict[str, Any]]:
+    selected_mode_known = selected_mode in {"review_required", "no_changes", "create_only", "safe_modify"}
+    return [
+        _alignment_check_entry(
+            check_id="selected_mode_known",
+            category="approval_mode",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result="passed" if selected_mode_known else "failed",
+            issue_code=None if selected_mode_known else "unknown_selected_mode",
+            detail=(
+                f"selected mode recognized: {selected_mode}"
+                if selected_mode_known
+                else f"selected mode is unknown: {selected_mode}"
+            ),
+        ),
+        _alignment_check_entry(
+            check_id="gate_context_available",
+            category="gate_context",
+            checked_artifact_role="execution_gate",
+            checked_artifact_path=execution_gate_path,
+            result="passed" if execution_gate_path else "not_evaluated",
+            issue_code=None,
+            detail=(
+                f"gate context available: {gate_status}"
+                if execution_gate_path
+                else "gate context unavailable"
+            ),
+        ),
+        _alignment_check_entry(
+            check_id="selected_mode_matches_effective_execution",
+            category="execution_mode",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result=(
+                "not_evaluated"
+                if not selected_mode_known
+                else "failed"
+                if selected_mode == "review_required"
+                else "passed"
+                if selected_mode == "safe_modify"
+                else "passed"
+                if selected_mode == "create_only" and effective_execution_mode in {"create_only", "no_changes"}
+                else "passed"
+                if selected_mode == "no_changes" and effective_execution_mode == "no_changes"
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not selected_mode_known
+                else "review_required_selected"
+                if selected_mode == "review_required"
+                else None
+                if selected_mode == "safe_modify"
+                else None
+                if selected_mode == "create_only" and effective_execution_mode in {"create_only", "no_changes"}
+                else None
+                if selected_mode == "no_changes" and effective_execution_mode == "no_changes"
+                else "modify_write_detected"
+                if selected_mode == "create_only" and effective_execution_mode == "safe_modify"
+                else "writes_detected"
+            ),
+            detail=(
+                "selected mode unavailable for execution-mode alignment validation"
+                if not selected_mode_known
+                else "review required blocks alignment"
+                if selected_mode == "review_required"
+                else f"effective execution mode aligned: {effective_execution_mode}"
+                if selected_mode == "safe_modify"
+                else f"effective execution mode aligned: {effective_execution_mode}"
+                if selected_mode == "create_only" and effective_execution_mode in {"create_only", "no_changes"}
+                else "no changes aligned"
+                if selected_mode == "no_changes" and effective_execution_mode == "no_changes"
+                else f"effective execution mode mismatched: {effective_execution_mode}"
+            ),
+        ),
+    ]
+
+
+def _alignment_check_entry(
+    *,
+    check_id: str,
+    category: str,
+    checked_artifact_role: str,
+    checked_artifact_path: str | None,
+    result: str,
+    issue_code: str | None,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "category": category,
+        "check_id": check_id,
+        "checked_artifact_path": checked_artifact_path,
+        "checked_artifact_role": checked_artifact_role,
+        "detail": detail,
+        "issue_code": issue_code,
+        "result": result,
+    }
+
+
+def _alignment_mismatch_severity(issue_code: Any) -> str:
+    if issue_code in {"review_required_selected", "unknown_selected_mode"}:
+        return "critical"
+    return "error"
+
+
+def _build_alignment_mismatches(section_id: str, checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for index, check in enumerate(checks, start=1):
+        if check["result"] != "failed":
+            continue
+        mismatches.append(
+            {
+                "category": str(check["category"]),
+                "checked_artifact_path": check["checked_artifact_path"],
+                "checked_artifact_role": check["checked_artifact_role"],
+                "issue_code": check["issue_code"],
+                "message": check["detail"],
+                "mismatch_id": f"{index:02d}_{check['check_id']}",
+                "section_id": section_id,
+                "severity": _alignment_mismatch_severity(check.get("issue_code")),
+            }
+        )
+    return mismatches
+
+
+def _build_alignment_remediation_summary(
+    *,
+    compared_artifacts: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+    mismatches: list[dict[str, Any]],
+    alignment_status: str,
+    alignment_reason: str,
+    selected_mode: Any,
+    effective_execution_mode: str,
+) -> dict[str, Any]:
+    passed_check_count = sum(1 for check in checks if check["result"] == "passed")
+    failed_check_count = sum(1 for check in checks if check["result"] == "failed")
+    not_evaluated_check_count = sum(1 for check in checks if check["result"] == "not_evaluated")
+    return {
+        "alignment_reason": alignment_reason,
+        "alignment_status": alignment_status,
+        "compared_artifact_count": len(compared_artifacts),
+        "effective_execution_mode": effective_execution_mode,
+        "failed_check_count": failed_check_count,
+        "mismatch_count": len(mismatches),
+        "next_action": "proceed_to_execution" if alignment_status == "alignment_pass" else "review_alignment_mismatch",
+        "not_evaluated_check_count": not_evaluated_check_count,
+        "passed_check_count": passed_check_count,
+        "selected_mode": selected_mode,
+        "total_check_count": len(checks),
     }
 
 
