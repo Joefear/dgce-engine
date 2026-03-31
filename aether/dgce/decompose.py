@@ -1508,19 +1508,43 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         _expect_int(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
 
 
+def _normalized_path_parts(path: Path) -> tuple[str, ...]:
+    normalized = os.path.normpath(str(path))
+    return tuple(Path(normalized).parts)
+
+
+def _artifact_path_matches(path: Path, expected_parts: tuple[str, ...]) -> bool:
+    parts = _normalized_path_parts(path)
+    return len(parts) >= len(expected_parts) and tuple(parts[-len(expected_parts):]) == expected_parts
+
+
+def _artifact_path_matches_outputs_json(path: Path) -> bool:
+    parts = _normalized_path_parts(path)
+    return (
+        len(parts) >= 3
+        and tuple(parts[-3:-1]) == (".dce", "outputs")
+        and parts[-1].endswith(".json")
+        and not parts[-1].endswith(".execution.json")
+    )
+
+
+def _artifact_path_matches_execution_json(path: Path) -> bool:
+    parts = _normalized_path_parts(path)
+    return len(parts) >= 3 and tuple(parts[-3:-1]) == (".dce", "execution") and parts[-1].endswith(".execution.json")
+
+
 def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
-    normalized_path = path.as_posix()
-    if normalized_path.endswith(".dce/reviews/index.json"):
+    if _artifact_path_matches(path, (".dce", "reviews", "index.json")):
         _validate_review_index_schema(payload)
-    elif normalized_path.endswith(".dce/lifecycle_trace.json"):
+    elif _artifact_path_matches(path, (".dce", "lifecycle_trace.json")):
         _validate_lifecycle_trace_schema(payload)
-    elif normalized_path.endswith(".dce/workspace_index.json"):
+    elif _artifact_path_matches(path, (".dce", "workspace_index.json")):
         _validate_workspace_index_schema(payload)
-    elif normalized_path.endswith(".dce/dashboard.json"):
+    elif _artifact_path_matches(path, (".dce", "dashboard.json")):
         _validate_dashboard_schema(payload)
-    elif "/.dce/outputs/" in normalized_path:
+    elif _artifact_path_matches_outputs_json(path):
         _validate_execution_output_schema(payload)
-    elif "/.dce/execution/" in normalized_path and normalized_path.endswith(".execution.json"):
+    elif _artifact_path_matches_execution_json(path):
         _validate_execution_stamp_schema(payload)
 
 
