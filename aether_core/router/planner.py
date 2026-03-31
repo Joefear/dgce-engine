@@ -566,6 +566,107 @@ class RouterPlanner:
 
         return self._canonicalize_system_breakdown_value(normalized)
 
+    def _apply_dgce_system_breakdown_contract(self, parsed: dict) -> dict:
+        """Backfill deterministic file-group and implementation-unit structure for system-breakdown tasks."""
+        repaired = self._canonicalize_system_breakdown_value(dict(parsed))
+        modules = repaired.get("modules")
+        if not isinstance(modules, list):
+            return repaired
+
+        repaired["file_groups"] = self._system_breakdown_file_groups(modules)
+        repaired["implementation_units"] = self._system_breakdown_implementation_units(modules)
+        repaired.setdefault(
+            "determinism_rules",
+            [
+                "modules ordered by implementation_order then name",
+                "dependencies ordered by dependency name, kind, and reference",
+                "file_groups ordered by implementation order",
+                "implementation_units ordered by implementation order",
+            ],
+        )
+        repaired.setdefault(
+            "acceptance_criteria",
+            [
+                "every module declares owned_paths",
+                "every module declares typed inputs and outputs",
+                "build_graph edges match producer consumer flow",
+            ],
+        )
+        return self._canonicalize_system_breakdown_value(repaired)
+
+    def _system_breakdown_file_groups(self, modules: list) -> list[dict]:
+        """Return deterministic file-group placement for normalized system-breakdown modules."""
+        file_groups: list[dict] = []
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("name", "")).strip()
+            if not module_name:
+                continue
+            group_name = self._system_breakdown_group_name(module_name)
+            responsibility = str(module.get("responsibility", "")).strip() or module_name
+            order = int(module.get("implementation_order", len(file_groups) + 1))
+            file_groups.append(
+                {
+                    "module": module_name,
+                    "name": group_name,
+                    "order": order,
+                    "placement": group_name,
+                    "files": [
+                        {
+                            "kind": "models",
+                            "order": 1,
+                            "path": f"{group_name}/models.py",
+                            "purpose": f"{responsibility} data structures",
+                        },
+                        {
+                            "kind": "service",
+                            "order": 2,
+                            "path": f"{group_name}/service.py",
+                            "purpose": f"{responsibility} service orchestration",
+                        },
+                    ],
+                }
+            )
+        return file_groups
+
+    def _system_breakdown_implementation_units(self, modules: list) -> list[dict]:
+        """Return deterministic implementation-unit ordering for normalized system-breakdown modules."""
+        units: list[dict] = []
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            module_name = str(module.get("name", "")).strip()
+            if not module_name:
+                continue
+            dependencies = module.get("dependencies", [])
+            units.append(
+                {
+                    "depends_on": [
+                        str(dependency.get("name"))
+                        for dependency in dependencies
+                        if isinstance(dependency, dict) and isinstance(dependency.get("name"), str)
+                    ],
+                    "file_group": self._system_breakdown_group_name(module_name),
+                    "module": module_name,
+                    "name": f"implement_{self._system_breakdown_group_name(module_name)}",
+                    "order": int(module.get("implementation_order", len(units) + 1)),
+                    "owned_paths": [
+                        str(path)
+                        for path in module.get("owned_paths", [])
+                        if isinstance(path, str) and path
+                    ],
+                }
+            )
+        return units
+
+    def _system_breakdown_group_name(self, value: str) -> str:
+        """Return the stable system-breakdown file-group token used by downstream scaffolding."""
+        lowered = "".join(char.lower() if char.isalnum() else "_" for char in value)
+        while "__" in lowered:
+            lowered = lowered.replace("__", "_")
+        return lowered.strip("_") or "module"
+
     def _repair_system_breakdown_payload(self, parsed: dict) -> dict:
         """
         Deterministically repair known required fields for system-breakdown.
@@ -1998,6 +2099,9 @@ class RouterPlanner:
             validation = self._validate_dgce_data_model_payload(parsed)
             if validation is not None:
                 assert "interfaces" not in validation.missing_keys
+        if schema_name == "dgce_system_breakdown_v1" and metadata.get("task_subtype") == "system_breakdown":
+            parsed = self._apply_dgce_system_breakdown_contract(parsed)
+            validation = self._validate_dgce_system_breakdown_payload(parsed)
         if schema_name == "dgce_api_surface_v1" and metadata.get("section_type") == "api_surface":
             parsed = self._apply_dgce_core_api_surface_contract(parsed, metadata)
             validation = self._validate_dgce_api_surface_payload(parsed)

@@ -319,7 +319,8 @@ def test_system_breakdown_section_uses_contract_driven_generation_prompt():
     system_breakdown_task = tasks[0]
 
     assert "Produce a deterministic, implementation-ready module contract and build graph as structured JSON" in system_breakdown_task.content
-    assert "Use explicit top-level keys modules, build_graph, tests, determinism_rules, and acceptance_criteria" in system_breakdown_task.content
+    assert "Use explicit top-level keys modules, build_graph, file_groups, implementation_units, tests, determinism_rules, and acceptance_criteria" in system_breakdown_task.content
+    assert "Include deterministic file_groups" in system_breakdown_task.content
     assert "Each module must include name, layer, responsibility, typed inputs, typed outputs, anchored dependencies with name/kind/reference, governance_touchpoints, failure_modes, owned_paths, and implementation_order" in system_breakdown_task.content
     assert "Validation will fail if any module is missing dependencies, inputs, outputs, owned_paths, or implementation_order, or if build_graph.edges or tests is missing" in system_breakdown_task.content
     assert "Validation WILL FAIL if build_graph.edges is missing or empty. Validation WILL FAIL if any module is missing owned_paths." in system_breakdown_task.content
@@ -343,7 +344,7 @@ def test_system_breakdown_section_type_uses_contract_driven_generation_prompt():
     system_breakdown_task = tasks[0]
 
     assert "Produce a deterministic, implementation-ready module contract and build graph as structured JSON" in system_breakdown_task.content
-    assert "Use explicit top-level keys modules, build_graph, tests, determinism_rules, and acceptance_criteria" in system_breakdown_task.content
+    assert "Use explicit top-level keys modules, build_graph, file_groups, implementation_units, tests, determinism_rules, and acceptance_criteria" in system_breakdown_task.content
 
 
 def test_non_system_breakdown_section_type_does_not_inherit_rich_system_breakdown_prompt():
@@ -357,7 +358,7 @@ def test_non_system_breakdown_section_type_does_not_inherit_rich_system_breakdow
     system_breakdown_task = tasks[0]
 
     assert system_breakdown_task.content.endswith("Identify subsystems, interfaces, responsibilities, and build order.")
-    assert "Use explicit top-level keys modules, build_graph, tests, determinism_rules, and acceptance_criteria" not in system_breakdown_task.content
+    assert "Use explicit top-level keys modules, build_graph, file_groups, implementation_units, tests, determinism_rules, and acceptance_criteria" not in system_breakdown_task.content
     assert "Include an explicit stale-check module owning .dce/preflight/{section_id}.stale_check.json" not in system_breakdown_task.content
 
 
@@ -1209,6 +1210,48 @@ def test_build_file_plan_normalizes_noisy_api_surface_interface_names():
 
 
 def test_build_file_plan_recognizes_rich_system_breakdown_contract_shape():
+    router = RouterPlanner()
+    structured_payload = router._apply_dgce_system_breakdown_contract(
+        {
+            "modules": [
+                {
+                    "name": "PreviewGenerator",
+                    "layer": "application",
+                    "responsibility": "generate deterministic preview artifacts",
+                    "inputs": [{"name": "section_input", "type": "SectionInputRequest"}],
+                    "outputs": [{"name": "preview_artifact", "type": "PreviewArtifact"}],
+                    "dependencies": [],
+                    "governance_touchpoints": ["preview"],
+                    "failure_modes": ["preview_generation_failed"],
+                    "owned_paths": ["src/components/preview_generator.py"],
+                    "implementation_order": 2,
+                },
+                {
+                    "name": "SectionInputHandler",
+                    "layer": "application",
+                    "responsibility": "persist validated section input",
+                    "inputs": [{"name": "raw_section_input", "type": "SectionInputRequest"}],
+                    "outputs": [{"name": "section_input_record", "type": "SectionInput"}],
+                    "dependencies": [],
+                    "governance_touchpoints": ["input_capture"],
+                    "failure_modes": ["input_validation_failed"],
+                    "owned_paths": ["src/api/ingest.py"],
+                    "implementation_order": 1,
+                },
+            ],
+            "build_graph": {
+                "type": "directed_acyclic_graph",
+                "edges": [["SectionInputHandler", "PreviewGenerator"]],
+            },
+            "tests": [
+                {
+                    "name": "preview_generation_requires_validated_input",
+                    "purpose": "Verify input persistence feeds preview generation.",
+                    "targets": ["SectionInputHandler", "PreviewGenerator"],
+                }
+            ],
+        }
+    )
     responses = [
         type(
             "ResponseEnvelopeLike",
@@ -1216,47 +1259,8 @@ def test_build_file_plan_recognizes_rich_system_breakdown_contract_shape():
             {
                 "task_type": "system_breakdown",
                 "status": "experimental_output",
-                "output": json.dumps(
-                    {
-                        "modules": [
-                            {
-                                "name": "PreviewGenerator",
-                                "layer": "application",
-                                "responsibility": "generate deterministic preview artifacts",
-                                "inputs": [{"name": "section_input", "type": "SectionInputRequest"}],
-                                "outputs": [{"name": "preview_artifact", "type": "PreviewArtifact"}],
-                                "dependencies": [],
-                                "governance_touchpoints": ["preview"],
-                                "failure_modes": ["preview_generation_failed"],
-                                "owned_paths": ["src/components/preview_generator.py"],
-                                "implementation_order": 2,
-                            },
-                            {
-                                "name": "SectionInputHandler",
-                                "layer": "application",
-                                "responsibility": "persist validated section input",
-                                "inputs": [{"name": "raw_section_input", "type": "SectionInputRequest"}],
-                                "outputs": [{"name": "section_input_record", "type": "SectionInput"}],
-                                "dependencies": [],
-                                "governance_touchpoints": ["input_capture"],
-                                "failure_modes": ["input_validation_failed"],
-                                "owned_paths": ["src/api/ingest.py"],
-                                "implementation_order": 1,
-                            },
-                        ],
-                        "build_graph": {
-                            "type": "directed_acyclic_graph",
-                            "edges": [["SectionInputHandler", "PreviewGenerator"]],
-                        },
-                        "tests": [
-                            {
-                                "name": "preview_generation_requires_validated_input",
-                                "purpose": "Verify input persistence feeds preview generation.",
-                                "targets": ["SectionInputHandler", "PreviewGenerator"],
-                            }
-                        ],
-                    }
-                ),
+                "output": json.dumps(structured_payload),
+                "structured_content": structured_payload,
             },
         )(),
         type(
@@ -1289,6 +1293,14 @@ def test_build_file_plan_recognizes_rich_system_breakdown_contract_shape():
     assert "sectioninputhandler/models.py" in [file_entry["path"] for file_entry in first.files]
     assert "sectioninputhandler/service.py" in [file_entry["path"] for file_entry in first.files]
     assert "models/previewartifact.py" in [file_entry["path"] for file_entry in first.files]
+    first_by_path = {entry["path"]: entry for entry in first.files}
+    assert first_by_path["sectioninputhandler/service.py"]["file_group"] == {
+        "module": "SectionInputHandler",
+        "name": "sectioninputhandler",
+        "placement": "sectioninputhandler",
+    }
+    assert first_by_path["sectioninputhandler/service.py"]["file_kind"] == "service"
+    assert first_by_path["sectioninputhandler/service.py"]["module_contract"]["name"] == "SectionInputHandler"
 
 
 def test_write_file_plan_creates_expected_paths_and_directories():
@@ -1378,6 +1390,53 @@ def test_generated_files_include_expected_header_block_and_docstrings():
     assert '"""Model container scaffold for Inventory data structures."""' in module_models_content
     assert "class InventoryModel:" in module_models_content
     assert '"""Placeholder model for inventory data structures."""' in module_models_content
+
+
+def test_render_file_entry_content_generates_structured_system_breakdown_scaffolds():
+    service_content = render_file_entry_content(
+        {
+            "path": "sectioninputhandler/service.py",
+            "purpose": "Persist section input artifacts. service orchestration",
+            "source": "system_breakdown",
+            "file_kind": "service",
+            "file_group": {"module": "SectionInputHandler", "name": "sectioninputhandler", "placement": "sectioninputhandler"},
+            "module_contract": {
+                "name": "SectionInputHandler",
+                "layer": "DGCE Core",
+                "responsibility": "Persist section input artifacts.",
+                "inputs": [{"name": "raw_section_input", "type": "SectionInputRequest"}],
+                "outputs": [{"name": "section_input_record", "type": "SectionInput"}],
+                "dependencies": [{"name": "artifact_writer", "kind": "module", "reference": "planner/io.py"}],
+                "owned_paths": [".dce/input/{section_id}.json"],
+            },
+        }
+    )
+    models_content = render_file_entry_content(
+        {
+            "path": "sectioninputhandler/models.py",
+            "purpose": "Persist section input artifacts. data structures",
+            "source": "system_breakdown",
+            "file_kind": "models",
+            "file_group": {"module": "SectionInputHandler", "name": "sectioninputhandler", "placement": "sectioninputhandler"},
+            "module_contract": {
+                "name": "SectionInputHandler",
+                "layer": "DGCE Core",
+                "responsibility": "Persist section input artifacts.",
+                "inputs": [{"name": "raw_section_input", "type": "SectionInputRequest"}],
+                "outputs": [{"name": "section_input_record", "type": "SectionInput"}],
+                "dependencies": [{"name": "artifact_writer", "kind": "module", "reference": "planner/io.py"}],
+                "owned_paths": [".dce/input/{section_id}.json"],
+            },
+        }
+    )
+
+    assert "class SectionInputHandlerService:" in service_content
+    assert "DEPENDENCIES = ('artifact_writer',)" in service_content
+    assert '"""Execute one deterministic implementation unit."""' in service_content
+    assert '"section_input_record": None' in service_content
+    assert "MODULE_NAME = 'SectionInputHandler'" in models_content
+    assert "INPUT_PORTS =" in models_content
+    assert "OUTPUT_PORTS =" in models_content
 
 
 def test_build_file_plan_carries_structured_data_model_schema_for_runtime_generation():

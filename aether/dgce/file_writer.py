@@ -76,6 +76,9 @@ def render_file_entry_content(file_entry: dict) -> str:
     if source == "api_surface" and relative_path.parts[:1] == ("api",) and isinstance(file_entry.get("interface_schema"), dict):
         return _render_api_surface_content(file_entry, header)
 
+    if source == "system_breakdown" and isinstance(file_entry.get("module_contract"), dict):
+        return _render_system_breakdown_content(file_entry, header)
+
     if relative_path.parts[:1] == ("models",):
         return "\n".join(
             header
@@ -318,6 +321,96 @@ def _render_expected_target_content(
             "",
         ]
     )
+
+
+def _render_system_breakdown_content(file_entry: dict, header: list[str]) -> str:
+    """Render a richer deterministic scaffold for structured system-breakdown files."""
+    relative_path = Path(str(file_entry["path"]))
+    module_contract = file_entry.get("module_contract")
+    if not isinstance(module_contract, dict):
+        return "\n".join(header + [""])
+    if relative_path.name == "service.py":
+        return _render_system_breakdown_service_content(file_entry, header, module_contract)
+    if relative_path.name == "models.py":
+        return _render_system_breakdown_model_content(file_entry, header, module_contract)
+    return "\n".join(header + [""])
+
+
+def _render_system_breakdown_service_content(file_entry: dict, header: list[str], module_contract: dict) -> str:
+    """Render a deterministic service scaffold from one normalized module contract."""
+    service_name = str(module_contract.get("name") or _class_name(Path(str(file_entry["path"])).parent.name)) + "Service"
+    dependencies = tuple(
+        str(dependency.get("name"))
+        for dependency in module_contract.get("dependencies", [])
+        if isinstance(dependency, dict) and isinstance(dependency.get("name"), str)
+    )
+    outputs = [
+        str(port.get("name"))
+        for port in module_contract.get("outputs", [])
+        if isinstance(port, dict) and isinstance(port.get("name"), str)
+    ]
+    return "\n".join(
+        header
+        + [
+            f'"""Service scaffold for {file_entry["purpose"]}."""',
+            "",
+            "from __future__ import annotations",
+            "",
+            "from typing import Any",
+            "",
+            f"class {service_name}:",
+            f'    """{str(module_contract.get("responsibility", "")).strip() or str(file_entry.get("purpose", ""))}"""',
+            "",
+            f"    DEPENDENCIES = {dependencies!r}",
+            f"    OWNED_PATHS = {tuple(str(path) for path in module_contract.get('owned_paths', []))!r}",
+            "",
+            "    def run(self, payload: dict[str, Any]) -> dict[str, Any]:",
+            '        """Execute one deterministic implementation unit."""',
+            "        return {",
+        ]
+        + [f'            "{_python_attribute_name(name) or name}": None,' for name in outputs]
+        + [
+            "        }",
+            "",
+        ]
+    )
+
+
+def _render_system_breakdown_model_content(file_entry: dict, header: list[str], module_contract: dict) -> str:
+    """Render deterministic module contract constants for structured model scaffolds."""
+    lines = [
+        f'"""Model container scaffold for {file_entry["purpose"]}."""',
+        "",
+        "from __future__ import annotations",
+        "",
+        f"MODULE_NAME = {module_contract.get('name', '')!r}",
+        f"LAYER = {module_contract.get('layer', '')!r}",
+        f"RESPONSIBILITY = {str(module_contract.get('responsibility', '')).strip()!r}",
+        f"OWNED_PATHS = {tuple(str(path) for path in module_contract.get('owned_paths', []))!r}",
+        f"INPUT_PORTS = {_repr_system_breakdown_ports(module_contract.get('inputs', []))}",
+        f"OUTPUT_PORTS = {_repr_system_breakdown_ports(module_contract.get('outputs', []))}",
+        "",
+    ]
+    return "\n".join(header + lines)
+
+
+def _repr_system_breakdown_ports(ports: object) -> str:
+    """Return a deterministic repr for normalized input/output port collections."""
+    if not isinstance(ports, list):
+        return "()"
+    normalized_ports = []
+    for port in ports:
+        if not isinstance(port, dict):
+            continue
+        normalized_ports.append(
+            {
+                "artifact_path": port.get("artifact_path"),
+                "name": port.get("name"),
+                "schema_fields": port.get("schema_fields"),
+                "type": port.get("type"),
+            }
+        )
+    return repr(tuple(normalized_ports))
 
 
 def render_file_entry_bytes(file_entry: dict) -> bytes:

@@ -370,6 +370,104 @@ def test_router_normalizes_system_breakdown_and_preserves_existing_valid_values(
     assert normalized["implementation_order"] == ["ApprovalManager", "ReviewManager"]
 
 
+def test_router_system_breakdown_contract_is_deterministic_and_implementation_ready(router):
+    payload = {
+        "modules": [
+            {
+                "name": "Review Manager",
+                "layer": "DGCE Core",
+                "responsibility": "Review section previews.",
+                "inputs": [{"name": "preview_artifact", "type": "artifact", "artifact_path": ".dce/plans/{section_id}.preview.json"}],
+                "outputs": [{"name": "review_artifact", "type": "artifact", "artifact_path": ".dce/reviews/{section_id}.review.md"}],
+                "dependencies": [
+                    {"name": "audit_writer", "kind": "module", "reference": "audit.py"},
+                    {"name": "preview_loader", "kind": "module", "reference": "preview.py"},
+                ],
+                "governance_touchpoints": ["review"],
+                "failure_modes": ["review_missing"],
+                "owned_paths": [".dce/reviews/{section_id}.review.md"],
+                "implementation_order": 2,
+            },
+            {
+                "name": "SectionInputHandler",
+                "layer": "DGCE Core",
+                "responsibility": "Persist section input artifacts.",
+                "inputs": [{"name": "raw_section_input", "type": "SectionInputRequest", "schema_fields": [{"name": "section_id", "type": "string", "required": True}]}],
+                "outputs": [{"name": "SectionInput", "type": "artifact", "artifact_path": ".dce/input/{section_id}.json"}],
+                "dependencies": [{"name": "artifact_writer", "kind": "module", "reference": "planner/io.py"}],
+                "governance_touchpoints": ["input validation"],
+                "failure_modes": ["invalid input structure"],
+                "owned_paths": [".dce/input/{section_id}.json"],
+                "implementation_order": 1,
+            },
+            {
+                "name": "StaleCheckEvaluator",
+                "layer": "DGCE Core",
+                "responsibility": "Evaluate staleness before execution.",
+                "inputs": [{"name": "section_input", "type": "artifact", "artifact_path": ".dce/input/{section_id}.json"}],
+                "outputs": [{"name": "stale_check_artifact", "type": "artifact", "artifact_path": ".dce/preflight/{section_id}.stale_check.json"}],
+                "dependencies": [{"name": "SectionInputHandler", "kind": "module", "reference": "SectionInputHandler"}],
+                "governance_touchpoints": ["stale_check"],
+                "failure_modes": ["stale_check_failed"],
+                "owned_paths": [".dce/preflight/{section_id}.stale_check.json"],
+                "implementation_order": 3,
+            },
+        ],
+        "build_graph": {"edges": [["SectionInputHandler", "Review Manager"], ["SectionInputHandler", "StaleCheckEvaluator"]]},
+        "tests": [{"name": "build_graph_is_complete"}],
+    }
+
+    metadata = {"section_type": "system_component", "task_subtype": "system_breakdown"}
+    metadata_first, structured_first = router._validate_structured_output(
+        _structured_request("dgce_system_breakdown_v1", metadata=metadata),
+        json.dumps(payload),
+    )
+    metadata_second, structured_second = router._validate_structured_output(
+        _structured_request("dgce_system_breakdown_v1", metadata=metadata),
+        json.dumps(payload),
+    )
+
+    assert metadata_first == {"structure_valid": True}
+    assert metadata_second == {"structure_valid": True}
+    assert structured_first == structured_second
+    assert [module["name"] for module in structured_first["modules"]] == [
+        "SectionInputHandler",
+        "Review Manager",
+        "StaleCheckEvaluator",
+    ]
+    assert [dependency["name"] for dependency in structured_first["modules"][1]["dependencies"]] == [
+        "audit_writer",
+        "preview_loader",
+    ]
+    assert [group["name"] for group in structured_first["file_groups"]] == [
+        "sectioninputhandler",
+        "review_manager",
+        "stalecheckevaluator",
+    ]
+    assert structured_first["file_groups"][0]["files"] == [
+        {"kind": "models", "order": 1, "path": "sectioninputhandler/models.py", "purpose": "Persist section input artifacts. data structures"},
+        {"kind": "service", "order": 2, "path": "sectioninputhandler/service.py", "purpose": "Persist section input artifacts. service orchestration"},
+    ]
+    assert [unit["name"] for unit in structured_first["implementation_units"]] == [
+        "implement_sectioninputhandler",
+        "implement_review_manager",
+        "implement_stalecheckevaluator",
+    ]
+    assert structured_first["implementation_units"][1]["depends_on"] == ["audit_writer", "preview_loader"]
+
+
+def test_router_system_breakdown_contract_does_not_change_other_schema_paths(router):
+    payload = _valid_api_surface_payload()
+
+    metadata, structured_content = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1"),
+        json.dumps(payload),
+    )
+
+    assert metadata == {"structure_valid": True}
+    assert structured_content == payload
+
+
 def test_router_accepts_valid_data_model_payload(router):
     result = router._validate_dgce_data_model_payload(_valid_data_model_payload())
 

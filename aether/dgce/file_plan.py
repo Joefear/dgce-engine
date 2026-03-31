@@ -90,7 +90,8 @@ def build_file_plan(responses: List["ResponseEnvelope"]) -> FilePlan:
             continue
 
         if response.task_type == "system_breakdown":
-            files.extend(_system_breakdown_files(payload))
+            structured_payload = getattr(response, "structured_content", None)
+            files.extend(_system_breakdown_files(payload, structured_payload if isinstance(structured_payload, dict) else None))
         elif response.task_type == "data_model":
             structured_payload = getattr(response, "structured_content", None)
             for entity in payload["entities"]:
@@ -512,10 +513,44 @@ def _is_supported_system_breakdown_payload(payload: dict[str, Any]) -> bool:
     )
 
 
-def _system_breakdown_files(payload: dict[str, Any]) -> list[dict[str, str]]:
+def _system_breakdown_files(
+    payload: dict[str, Any],
+    structured_payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Derive deterministic scaffold targets from supported system-breakdown payloads."""
+    if isinstance(structured_payload, dict) and isinstance(structured_payload.get("file_groups"), list):
+        files: list[dict[str, Any]] = []
+        for file_group in structured_payload["file_groups"]:
+            if not isinstance(file_group, dict):
+                continue
+            module_name = str(file_group.get("module", "")).strip()
+            module_contract = _system_breakdown_module_payload(structured_payload, module_name)
+            for file_spec in file_group.get("files", []):
+                if not isinstance(file_spec, dict):
+                    continue
+                path = str(file_spec.get("path", "")).strip()
+                purpose = str(file_spec.get("purpose", "")).strip()
+                if not path or not purpose:
+                    continue
+                entry: dict[str, Any] = {
+                    "path": path,
+                    "purpose": purpose,
+                    "source": "system_breakdown",
+                }
+                if module_contract:
+                    entry["module_contract"] = module_contract
+                entry["file_group"] = {
+                    "module": module_name,
+                    "name": str(file_group.get("name", "")).strip(),
+                    "placement": str(file_group.get("placement", "")).strip(),
+                }
+                entry["file_kind"] = str(file_spec.get("kind", "")).strip()
+                files.append(entry)
+        if files:
+            return files
+
     if isinstance(payload.get("modules"), list):
-        files: list[dict[str, str]] = []
+        files = []
         for module in payload["modules"]:
             if not isinstance(module, dict):
                 continue
@@ -551,3 +586,27 @@ def _system_breakdown_files(payload: dict[str, Any]) -> list[dict[str, str]]:
             "source": "system_breakdown",
         },
     ]
+
+
+def _system_breakdown_module_payload(payload: dict[str, Any], module_name: str) -> dict[str, Any] | None:
+    """Return one normalized system-breakdown module payload by name."""
+    if not module_name:
+        return None
+    modules = payload.get("modules", [])
+    if not isinstance(modules, list):
+        return None
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        if str(module.get("name", "")).strip() != module_name:
+            continue
+        return {
+            "dependencies": module.get("dependencies", []),
+            "inputs": module.get("inputs", []),
+            "layer": module.get("layer", ""),
+            "name": module_name,
+            "outputs": module.get("outputs", []),
+            "owned_paths": module.get("owned_paths", []),
+            "responsibility": module.get("responsibility", ""),
+        }
+    return None
