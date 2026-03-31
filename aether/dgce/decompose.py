@@ -592,11 +592,7 @@ def run_section_with_workspace(
         )
         _write_json(change_plan_path, incremental_change_plan)
     if incremental_mode == "incremental_v1":
-        _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-        _write_json(
-            workspace_summary_path,
-            _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-        )
+        _refresh_workspace_views(workspace)
         _write_state(
             state_path,
             section_id,
@@ -630,11 +626,7 @@ def run_section_with_workspace(
         preview_artifact = _write_json_with_artifact_fingerprint(preview_path, preview_artifact)
         if incremental_mode == "incremental_v2_2":
             _write_review_with_artifact_fingerprint(review_path, render_incremental_review_markdown(preview_artifact))
-        _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-        _write_json(
-            workspace_summary_path,
-            _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-        )
+        _refresh_workspace_views(workspace)
         _write_state(
             state_path,
             section_id,
@@ -776,11 +768,7 @@ def run_section_with_workspace(
         execution_blocked=False,
         write_transparency=write_transparency,
     )
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace_summary_path,
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
 
     _write_state(
         state_path,
@@ -881,11 +869,7 @@ def record_section_approval(
     approval_path = workspace["approvals"] / f"{section_id}.approval.json"
     approval_artifact = _build_approval_artifact(workspace["root"], section_id, approval_input)
     approval_artifact = _write_json_with_artifact_fingerprint(approval_path, approval_artifact)
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace["root"] / "workspace_summary.json",
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
     return approval_artifact
 
 
@@ -900,11 +884,7 @@ def record_section_preflight(
     preflight_path = workspace["preflight"] / f"{section_id}.preflight.json"
     preflight_artifact = _build_preflight_artifact(workspace["root"], section_id, preflight_input)
     preflight_artifact = _write_json_with_artifact_fingerprint(preflight_path, preflight_artifact)
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace["root"] / "workspace_summary.json",
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
     return preflight_artifact
 
 
@@ -918,11 +898,7 @@ def record_section_stale_check(
     stale_input = stale_check or SectionStaleCheckInput()
     stale_artifact = _build_stale_check_artifact(workspace["root"], section_id, stale_input)
     _write_json(workspace["preflight"] / f"{section_id}.stale_check.json", stale_artifact)
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace["root"] / "workspace_summary.json",
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
     return stale_artifact
 
 
@@ -953,11 +929,7 @@ def record_section_execution_gate(
         stale_check_payload=stale_check_payload,
     )
     _write_json(workspace["preflight"] / f"{section_id}.execution_gate.json", gate_artifact)
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace["root"] / "workspace_summary.json",
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
     return gate_artifact
 
 
@@ -980,11 +952,7 @@ def record_section_alignment(
         write_transparency=write_transparency or {},
     )
     _write_json(workspace["preflight"] / f"{section_id}.alignment.json", alignment_artifact)
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace["root"] / "workspace_summary.json",
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
     return alignment_artifact
 
 
@@ -1014,11 +982,7 @@ def record_section_execution_stamp(
         _supersede_approval_artifact(workspace["root"], section_id)
         execution_artifact["approval_status_after"] = "superseded"
     _write_json(workspace["execution"] / f"{section_id}.execution.json", execution_artifact)
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], _read_workspace_index(workspace["index"])))
-    _write_json(
-        workspace["root"] / "workspace_summary.json",
-        _build_workspace_summary(workspace["root"], _read_workspace_index(workspace["index"])),
-    )
+    _refresh_workspace_views(workspace)
     return execution_artifact
 
 
@@ -3115,6 +3079,117 @@ def _build_workspace_summary(workspace_root: Path, section_ids: List[str]) -> di
         "total_sections_seen": len(sections),
         "sections": sections,
     }
+
+
+def _build_lifecycle_trace(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:
+    lifecycle_order = [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "outputs",
+    ]
+    known_section_ids = set(section_ids)
+    for output_path in (workspace_root / "outputs").glob("*.json"):
+        try:
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        derived_section_id = payload.get("section_id") or output_path.stem
+        if derived_section_id:
+            known_section_ids.add(str(derived_section_id))
+
+    sections: list[dict[str, Any]] = []
+    for section_id in sorted(known_section_ids):
+        trace_entries = _build_section_lifecycle_trace_entries(workspace_root, section_id)
+        if not any(entry["artifact_present"] for entry in trace_entries):
+            continue
+        sections.append(
+            {
+                "section_id": section_id,
+                "trace_entries": trace_entries,
+                "trace_summary": _build_section_lifecycle_trace_summary(section_id, trace_entries),
+            }
+        )
+
+    return {
+        "lifecycle_order": lifecycle_order,
+        "total_sections_seen": len(sections),
+        "sections": sections,
+    }
+
+
+def _build_section_lifecycle_trace_entries(workspace_root: Path, section_id: str) -> list[dict[str, Any]]:
+    project_root = workspace_root.parent
+    artifact_paths = _collect_orchestrator_artifact_paths(project_root, section_id)
+    preview_path = workspace_root / "plans" / f"{section_id}.preview.json"
+    review_path = workspace_root / "reviews" / f"{section_id}.review.md"
+    approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
+    preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
+    execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
+    alignment_path = workspace_root / "preflight" / f"{section_id}.alignment.json"
+    execution_path = workspace_root / "execution" / f"{section_id}.execution.json"
+    output_path = workspace_root / "outputs" / f"{section_id}.json"
+
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8")) if preview_path.exists() else {}
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
+    preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else {}
+    gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
+    alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8")) if alignment_path.exists() else {}
+    execution_payload = json.loads(execution_path.read_text(encoding="utf-8")) if execution_path.exists() else {}
+    output_payload = json.loads(output_path.read_text(encoding="utf-8")) if output_path.exists() else {}
+
+    stage_specs = [
+        ("preview", "preview_path", preview_payload.get("preview_outcome_class"), ["input_path", "review_path", "approval_path"]),
+        ("review", "review_path", "review_available" if review_path.exists() else None, ["preview_path", "approval_path"]),
+        ("approval", "approval_path", approval_payload.get("approval_status"), ["preview_path", "review_path", "preflight_path"]),
+        ("preflight", "preflight_path", preflight_payload.get("preflight_status"), ["approval_path", "preview_path", "review_path", "execution_gate_path"]),
+        ("gate", "execution_gate_path", gate_payload.get("gate_status"), ["preflight_path", "stale_check_path", "alignment_path", "execution_path"]),
+        ("alignment", "alignment_path", alignment_payload.get("alignment_status"), ["approval_path", "execution_gate_path", "execution_path"]),
+        ("execution", "execution_path", execution_payload.get("execution_status"), ["approval_path", "preflight_path", "execution_gate_path", "alignment_path", "output_path"]),
+        ("outputs", "output_path", output_payload.get("run_outcome_class"), ["execution_path"]),
+    ]
+
+    return [
+        {
+            "artifact_path": artifact_paths.get(artifact_key),
+            "artifact_present": artifact_paths.get(artifact_key) is not None,
+            "linkage": [
+                {
+                    "ref_name": ref_name,
+                    "ref_path": artifact_paths.get(ref_name),
+                }
+                for ref_name in linkage_names
+            ],
+            "stage": stage_name,
+            "stage_order": stage_index,
+            "stage_status": stage_status,
+        }
+        for stage_index, (stage_name, artifact_key, stage_status, linkage_names) in enumerate(stage_specs, start=1)
+    ]
+
+
+def _build_section_lifecycle_trace_summary(section_id: str, trace_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    present_entries = [entry for entry in trace_entries if entry["artifact_present"]]
+    latest_entry = present_entries[-1] if present_entries else None
+    return {
+        "available_artifact_count": len(present_entries),
+        "completed_stage_count": len(present_entries),
+        "latest_stage": latest_entry["stage"] if latest_entry else None,
+        "latest_stage_status": latest_entry["stage_status"] if latest_entry else None,
+        "section_id": section_id,
+        "trace_entry_count": len(trace_entries),
+    }
+
+
+def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
+    section_ids = _read_workspace_index(workspace["index"])
+    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], section_ids))
+    _write_json(workspace["root"] / "workspace_summary.json", _build_workspace_summary(workspace["root"], section_ids))
+    _write_json(workspace["root"] / "lifecycle_trace.json", _build_lifecycle_trace(workspace["root"], section_ids))
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:

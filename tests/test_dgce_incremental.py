@@ -6728,6 +6728,80 @@ def test_record_section_execution_stamp_helper_derives_effective_mode_from_write
     }
 
 
+def test_run_section_with_workspace_lifecycle_trace_is_deterministic_and_governed(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v3_1_trace_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v3_1_trace_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+            execution_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    first_trace = json.loads((first_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"))
+    second_trace = json.loads((second_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"))
+
+    assert first_trace == second_trace
+    assert (first_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "lifecycle_trace.json"
+    ).read_text(encoding="utf-8")
+
+    section_trace = first_trace["sections"][0]
+    assert first_trace["lifecycle_order"] == [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "outputs",
+    ]
+    assert [entry["stage"] for entry in section_trace["trace_entries"]] == first_trace["lifecycle_order"]
+    assert all(entry["artifact_present"] is True for entry in section_trace["trace_entries"])
+    approval_entry = next(entry for entry in section_trace["trace_entries"] if entry["stage"] == "approval")
+    execution_entry = next(entry for entry in section_trace["trace_entries"] if entry["stage"] == "execution")
+    assert approval_entry["stage_status"] == "superseded"
+    assert approval_entry["linkage"] == [
+        {"ref_name": "preview_path", "ref_path": ".dce/plans/mission-board.preview.json"},
+        {"ref_name": "review_path", "ref_path": ".dce/reviews/mission-board.review.md"},
+        {"ref_name": "preflight_path", "ref_path": ".dce/preflight/mission-board.preflight.json"},
+    ]
+    assert execution_entry["stage_status"] == "execution_completed"
+    assert execution_entry["linkage"] == [
+        {"ref_name": "approval_path", "ref_path": ".dce/approvals/mission-board.approval.json"},
+        {"ref_name": "preflight_path", "ref_path": ".dce/preflight/mission-board.preflight.json"},
+        {"ref_name": "execution_gate_path", "ref_path": ".dce/preflight/mission-board.execution_gate.json"},
+        {"ref_name": "alignment_path", "ref_path": ".dce/preflight/mission-board.alignment.json"},
+        {"ref_name": "output_path", "ref_path": ".dce/outputs/mission-board.json"},
+    ]
+    assert section_trace["trace_summary"] == {
+        "available_artifact_count": 8,
+        "completed_stage_count": 8,
+        "latest_stage": "outputs",
+        "latest_stage_status": "success_create_only",
+        "section_id": "mission-board",
+        "trace_entry_count": 8,
+    }
+
+
 def test_build_run_outcome_class_treats_skipped_modify_zero_write_run_as_execution_no_changes():
     execution_outcome = {
         "status": "error",

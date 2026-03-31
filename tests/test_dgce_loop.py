@@ -3487,6 +3487,57 @@ def test_dgce_workspace_summary_single_section_success(monkeypatch):
     }
 
 
+def test_dgce_lifecycle_trace_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_lifecycle_trace_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"))
+
+    assert payload["lifecycle_order"] == [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "outputs",
+    ]
+    assert payload["total_sections_seen"] == 1
+    section_trace = payload["sections"][0]
+    assert section_trace["section_id"] == "mission-board"
+    assert [entry["stage"] for entry in section_trace["trace_entries"]] == payload["lifecycle_order"]
+    assert [entry["stage_order"] for entry in section_trace["trace_entries"]] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert section_trace["trace_summary"] == {
+        "available_artifact_count": 2,
+        "completed_stage_count": 2,
+        "latest_stage": "outputs",
+        "latest_stage_status": "success_create_only",
+        "section_id": "mission-board",
+        "trace_entry_count": 8,
+    }
+    execution_entry = next(entry for entry in section_trace["trace_entries"] if entry["stage"] == "execution")
+    outputs_entry = next(entry for entry in section_trace["trace_entries"] if entry["stage"] == "outputs")
+    assert execution_entry["artifact_path"] == ".dce/execution/mission-board.execution.json"
+    assert execution_entry["artifact_present"] is True
+    assert execution_entry["stage_status"] == "execution_not_governed"
+    assert outputs_entry["artifact_path"] == ".dce/outputs/mission-board.json"
+    assert outputs_entry["artifact_present"] is True
+    assert outputs_entry["stage_status"] == "success_create_only"
+    assert outputs_entry["linkage"] == [
+        {
+            "ref_name": "execution_path",
+            "ref_path": ".dce/execution/mission-board.execution.json",
+        }
+    ]
+
+
 def test_dgce_workspace_summary_is_sorted_when_multiple_outputs_exist(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _scaffold_dir("dgce_workspace_summary_sorted")
