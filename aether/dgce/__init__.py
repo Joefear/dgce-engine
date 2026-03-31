@@ -49,6 +49,15 @@ from aether.dgce.incremental import (
     should_write_planned_file,
 )
 from aether.dgce.inspector import inspect_workspace
+from aether.dgce.read_api import (
+    get_artifact_manifest,
+    get_consumer_contract,
+    get_dashboard,
+    get_export_contract,
+    get_lifecycle_trace,
+    get_workspace_index,
+    list_available_artifacts,
+)
 
 __all__ = [
     "DGCESection",
@@ -84,6 +93,13 @@ __all__ = [
     "summarize_incremental_preview",
     "should_write_planned_file",
     "inspect_workspace",
+    "get_artifact_manifest",
+    "get_consumer_contract",
+    "get_dashboard",
+    "get_export_contract",
+    "get_lifecycle_trace",
+    "get_workspace_index",
+    "list_available_artifacts",
     "write_file_plan",
     "decompose_section",
     "preflight_section",
