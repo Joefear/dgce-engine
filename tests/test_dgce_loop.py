@@ -1439,6 +1439,160 @@ def test_render_file_entry_content_generates_structured_system_breakdown_scaffol
     assert "OUTPUT_PORTS =" in models_content
 
 
+def test_dgce_core_system_breakdown_full_circle_output_is_identical_across_repeated_runs():
+    router = RouterPlanner()
+    payload = {
+        "modules": [
+            {
+                "name": "Review Manager",
+                "layer": "DGCE Core",
+                "responsibility": "Review section previews.",
+                "inputs": [
+                    {
+                        "name": "preview_artifact",
+                        "type": "artifact",
+                        "artifact_path": ".dce/plans/{section_id}.preview.json",
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "review_artifact",
+                        "type": "artifact",
+                        "artifact_path": ".dce/reviews/{section_id}.review.md",
+                    }
+                ],
+                "dependencies": [
+                    {"name": "audit_writer", "kind": "module", "reference": "audit.py"},
+                    {"name": "preview_loader", "kind": "module", "reference": "preview.py"},
+                ],
+                "governance_touchpoints": ["review"],
+                "failure_modes": ["review_missing"],
+                "owned_paths": [".dce/reviews/{section_id}.review.md"],
+                "implementation_order": 2,
+            },
+            {
+                "name": "SectionInputHandler",
+                "layer": "DGCE Core",
+                "responsibility": "Persist section input artifacts.",
+                "inputs": [
+                    {
+                        "name": "raw_section_input",
+                        "type": "SectionInputRequest",
+                        "schema_fields": [
+                            {"name": "section_id", "type": "string", "required": True},
+                        ],
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "SectionInput",
+                        "type": "artifact",
+                        "artifact_path": ".dce/input/{section_id}.json",
+                    }
+                ],
+                "dependencies": [
+                    {"name": "artifact_writer", "kind": "module", "reference": "planner/io.py"},
+                ],
+                "governance_touchpoints": ["input validation"],
+                "failure_modes": ["invalid input structure"],
+                "owned_paths": [".dce/input/{section_id}.json"],
+                "implementation_order": 1,
+            },
+            {
+                "name": "StaleCheckEvaluator",
+                "layer": "DGCE Core",
+                "responsibility": "Evaluate staleness before execution.",
+                "inputs": [
+                    {
+                        "name": "section_input",
+                        "type": "artifact",
+                        "artifact_path": ".dce/input/{section_id}.json",
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "stale_check_artifact",
+                        "type": "artifact",
+                        "artifact_path": ".dce/preflight/{section_id}.stale_check.json",
+                    }
+                ],
+                "dependencies": [
+                    {"name": "SectionInputHandler", "kind": "module", "reference": "SectionInputHandler"},
+                ],
+                "governance_touchpoints": ["stale_check"],
+                "failure_modes": ["stale_check_failed"],
+                "owned_paths": [".dce/preflight/{section_id}.stale_check.json"],
+                "implementation_order": 3,
+            },
+        ],
+        "build_graph": {
+            "edges": [
+                ["SectionInputHandler", "Review Manager"],
+                ["SectionInputHandler", "StaleCheckEvaluator"],
+            ]
+        },
+        "tests": [{"name": "build_graph_is_complete"}],
+    }
+    request = ClassificationRequest(
+        content="Structured output for dgce_system_breakdown_v1",
+        request_id="repeatable-dgce-core-system-breakdown-full-circle",
+        output_contract=OutputContract(mode="structured", schema_name="dgce_system_breakdown_v1"),
+        metadata={"section_type": "system_component", "task_subtype": "system_breakdown"},
+    )
+
+    def _run_full_circle() -> tuple[dict, object, dict[str, str]]:
+        _, structured = router._validate_structured_output(request, json.dumps(payload))
+        response = ResponseEnvelope(
+            request_id="full-circle-system-breakdown",
+            task_type="system_breakdown",
+            status="experimental_output",
+            task_bucket="planning",
+            decision="MID_MODEL",
+            output=json.dumps(structured),
+            reused=False,
+            structured_content=structured,
+        )
+        file_plan = build_file_plan([response])
+        rendered_by_path = {
+            entry["path"]: render_file_entry_content(entry)
+            for entry in file_plan.files
+        }
+        return structured, file_plan, rendered_by_path
+
+    structured_first, file_plan_first, rendered_first = _run_full_circle()
+    structured_second, file_plan_second, rendered_second = _run_full_circle()
+
+    assert structured_first == structured_second
+    assert file_plan_first == file_plan_second
+    assert rendered_first == rendered_second
+    assert [module["name"] for module in structured_first["modules"]] == [
+        "SectionInputHandler",
+        "Review Manager",
+        "StaleCheckEvaluator",
+    ]
+    assert [group["name"] for group in structured_first["file_groups"]] == [
+        "sectioninputhandler",
+        "review_manager",
+        "stalecheckevaluator",
+    ]
+    assert [unit["name"] for unit in structured_first["implementation_units"]] == [
+        "implement_sectioninputhandler",
+        "implement_review_manager",
+        "implement_stalecheckevaluator",
+    ]
+    assert list(rendered_first) == [
+        "review_manager/models.py",
+        "review_manager/service.py",
+        "sectioninputhandler/models.py",
+        "sectioninputhandler/service.py",
+        "stalecheckevaluator/models.py",
+        "stalecheckevaluator/service.py",
+    ]
+    assert "DEPENDENCIES = ('audit_writer', 'preview_loader')" in rendered_first["review_manager/service.py"]
+    assert "MODULE_NAME = 'SectionInputHandler'" in rendered_first["sectioninputhandler/models.py"]
+    assert "OWNED_PATHS = ('.dce/preflight/{section_id}.stale_check.json',)" in rendered_first["stalecheckevaluator/service.py"]
+
+
 def test_build_file_plan_carries_structured_data_model_schema_for_runtime_generation():
     structured_payload = {
         "modules": [
