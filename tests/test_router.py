@@ -875,6 +875,118 @@ def test_router_backfills_dgce_core_api_surface_contract_deterministically(route
     assert structured_first["endpoints"][-1]["path"] == "/status/{section_id}"
 
 
+def test_router_backfilled_api_surface_schema_dict_keys_follow_full_deterministic_order(router):
+    payload = {
+        "interfaces": ["preview_service"],
+        "methods": {
+            "generate preview": {
+                "method": "POST",
+                "path": "/sections/{section_id}/preview",
+            }
+        },
+        "inputs": {},
+        "outputs": {},
+        "error_cases": {},
+    }
+
+    metadata, structured = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1", metadata={"section_type": "api_surface", "task_subtype": "api_surface"}),
+        json.dumps(payload),
+    )
+
+    assert metadata == {"structure_valid": True}
+    assert list(structured["schemas"]) == [
+        "PreviewRequest",
+        "PreviewResponse",
+        "ReviewRequest",
+        "ReviewResponse",
+        "ApprovalRequest",
+        "ApprovalResponse",
+        "PreflightRequest",
+        "PreflightResponse",
+        "GateRequest",
+        "GateResponse",
+        "AlignmentRequest",
+        "AlignmentResponse",
+        "ExecutionRequest",
+        "ExecutionResponse",
+        "StatusResponse",
+        "ApiError",
+    ]
+
+
+def test_router_multiple_disabled_api_operations_stay_deterministic(router):
+    payload = {
+        "interfaces": ["preview_service"],
+        "methods": {
+            "generate preview": {
+                "method": "POST",
+                "path": "/sections/{section_id}/preview",
+            }
+        },
+        "inputs": {},
+        "outputs": {},
+        "error_cases": {},
+    }
+    metadata = {
+        "section_type": "api_surface",
+        "task_subtype": "api_surface",
+        "disabled_operations": ["review", "alignment", "execution"],
+    }
+
+    metadata_first, structured_first = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1", metadata=metadata),
+        json.dumps(payload),
+    )
+    metadata_second, structured_second = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1", metadata=metadata),
+        json.dumps(payload),
+    )
+
+    assert metadata_first == {"structure_valid": True}
+    assert metadata_second == {"structure_valid": True}
+    assert structured_first == structured_second
+    assert structured_first["interfaces"] == [
+        "PreviewService",
+        "ApprovalService",
+        "PreflightService",
+        "GateService",
+        "StatusService",
+    ]
+    assert list(structured_first["methods"]) == [
+        "preview",
+        "approval",
+        "preflight",
+        "gate",
+        "status",
+    ]
+    assert "review" not in structured_first["methods"]
+    assert "alignment" not in structured_first["methods"]
+    assert "execution" not in structured_first["methods"]
+    assert "review" not in structured_first["inputs"]
+    assert "alignment" not in structured_first["outputs"]
+    assert "execution" not in structured_first["error_cases"]
+    assert [endpoint["name"] for endpoint in structured_first["endpoints"]] == [
+        "preview",
+        "approval",
+        "preflight",
+        "gate",
+        "status",
+    ]
+    assert list(structured_first["schemas"]) == [
+        "PreviewRequest",
+        "PreviewResponse",
+        "ApprovalRequest",
+        "ApprovalResponse",
+        "PreflightRequest",
+        "PreflightResponse",
+        "GateRequest",
+        "GateResponse",
+        "StatusResponse",
+        "ApiError",
+    ]
+
+
 def test_router_api_surface_contract_only_backfills_real_api_surface_sections(router):
     payload = {
         "interfaces": ["preview_service"],

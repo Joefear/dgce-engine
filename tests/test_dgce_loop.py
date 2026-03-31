@@ -1697,6 +1697,67 @@ def test_dgce_core_api_surface_file_plan_and_rendering_are_identical_across_repe
     )
 
 
+def test_dgce_core_api_surface_full_circle_output_is_identical_across_repeated_runs():
+    router = RouterPlanner()
+    payload = {
+        "interfaces": ["preview service"],
+        "methods": {
+            "generate preview": {
+                "method": "POST",
+                "path": "/sections/{section_id}/preview",
+            }
+        },
+        "inputs": {},
+        "outputs": {},
+        "error_cases": {},
+    }
+    request = ClassificationRequest(
+        content="Structured output for dgce_api_surface_v1",
+        request_id="repeatable-dgce-core-api-surface-full-circle",
+        output_contract=OutputContract(mode="structured", schema_name="dgce_api_surface_v1"),
+        metadata={"section_type": "api_surface", "task_subtype": "api_surface"},
+    )
+
+    def _run_full_circle() -> tuple[dict, object, dict[str, str]]:
+        _, structured = router._validate_structured_output(request, json.dumps(payload))
+        response = ResponseEnvelope(
+            request_id="full-circle-api",
+            task_type="api_surface",
+            status="experimental_output",
+            task_bucket="planning",
+            decision="MID_MODEL",
+            output=json.dumps(structured),
+            reused=False,
+            structured_content=structured,
+        )
+        file_plan = build_file_plan([response])
+        rendered_by_path = {
+            entry["path"]: render_file_entry_content(entry)
+            for entry in file_plan.files
+        }
+        return structured, file_plan, rendered_by_path
+
+    structured_first, file_plan_first, rendered_first = _run_full_circle()
+    structured_second, file_plan_second, rendered_second = _run_full_circle()
+
+    assert structured_first == structured_second
+    assert file_plan_first == file_plan_second
+    assert rendered_first == rendered_second
+    assert list(rendered_first) == [
+        "api/alignmentservice.py",
+        "api/approvalservice.py",
+        "api/executionservice.py",
+        "api/gateservice.py",
+        "api/preflightservice.py",
+        "api/previewservice.py",
+        "api/reviewservice.py",
+        "api/statusservice.py",
+    ]
+    assert "@router.post(\"/preview\", response_model=PreviewResponse)" in rendered_first["api/previewservice.py"]
+    assert "@router.get(\"/status/{section_id}\", response_model=StatusResponse)" in rendered_first["api/statusservice.py"]
+    assert "class ApiError(BaseModel):" in rendered_first["api/statusservice.py"]
+
+
 def test_render_file_entry_content_generates_structured_api_service_from_interface_schema():
     content = render_file_entry_content(
         {
