@@ -1,0 +1,34 @@
+policy:
+  id: "code_routine"
+  name: "Code Routine Task Policies"
+  description: "Policies specific to routine coding tasks"
+  priority: 50
+  scope: "bucket:code_routine"
+  rules:
+    - id: "code_security_critical"
+      type: "keyword"
+      patterns:
+        - "authentication"
+        - "authorization"
+        - "encryption"
+        - "security"
+        - "cryptography"
+      action: "review"
+
+    - id: "code_database_operations"
+      type: "keyword"
+      patterns:
+        - "sql injection"
+        - "database migration"
+        - "data deletion"
+        - "schema change"
+      action: "review"
+
+    - id: "code_external_apis"
+      type: "keyword"
+      patterns:
+        - "api call"
+        - "http request"
+        - "network"
+        - "external service"
+      action: "review"

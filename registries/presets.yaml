@@ -1,0 +1,35 @@
+dgce_planning:
+  project: DGCE
+  task_type: planning
+  priority: high
+  reuse_scope: project
+  domain_hint: Defiant Game Creation Engine internal planning
+  output_style: Return a practical implementation slice with milestones, dependencies, and next coding steps.
+  system_hint: Prefer engine-building, pipeline design, modular implementation, and builder-oriented recommendations.
+  output_contract:
+    mode: structured
+    schema_name: dgce_planning_v1
+
+dgce_system_design:
+  project: DGCE
+  task_type: game_system_design
+  priority: high
+  reuse_scope: project
+
+defiant_sky_analysis:
+  project: DefiantSky
+  task_type: sensor_fusion_analysis
+  priority: high
+  reuse_scope: project
+  domain_hint: Defiant Sky / SNIPER internal aerospace and sensor-fusion planning
+  output_style: Return structured technical analysis focused on architecture, subsystems, constraints, and next investigation steps.
+  system_hint: Prefer practical systems analysis, control-plane thinking, safety, and phased engineering work.
+  output_contract:
+    mode: structured
+    schema_name: defiant_sky_analysis_v1
+
+defiant_sky_sniper_planning:
+  project: DefiantSky
+  task_type: sniper_planning
+  priority: critical
+  reuse_scope: project

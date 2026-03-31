@@ -1,0 +1,19 @@
+{
+  "approval_source": "manual",
+  "approval_status": "approved",
+  "approval_timestamp": "1970-01-01T00:00:00Z",
+  "approved_by": "operator",
+  "artifact_fingerprint": "4eab27e030a65e151282cd71dba33e7c36eea32afc7f41927b4c895ac4cfdecb",
+  "execution_permitted": true,
+  "input_fingerprint": "0ea3403bca8cce96f3a00b9ea325cf56c00dea0e2427d6d00baa19e5974dae24",
+  "input_path": ".dce/input/data-model.json",
+  "notes": "",
+  "preview_fingerprint": "b01b642c0bdaf86f1d92ea02e151a2995b108fa96773418c592be3ac61e8f473",
+  "preview_outcome_class": "preview_blocked_modify_disabled",
+  "preview_path": ".dce/plans/data-model.preview.json",
+  "recommended_mode": "review_required",
+  "review_fingerprint": "4b5f7ec98111f6348bf5d40586ed91531ef54e59a803f0436b0eeea5dc9c985e",
+  "review_path": ".dce/reviews/data-model.review.md",
+  "section_id": "data-model",
+  "selected_mode": "safe_modify"
+}

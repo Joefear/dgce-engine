@@ -1,0 +1,13 @@
+# Test temp dirs (CRITICAL)
+tests/.tmp/
+.test_tmp/
+.pytest_tmp/
+
+# Python
+__pycache__/
+*.pyc
+
+# DGCE runtime noise
+.dce/execution/
+.dce/preflight/
+.dce/reviews/

@@ -1,0 +1,11 @@
+{
+  "anom-001": {
+    "anomaly_id": "anom-001",
+    "queued": false,
+    "record": {
+      "anomaly_id": "anom-001",
+      "status": "approved"
+    },
+    "status": "approved"
+  }
+}

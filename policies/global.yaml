@@ -1,0 +1,36 @@
+policy:
+  id: "global"
+  name: "Global Guardrail Policies"
+  description: "Global policies applied to all content regardless of task bucket"
+  priority: 100
+  scope: "global"
+  rules:
+    - id: "global_harmful_content"
+      type: "keyword"
+      patterns:
+        - "violence"
+        - "harm"
+        - "illegal"
+        - "exploit"
+        - "attack"
+      action: "block"
+
+    - id: "global_personal_data"
+      type: "keyword"
+      patterns:
+        - "ssn"
+        - "social security"
+        - "credit card"
+        - "password"
+        - "secret key"
+        - "private key"
+      action: "block"
+
+    - id: "global_sensitive_operations"
+      type: "keyword"
+      patterns:
+        - "sudo"
+        - "root access"
+        - "admin privileges"
+        - "system level"
+      action: "review"

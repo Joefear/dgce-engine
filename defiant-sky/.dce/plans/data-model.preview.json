@@ -1,0 +1,131 @@
+{
+  "artifact_fingerprint": "77d2b7791d2fed3a41932439c34773d4504dae1f6afb54ba549fa2eda91b51bf",
+  "mode": "incremental_v2_2",
+  "preview_outcome_class": "preview_blocked_modify_disabled",
+  "previews": [
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 275,
+      "generated_bytes": 451,
+      "identical_content": false,
+      "path": "models/alignmentrecord.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 280,
+      "generated_bytes": 458,
+      "identical_content": false,
+      "path": "models/approvalartifact.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 265,
+      "generated_bytes": 443,
+      "identical_content": false,
+      "path": "models/executiongate.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 270,
+      "generated_bytes": 429,
+      "identical_content": false,
+      "path": "models/executionstamp.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 10,
+      "eligibility": "blocked",
+      "existing_bytes": 230,
+      "generated_bytes": 364,
+      "identical_content": false,
+      "path": "models/output.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 275,
+      "generated_bytes": 458,
+      "identical_content": false,
+      "path": "models/preflightrecord.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 275,
+      "generated_bytes": 460,
+      "identical_content": false,
+      "path": "models/previewartifact.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 11,
+      "eligibility": "blocked",
+      "existing_bytes": 270,
+      "generated_bytes": 459,
+      "identical_content": false,
+      "path": "models/reviewartifact.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    },
+    {
+      "approximate_line_delta": 13,
+      "eligibility": "blocked",
+      "existing_bytes": 260,
+      "generated_bytes": 460,
+      "identical_content": false,
+      "path": "models/sectioninput.py",
+      "planned_action": "modify",
+      "preview_decision": "skip",
+      "preview_reason": "modify",
+      "section_id": "data-model"
+    }
+  ],
+  "recommended_mode": "review_required",
+  "section_id": "data-model",
+  "summary": {
+    "total_blocked": 9,
+    "total_blocked_ignore": 0,
+    "total_blocked_modify_disabled": 9,
+    "total_blocked_ownership": 0,
+    "total_create": 0,
+    "total_eligible": 0,
+    "total_identical": 0,
+    "total_ignore": 0,
+    "total_modify": 9,
+    "total_skip": 9,
+    "total_targets": 9,
+    "total_write": 0
+  }
+}

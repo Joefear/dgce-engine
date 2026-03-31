@@ -1,0 +1,10 @@
+{
+  "alignment_blocked": false,
+  "alignment_reason": "safe_modify_permitted",
+  "alignment_status": "alignment_pass",
+  "alignment_timestamp": "1970-01-01T00:00:00Z",
+  "effective_execution_mode": "no_changes",
+  "require_preflight_pass": true,
+  "section_id": "data-model",
+  "selected_mode": "safe_modify"
+}

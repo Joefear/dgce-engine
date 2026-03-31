@@ -1,0 +1,43 @@
+{
+  "sections": [
+    {
+      "alignment_blocked": false,
+      "alignment_path": ".dce/preflight/data-model.alignment.json",
+      "alignment_status": "alignment_pass",
+      "approval_consumed": false,
+      "approval_path": ".dce/approvals/data-model.approval.json",
+      "approval_status": "approved",
+      "approval_status_after": "approved",
+      "execution_allowed": true,
+      "execution_blocked": true,
+      "execution_gate_path": ".dce/preflight/data-model.execution_gate.json",
+      "execution_path": ".dce/execution/data-model.execution.json",
+      "execution_permitted": true,
+      "execution_status": "execution_not_governed",
+      "gate_status": "gate_blocked_stale",
+      "latest_advisory_explanation": [
+        "execution_error"
+      ],
+      "latest_advisory_type": "process_adjustment",
+      "latest_run_mode": "create_only",
+      "latest_run_outcome_class": "execution_error",
+      "latest_skipped_ignore_count": 0,
+      "latest_skipped_modify_count": 0,
+      "latest_status": "error",
+      "latest_validation_ok": true,
+      "latest_written_files_count": 9,
+      "preflight_path": ".dce/preflight/data-model.preflight.json",
+      "preflight_status": "preflight_pass",
+      "preview_outcome_class": "preview_blocked_modify_disabled",
+      "preview_path": ".dce/plans/data-model.preview.json",
+      "recommended_mode": "review_required",
+      "review_path": ".dce/reviews/data-model.review.md",
+      "section_id": "data-model",
+      "selected_mode": "safe_modify",
+      "stale_check_path": ".dce/preflight/data-model.stale_check.json",
+      "stale_detected": true,
+      "stale_status": "stale_invalidated"
+    }
+  ],
+  "total_sections_seen": 1
+}

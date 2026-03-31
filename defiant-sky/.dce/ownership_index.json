@@ -1,0 +1,670 @@
+{
+  "files": [
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/alignmentrecordinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/approvalartifactinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/datamodelinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/datamodelservice.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/description_interface_for_managing_data_model_entities_in_dgce_name_datamodelservice.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/dgcedatamodel.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/dgcemodelinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/executiongateinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/executionstampinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/name_dgce_version_1_0.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/preflightrecordinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/previewartifactinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/reviewartifactinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "api/sectioninputinterface.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_alignment_check_record_fields_name_alignment_check_type_boolean_name_artifact_fingerprint_type_string_name_record_id_required_true_type_string_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_alignment_check_record_fields_name_artifact_fingerprint_required_false_type_string_name_record_id_required_true_type_string_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_alignment_record_for_a_section_input_fields_name_alignment_id_required_true_type_string_name_artifact_fingerprint_type_string_name_section_id_required_true_type_string_name_alignmentrecord_storage_path_alignments_alignment_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_alignment_record_for_execution_fields_name_alignment_id_required_true_type_string_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_alignment_record_post_execution_gate_fields_enum_values_aligned_misaligned_name_alignment_status_required_false_type_enum_name_record_id_required_true_type_string_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_alignment_records_for_section_inputs_fields_enum_values_fail_pass_name_alignment_outcome_required_true_type_string_name_record_id_required_true_type_string_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_approval_artifact_after_review_fields_name_approval_id_required_true_type_string_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_approval_artifact_approved_by_a_section_input_fields_name_approval_id_required_true_type_string_name_artifact_fingerprint_type_string_name_section_id_required_true_type_string_name_approvalartifact_storage_path_approvals_approval_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_approval_artifact_generated_during_the_governed_execution_lifecycle_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_approval_artifact_generated_from_review_artifacts_fields_name_artifact_fingerprint_required_false_type_string_name_artifact_id_required_true_type_string_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_approval_artifacts_generated_from_section_inputs_fields_name_artifact_id_required_true_type_string_name_fingerprint_required_false_type_string_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_approval_status_of_the_review_artifact_fields_enum_values_approved_rejected_name_approval_status_required_false_type_enum_name_artifact_id_required_true_type_string_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_artifact_for_approval_of_reviewed_section_input_fields_name_approval_fingerprint_type_string_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_approvalartifact_storage_path_approvals_artifact_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_artifact_for_previewing_section_input_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_preview_fingerprint_type_string_name_previewartifact_storage_path_previews_artifact_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_artifact_for_reviewing_previewed_section_input_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_review_fingerprint_type_string_name_reviewartifact_storage_path_reviews_artifact_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_artifact_produced_during_approval_fields_name_approval_id_required_true_type_string_name_artifact_fingerprint_required_false_type_string_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_artifact_produced_during_preview_fields_name_artifact_fingerprint_required_false_type_string_name_artifact_id_required_true_type_string_name_previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_artifact_produced_during_review_fields_name_artifact_fingerprint_required_false_type_string_name_review_id_required_true_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_control_gate_for_execution_fields_name_gate_id_required_true_type_string_name_status_required_false_type_enum_values_closed_open_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_gate_based_on_pre_flight_validation_fields_name_execution_allowed_required_false_type_boolean_name_gate_id_required_true_type_string_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_gate_controlling_the_execution_flow_fields_name_gate_id_required_true_type_string_name_status_type_enum_values_closed_open_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_gate_for_a_section_input_fields_name_gate_id_required_true_type_string_name_section_id_required_true_type_string_name_executiongate_storage_path_gates_gate_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_gate_for_approval_and_preflight_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_gate_id_required_true_type_string_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_gate_record_fields_name_artifact_fingerprint_required_false_type_string_name_gate_id_required_true_type_string_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_gates_for_section_inputs_fields_enum_values_fail_pass_name_alignment_outcome_required_false_type_string_name_gate_id_required_true_type_string_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_stamp_for_a_section_input_fields_name_artifact_fingerprint_type_string_name_section_id_required_true_type_string_name_stamp_id_required_true_type_string_name_executionstamp_storage_path_stamps_stamp_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_stamp_for_alignment_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_stamp_id_required_true_type_string_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_stamp_indicating_outcome_fields_enum_values_failure_success_name_run_outcome_class_required_false_type_enum_name_stamp_id_required_true_type_string_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_stamp_indicating_the_outcome_of_the_execution_fields_name_run_outcome_class_type_enum_values_failure_success_name_stamp_id_required_true_type_string_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_stamp_record_fields_name_artifact_fingerprint_required_false_type_string_name_stamp_id_required_true_type_string_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_execution_stamps_for_section_inputs_fields_enum_values_failure_success_name_run_outcome_class_required_true_type_string_name_stamp_id_required_true_type_string_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_final_output_artifact_after_execution_fields_name_artifact_id_required_true_type_string_name_output_fingerprint_required_false_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_final_output_artifact_fields_name_artifact_fingerprint_required_false_type_string_name_artifact_id_required_true_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_final_output_artifact_fields_name_artifact_fingerprint_required_false_type_string_name_output_id_required_true_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_final_output_artifact_of_executed_section_input_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_output_fingerprint_type_string_name_outputartifact_storage_path_outputs_artifact_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_gate_for_controlling_execution_of_preflight_validated_section_input_fields_name_execution_gate_fingerprint_type_string_name_fingerprint_type_string_name_gate_id_required_true_type_string_name_executiongate_storage_path_gates_gate_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_artifact_fingerprint_required_false_type_string_name_section_id_required_true_type_string_name_sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_section_id_required_true_type_string_name_sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_fingerprint_required_false_type_string_name_section_id_required_true_type_string_name_sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_fingerprint_type_string_name_input_fingerprint_type_string_name_section_id_required_true_type_string_name_sectioninput_storage_path_inputs_section_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_input_fingerprint_required_false_type_string_name_section_id_required_true_type_string_name_sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_input_fingerprint_type_string_name_section_id_required_true_type_string_enum_values_true_false_name_stale_check_type_boolean_name_sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_input_fingerprint_type_string_name_section_id_required_true_type_string_name_sectioninput_storage_path_inputs_section_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_governed_section_input_fields_name_section_id_required_true_type_string_name_sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_output_artifact_from_execution_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_output_id_required_true_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_output_artifact_generated_as_a_result_of_the_governed_execution_lifecycle_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_output_artifact_produced_by_a_section_input_fields_name_artifact_fingerprint_type_string_name_output_id_required_true_type_string_name_section_id_required_true_type_string_name_outputartifact_storage_path_outputs_output_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_output_artifacts_from_section_inputs_fields_name_artifact_id_required_true_type_string_name_fingerprint_required_false_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_pre_flight_validation_record_fields_name_record_id_required_true_type_string_name_stale_check_required_false_type_boolean_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preflight_record_for_a_section_input_fields_name_artifact_fingerprint_type_string_name_preflight_id_required_true_type_string_name_section_id_required_true_type_string_name_preflightrecord_storage_path_preflights_preflight_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preflight_validation_record_fields_name_artifact_fingerprint_required_false_type_string_name_record_id_required_true_type_string_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preflight_validation_record_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_preflight_id_required_true_type_string_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preflight_validation_record_fields_name_artifact_fingerprint_type_string_name_record_id_required_true_type_string_name_stale_check_type_boolean_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preflight_validation_records_for_section_inputs_fields_name_record_id_required_true_type_string_enum_values_fail_pass_name_stale_check_outcome_required_true_type_string_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preview_artifact_generated_during_the_governed_execution_lifecycle_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preview_artifact_generated_from_section_input_fields_name_artifact_fingerprint_required_false_type_string_name_artifact_id_required_true_type_string_name_previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preview_artifact_generated_from_section_input_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_preview_id_required_true_type_string_name_previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preview_artifact_produced_by_a_section_input_fields_name_artifact_fingerprint_type_string_name_artifact_id_required_true_type_string_name_section_id_required_true_type_string_name_previewartifact_storage_path_previews_artifact_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_preview_artifacts_generated_from_section_inputs_fields_name_artifact_id_required_true_type_string_name_fingerprint_required_false_type_string_name_previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_record_of_alignment_check_fields_name_alignment_id_required_true_type_string_name_status_required_false_type_enum_values_aligned_misaligned_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_record_of_alignment_checks_for_executed_section_input_fields_name_alignment_fingerprint_type_string_name_fingerprint_type_string_name_record_id_required_true_type_string_name_alignmentrecord_storage_path_alignments_record_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_record_of_preflight_validation_fields_name_fingerprint_required_false_type_string_name_preflight_id_required_true_type_string_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_record_of_preflight_validation_for_approved_section_input_fields_name_fingerprint_type_string_name_preflight_fingerprint_type_string_name_record_id_required_true_type_string_name_preflightrecord_storage_path_preflights_record_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_review_artifact_after_preview_fields_name_artifact_fingerprint_required_false_type_string_name_artifact_id_required_true_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_review_artifact_after_preview_fields_name_artifact_fingerprint_type_string_name_fingerprint_type_string_name_review_id_required_true_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_review_artifact_generated_during_the_governed_execution_lifecycle_fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_review_artifact_generated_from_preview_artifacts_fields_name_artifact_fingerprint_required_false_type_string_name_artifact_id_required_true_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_review_artifact_reviewed_by_a_section_input_fields_name_artifact_fingerprint_type_string_name_review_id_required_true_type_string_name_section_id_required_true_type_string_name_reviewartifact_storage_path_reviews_review_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_review_artifacts_generated_from_section_inputs_fields_name_artifact_id_required_true_type_string_name_fingerprint_required_false_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_stamp_for_marking_executed_section_input_fields_name_execution_stamp_fingerprint_type_string_name_fingerprint_type_string_name_stamp_id_required_true_type_string_name_executionstamp_storage_path_stamps_stamp_id.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/description_timestamp_of_execution_fields_name_stamp_id_required_true_type_string_name_timestamp_required_false_type_datetime_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_approver_type_string_name_artifact_id_required_true_type_string_name_timestamp_type_datetime_name_approvalartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_artifact_id_required_true_type_string_name_fingerprint_type_string_name_run_outcome_class_type_string_name_outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_artifact_id_required_true_type_string_name_reviewer_type_string_enum_values_approved_rejected_name_status_type_string_name_reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_gate_id_required_true_type_string_name_is_open_type_boolean_name_executiongate.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_record_id_required_true_type_string_enum_values_failed_passed_name_status_type_string_name_preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_record_id_required_true_type_string_name_alignmentrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/fields_name_stamp_id_required_true_type_string_name_timestamp_type_datetime_name_executionstamp.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/output.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/outputartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/preflightrecord.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/previewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/reviewartifact.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "models/sectioninput.py",
+      "section_id": "data-model",
+      "write_reason": "create"
+    }
+  ]
+}

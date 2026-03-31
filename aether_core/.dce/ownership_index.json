@@ -1,0 +1,112 @@
+{
+  "files": [
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/__init__.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/api/__init__.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/api/ingest.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/api/review.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/__init__.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/anomaly_classifier.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/audit_trail_writer.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/degraded_mode_handler.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/deviation_scorer.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/guardrail_gateway.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/observation_normalizer.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/orbit_propagator.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/components/review_queue_manager.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/models/__init__.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/models/anomaly_record.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "src/models/rsobservation.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "modify"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "tests/__init__.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "create"
+    },
+    {
+      "last_written_stage": "WRITE",
+      "path": "tests/test_anomaly_detection.py",
+      "section_id": "defiant-sky-anomaly-detection-core",
+      "write_reason": "create"
+    }
+  ]
+}

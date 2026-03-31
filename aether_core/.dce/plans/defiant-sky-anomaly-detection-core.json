@@ -1,0 +1,26 @@
+[
+  {
+    "status": "completed",
+    "task_bucket": "planning",
+    "task_id": "defiant-sky-anomaly-detection-core-system-breakdown",
+    "task_type": "system_breakdown"
+  },
+  {
+    "status": "completed",
+    "task_bucket": "code_routine",
+    "task_id": "defiant-sky-anomaly-detection-core-data-model",
+    "task_type": "data_model"
+  },
+  {
+    "status": "completed",
+    "task_bucket": "code_routine",
+    "task_id": "defiant-sky-anomaly-detection-core-api-surface",
+    "task_type": "api_surface"
+  },
+  {
+    "status": "completed",
+    "task_bucket": "planning",
+    "task_id": "defiant-sky-anomaly-detection-core-system-summary",
+    "task_type": "system_summary"
+  }
+]

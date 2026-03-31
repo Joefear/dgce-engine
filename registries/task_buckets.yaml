@@ -1,0 +1,30 @@
+task_buckets:
+  - id: "planning"
+    name: "Planning"
+    description: "Strategic planning, architecture design, and complex problem solving"
+    default_model: "MID_MODEL"
+    requires_review: false
+    examples:
+      - "Design a system architecture"
+      - "Create a project roadmap"
+      - "Plan a complex implementation"
+
+  - id: "code_routine"
+    name: "Code Routine"
+    description: "Standard coding tasks, debugging, and implementation"
+    default_model: "SMALL_MODEL"
+    requires_review: false
+    examples:
+      - "Implement a function"
+      - "Fix a bug"
+      - "Write unit tests"
+
+  - id: "general"
+    name: "General"
+    description: "General assistance and informational queries"
+    default_model: "SMALL_MODEL"
+    requires_review: true
+    examples:
+      - "How does X work?"
+      - "Explain concept Y"
+      - "Help with Z"

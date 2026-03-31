@@ -1,0 +1,16 @@
+{
+  "approval_path": ".dce/approvals/data-model.approval.json",
+  "approval_status": "approved",
+  "artifact_fingerprint": "d5c4671e8c9332d56d4165686cbc409a8ce7c0569ac037bb75724da187c57635",
+  "execution_allowed": true,
+  "execution_permitted": true,
+  "preflight_reason": "approved_and_linked",
+  "preflight_status": "preflight_pass",
+  "preview_outcome_class": "preview_blocked_modify_disabled",
+  "preview_path": ".dce/plans/data-model.preview.json",
+  "recommended_mode": "review_required",
+  "review_path": ".dce/reviews/data-model.review.md",
+  "section_id": "data-model",
+  "selected_mode": "safe_modify",
+  "validation_timestamp": "1970-01-01T00:00:00Z"
+}

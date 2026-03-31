@@ -1,0 +1,33 @@
+policy:
+  id: "planning"
+  name: "Planning Task Policies"
+  description: "Policies specific to planning and strategic tasks"
+  priority: 50
+  scope: "bucket:planning"
+  rules:
+    - id: "planning_complex_systems"
+      type: "keyword"
+      patterns:
+        - "enterprise architecture"
+        - "system design"
+        - "scalability"
+        - "distributed systems"
+      action: "review"
+
+    - id: "planning_resource_intensive"
+      type: "keyword"
+      patterns:
+        - "large scale"
+        - "high volume"
+        - "performance critical"
+        - "mission critical"
+      action: "review"
+
+    - id: "planning_experimental"
+      type: "keyword"
+      patterns:
+        - "experimental"
+        - "research"
+        - "novel approach"
+        - "unproven"
+      action: "review"

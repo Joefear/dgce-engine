@@ -1,0 +1,6030 @@
+import json
+from pathlib import Path
+
+from aether.dgce import DGCESection, FilePlan, SectionAlignmentInput, SectionApprovalInput, SectionExecutionGateInput, SectionExecutionStampInput, SectionPreflightInput, SectionStaleCheckInput, compute_artifact_fingerprint, compute_json_payload_fingerprint, record_section_alignment, record_section_approval, record_section_execution_gate, record_section_execution_stamp, record_section_preflight, record_section_stale_check, run_dgce_section, run_section_with_workspace
+from aether.dgce.decompose import ResponseEnvelope, _build_run_outcome_class, _validate_write_stage_structured_content, compute_preview_payload_fingerprint
+from aether.dgce.incremental import (
+    build_change_plan,
+    build_incremental_change_plan,
+    build_incremental_preview_artifact,
+    build_write_transparency,
+    classify_section_targets,
+    classify_incremental_targets,
+    finalize_write_transparency,
+    filter_file_plan_for_controlled_write,
+    load_change_plan,
+    overwrite_paths_from_transparency,
+    render_incremental_review_markdown,
+    scan_workspace_file_paths,
+    scan_workspace_inventory,
+    summarize_incremental_preview,
+    should_write_planned_file,
+)
+from aether.dgce.file_writer import render_file_entry_bytes
+from aether_core.enums import ArtifactStatus
+from aether_core.itera.artifact_store import ArtifactStore
+from aether_core.itera.exact_cache import ExactMatchCache
+from aether_core.models import ClassificationRequest
+from aether_core.models.request import OutputContract
+from aether_core.router.executors import ExecutionResult
+from aether_core.router.planner import RouterPlanner
+
+
+def _section() -> DGCESection:
+    return DGCESection(
+        section_type="game_system",
+        title="Mission Board",
+        description="A modular mission board that assembles contracts and tracks player progression.",
+        requirements=["support mission templates", "track progression state"],
+        constraints=["keep save format stable", "support mod extension points"],
+    )
+
+
+def _section_named(title: str) -> DGCESection:
+    section = _section().model_copy()
+    section.title = title
+    return section
+
+
+def _workspace_dir(name: str) -> Path:
+    base = Path("tests/.tmp") / name
+    if base.exists():
+        for path in sorted(base.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+        if base.exists():
+            base.rmdir()
+    return base
+
+
+def _write_text(path: Path, content: str = "x") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _write_section_input(project_root: Path, section: DGCESection | None = None) -> None:
+    target_section = section or _section()
+    section_id = str(target_section.section_id).strip() or target_section.title.lower().replace(" ", "-")
+    path = project_root / ".dce" / "input" / f"{section_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(target_section.model_dump(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_ownership_index(project_root: Path, files: list[dict]) -> None:
+    path = project_root / ".dce" / "ownership_index.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"files": files}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _changed_lines_estimate(before_bytes: bytes, after_bytes: bytes) -> int:
+    before_lines = before_bytes.decode("utf-8", errors="replace").splitlines()
+    after_lines = after_bytes.decode("utf-8", errors="replace").splitlines()
+    max_lines = max(len(before_lines), len(after_lines))
+    return sum(
+        1
+        for index in range(max_lines)
+        if (before_lines[index] if index < len(before_lines) else None)
+        != (after_lines[index] if index < len(after_lines) else None)
+    )
+
+
+def _stub_executor_output(content: str) -> str:
+    lowered = content.lower()
+    if "system breakdown" in lowered:
+        return json.dumps(
+            {
+                "module_name": "mission_board",
+                "purpose": "coordinate mission generation",
+                "subcomponents": ["templates", "tracker"],
+                "dependencies": ["save_state"],
+                "implementation_order": ["templates", "tracker"],
+            }
+        )
+    if "data model" in lowered:
+        return json.dumps(
+            {
+                "entities": ["Mission"],
+                "fields": ["id", "state"],
+                "relationships": ["mission->player"],
+                "validation_rules": ["id required"],
+            }
+        )
+    if "api surface" in lowered:
+        return json.dumps(
+            {
+                "interfaces": ["MissionBoardService"],
+                "methods": ["create_mission"],
+                "inputs": ["template_id"],
+                "outputs": ["mission_id"],
+                "error_cases": ["template_missing"],
+            }
+        )
+    return "Summary output"
+
+
+def _stub_executor_result(content: str) -> ExecutionResult:
+    return ExecutionResult(
+        output=_stub_executor_output(content),
+        status=ArtifactStatus.EXPERIMENTAL,
+        executor="stub",
+        metadata={
+            "real_model_called": False,
+            "model_backend": "stub",
+            "model_name": None,
+            "estimated_tokens": len(content) / 4,
+            "estimated_cost": (len(content) / 4) * 0.000002,
+            "inference_avoided": False,
+            "backend_used": "stub",
+            "worth_running": True,
+        },
+    )
+
+
+def test_scan_workspace_inventory_excludes_environment_and_junk_paths():
+    project_root = _workspace_dir("dgce_incremental_scan_excludes")
+    _write_text(project_root / ".venv" / "Lib" / "site-packages" / "pip" / "__init__.py")
+    _write_text(project_root / ".git" / "config")
+    _write_text(project_root / ".dce" / "input" / "mission-board.json")
+    _write_text(project_root / "__pycache__" / "module.pyc")
+    _write_text(project_root / "node_modules" / "pkg" / "index.js")
+    _write_text(project_root / "build" / "artifact.txt")
+    _write_text(project_root / "dist" / "bundle.js")
+    _write_text(project_root / "Saved" / "autosave.txt")
+    _write_text(project_root / "Intermediate" / "temp.txt")
+    _write_text(project_root / "Binaries" / "tool.bin")
+    _write_text(project_root / "DerivedDataCache" / "cache.txt")
+    _write_text(project_root / "logs" / "run.log")
+    _write_text(project_root / "src" / "keep.py")
+    _write_text(project_root / "docs" / "readme.md")
+
+    inventory = scan_workspace_inventory(project_root)
+
+    assert inventory == [
+        {"ext": ".md", "path": "docs/readme.md", "size": 1},
+        {"ext": ".py", "path": "src/keep.py", "size": 1},
+    ]
+
+
+def test_scan_workspace_inventory_is_deterministic_and_empty_safe():
+    empty_root = _workspace_dir("dgce_incremental_empty")
+    assert scan_workspace_inventory(empty_root) == []
+
+    project_root = _workspace_dir("dgce_incremental_order")
+    _write_text(project_root / "zeta.py")
+    _write_text(project_root / "alpha.txt")
+    _write_text(project_root / "nested" / "beta.py")
+
+    first = scan_workspace_inventory(project_root)
+    second = scan_workspace_inventory(project_root)
+
+    assert first == second
+    assert [entry["path"] for entry in first] == ["alpha.txt", "nested/beta.py", "zeta.py"]
+
+
+def test_scan_workspace_file_paths_returns_normalized_sorted_relative_paths_only():
+    project_root = _workspace_dir("dgce_incremental_path_only_inventory")
+    _write_text(project_root / ".dce" / "state" / "ignore.json")
+    _write_text(project_root / "node_modules" / "pkg" / "index.js")
+    _write_text(project_root / "zeta.py")
+    _write_text(project_root / "nested" / "beta.py")
+    _write_text(project_root / "alpha.txt")
+
+    inventory = scan_workspace_file_paths(project_root)
+
+    assert inventory == ["alpha.txt", "nested/beta.py", "zeta.py"]
+
+
+def test_classify_incremental_targets_marks_missing_as_create_and_present_as_modify():
+    changes = classify_incremental_targets(
+        ["api/missionboardservice.py", "mission_board/service.py"],
+        ["mission_board/service.py", "docs/readme.md"],
+    )
+
+    assert changes == [
+        {
+            "action": "create",
+            "path": "api/missionboardservice.py",
+            "reason": "target_missing_from_workspace",
+        },
+        {
+            "action": "modify",
+            "path": "mission_board/service.py",
+            "reason": "target_present_in_workspace",
+        },
+    ]
+
+
+def test_build_incremental_change_plan_keeps_non_target_files_out_of_changes():
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+        ],
+    )
+
+    artifact = build_incremental_change_plan(
+        "mission-board",
+        file_plan,
+        ["api/missionboardservice.py", "docs/readme.md", "src/extra.py"],
+    )
+
+    assert artifact == {
+        "section_id": "mission-board",
+        "mode": "incremental_v1",
+        "summary": {
+            "create_count": 0,
+            "modify_count": 1,
+            "ignore_count": 2,
+        },
+        "changes": [
+            {
+                "action": "modify",
+                "path": "api/missionboardservice.py",
+                "reason": "target_present_in_workspace",
+            }
+        ],
+        "ignored_existing_files": ["docs/readme.md", "src/extra.py"],
+    }
+
+
+def test_build_change_plan_classifies_create_modify_and_ignore():
+    expected = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+            {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+        ],
+    )
+    inventory = [
+        {"path": "docs/readme.md", "ext": ".md", "size": 4},
+        {"path": "mission_board/service.py", "ext": ".py", "size": 10},
+    ]
+
+    change_plan = build_change_plan("mission-board", expected, inventory)
+
+    assert change_plan == [
+        {
+            "action": "create",
+            "path": "api/missionboardservice.py",
+            "reason": "expected_target_missing",
+            "section_id": "mission-board",
+        },
+        {
+            "action": "ignore",
+            "path": "docs/readme.md",
+            "reason": "not_in_expected_targets",
+            "section_id": "mission-board",
+        },
+        {
+            "action": "modify",
+            "path": "mission_board/service.py",
+            "reason": "expected_target_exists",
+            "section_id": "mission-board",
+        },
+    ]
+
+
+def test_build_change_plan_classifies_existing_target_under_project_root_as_modify():
+    project_root = _workspace_dir("dgce_incremental_change_plan_existing_under_root")
+    _write_text(project_root / "api" / "missionboardservice.py", "existing")
+    expected = FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"}],
+    )
+
+    change_plan = build_change_plan("mission-board", expected, [], project_root=project_root)
+
+    assert change_plan == [
+        {
+            "action": "modify",
+            "path": "api/missionboardservice.py",
+            "reason": "expected_target_exists",
+            "section_id": "mission-board",
+        }
+    ]
+
+
+def test_api_surface_expected_targets_ground_against_host_repo_files():
+    repo_root = _workspace_dir("dgce_incremental_expected_targets_host_repo")
+    project_root = repo_root / "defiant-sky"
+    _write_text(project_root / ".dce" / "input" / "api-surface.json", "{}")
+    _write_text(repo_root / "aether" / "dgce" / "decompose.py", "existing-decompose")
+    _write_text(repo_root / "apps" / "aether_api" / "routers" / "dgce.py", "existing-router")
+    _write_text(repo_root / "dce.py", "existing-cli")
+
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "aether/dgce/decompose.py", "purpose": "Orchestration", "source": "expected_targets"},
+            {"path": "apps/aether_api/routers/dgce.py", "purpose": "Router", "source": "expected_targets"},
+            {"path": "dce.py", "purpose": "CLI", "source": "expected_targets"},
+        ],
+    )
+
+    change_plan = build_incremental_change_plan(
+        "api-surface",
+        file_plan,
+        scan_workspace_file_paths(project_root),
+        project_root=project_root,
+    )
+
+    assert [entry["action"] for entry in change_plan["changes"]] == ["modify", "modify", "modify"]
+    assert [entry["path"] for entry in change_plan["changes"]] == [
+        "aether/dgce/decompose.py",
+        "apps/aether_api/routers/dgce.py",
+        "dce.py",
+    ]
+
+
+def test_classify_section_targets_backfills_current_file_plan_paths_instead_of_ignoring_them():
+    repo_root = _workspace_dir("dgce_incremental_classify_section_targets_backfill")
+    project_root = repo_root / "defiant-sky"
+    _write_text(project_root / ".dce" / "input" / "system-breakdown.json", "{}")
+    _write_text(repo_root / "aether" / "dgce" / "decompose.py", "existing-decompose")
+    _write_text(repo_root / "dce.py", "existing-cli")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "aether/dgce/decompose.py", "purpose": "Orchestration", "source": "expected_targets"},
+            {"path": "dce.py", "purpose": "CLI", "source": "expected_targets"},
+        ],
+    )
+
+    actions = classify_section_targets(file_plan, [], project_root)
+
+    assert actions == {
+        "aether/dgce/decompose.py": "modify",
+        "dce.py": "modify",
+    }
+
+
+def test_build_change_plan_rejects_unsafe_paths():
+    try:
+        build_change_plan(
+            "mission-board",
+            FilePlan(
+                project_name="DGCE",
+                files=[{"path": "../escape.py", "purpose": "Escape", "source": "system_breakdown"}],
+            ),
+            [],
+        )
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_filter_file_plan_for_controlled_write_skips_modify_and_ignore():
+    project_root = _workspace_dir("dgce_incremental_controlled_filter")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+            {"path": "docs/readme.md", "purpose": "Docs", "source": "system_summary"},
+            {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+        ],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/missionboardservice.py", "action": "create", "reason": "expected_target_missing"},
+        {"section_id": "mission-board", "path": "docs/readme.md", "action": "ignore", "reason": "not_in_expected_targets"},
+        {"section_id": "mission-board", "path": "mission_board/service.py", "action": "modify", "reason": "expected_target_exists"},
+    ]
+
+    filtered = filter_file_plan_for_controlled_write(file_plan, change_plan, project_root)
+
+    assert filtered == FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"}],
+    )
+
+
+def test_filter_file_plan_for_controlled_write_allows_modify_when_enabled():
+    project_root = _workspace_dir("dgce_incremental_controlled_filter_modify_enabled")
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+            {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+        ],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/missionboardservice.py", "action": "create", "reason": "expected_target_missing"},
+        {"section_id": "mission-board", "path": "mission_board/service.py", "action": "modify", "reason": "expected_target_exists"},
+    ]
+
+    filtered = filter_file_plan_for_controlled_write(
+        file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+        owned_paths={"mission_board/service.py"},
+    )
+
+    assert filtered == file_plan
+
+
+def test_build_write_transparency_records_controlled_write_decisions():
+    project_root = _workspace_dir("dgce_incremental_write_transparency")
+    _write_text(project_root / "api" / "existing.py", "existing")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/create.py", "purpose": "Create", "source": "api_surface"},
+            {"path": "api/modify.py", "purpose": "Modify", "source": "api_surface"},
+            {"path": "api/ignore.py", "purpose": "Ignore", "source": "api_surface"},
+            {"path": "api/existing.py", "purpose": "Existing", "source": "api_surface"},
+        ],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/create.py", "action": "create", "reason": "expected_target_missing"},
+        {"section_id": "mission-board", "path": "api/modify.py", "action": "modify", "reason": "expected_target_exists"},
+        {"section_id": "mission-board", "path": "api/ignore.py", "action": "ignore", "reason": "not_in_expected_targets"},
+    ]
+
+    write_plan, transparency = build_write_transparency(file_plan, change_plan, project_root)
+
+    assert write_plan == FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/create.py", "purpose": "Create", "source": "api_surface"}],
+    )
+    assert transparency == {
+        "write_decisions": [
+            {"path": "api/create.py", "decision": "written", "reason": "create"},
+            {"path": "api/modify.py", "decision": "skipped", "reason": "ownership"},
+            {"path": "api/ignore.py", "decision": "skipped", "reason": "ignore"},
+            {"path": "api/existing.py", "decision": "skipped", "reason": "ownership"},
+        ],
+        "write_summary": {
+            "written_count": 1,
+            "modify_written_count": 0,
+            "diff_visible_count": 0,
+            "skipped_modify_count": 0,
+            "skipped_ignore_count": 1,
+            "skipped_identical_count": 0,
+            "skipped_ownership_count": 2,
+            "skipped_exists_fallback_count": 0,
+            "before_bytes_total": 0,
+            "after_bytes_total": 0,
+            "changed_lines_estimate_total": 0,
+            "bytes_written_total": 0,
+        },
+    }
+
+
+def test_build_write_transparency_records_safe_modify_writes_when_enabled():
+    project_root = _workspace_dir("dgce_incremental_write_transparency_modify_enabled")
+    _write_text(project_root / "api" / "modify.py", "existing")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/create.py", "purpose": "Create", "source": "api_surface"},
+            {"path": "api/modify.py", "purpose": "Modify", "source": "api_surface"},
+            {"path": "api/ignore.py", "purpose": "Ignore", "source": "api_surface"},
+        ],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/create.py", "action": "create", "reason": "expected_target_missing"},
+        {"section_id": "mission-board", "path": "api/modify.py", "action": "modify", "reason": "expected_target_exists"},
+        {"section_id": "mission-board", "path": "api/ignore.py", "action": "ignore", "reason": "not_in_expected_targets"},
+    ]
+
+    write_plan, transparency = build_write_transparency(
+        file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+        owned_paths={"api/modify.py"},
+    )
+
+    assert write_plan == FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "api/create.py", "purpose": "Create", "source": "api_surface"},
+            {"path": "api/modify.py", "purpose": "Modify", "source": "api_surface"},
+        ],
+    )
+    modify_entry = next(entry for entry in transparency["write_decisions"] if entry["path"] == "api/modify.py")
+    modify_after_bytes = render_file_entry_bytes({"path": "api/modify.py", "purpose": "Modify", "source": "api_surface"})
+    assert transparency["write_decisions"][0] == {"path": "api/create.py", "decision": "written", "reason": "create"}
+    assert transparency["write_decisions"][2] == {"path": "api/ignore.py", "decision": "skipped", "reason": "ignore"}
+    assert modify_entry["decision"] == "written"
+    assert modify_entry["reason"] == "modify"
+    assert modify_entry["diff_visibility"] == {
+        "before_bytes": len(b"existing"),
+        "after_bytes": len(modify_after_bytes),
+        "changed_lines_estimate": _changed_lines_estimate(b"existing", modify_after_bytes),
+    }
+    assert transparency["write_summary"] == {
+        "written_count": 2,
+        "modify_written_count": 1,
+        "diff_visible_count": 1,
+        "skipped_modify_count": 0,
+        "skipped_ignore_count": 1,
+        "skipped_identical_count": 0,
+        "skipped_ownership_count": 0,
+        "skipped_exists_fallback_count": 0,
+        "before_bytes_total": len(b"existing"),
+        "after_bytes_total": len(modify_after_bytes),
+        "changed_lines_estimate_total": _changed_lines_estimate(b"existing", modify_after_bytes),
+        "bytes_written_total": 0,
+    }
+
+
+def test_build_write_transparency_blocks_unowned_modify_when_enabled():
+    project_root = _workspace_dir("dgce_incremental_write_transparency_unowned_modify")
+    _write_text(project_root / "api" / "modify.py", "existing")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/modify.py", "purpose": "Modify", "source": "api_surface"}],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/modify.py", "action": "modify", "reason": "expected_target_exists"},
+    ]
+
+    write_plan, transparency = build_write_transparency(
+        file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+        owned_paths=set(),
+    )
+
+    assert write_plan == FilePlan(project_name="DGCE", files=[])
+    assert transparency == {
+        "write_decisions": [
+            {"path": "api/modify.py", "decision": "skipped", "reason": "ownership"},
+        ],
+        "write_summary": {
+            "written_count": 0,
+            "modify_written_count": 0,
+            "diff_visible_count": 0,
+            "skipped_modify_count": 0,
+            "skipped_ignore_count": 0,
+            "skipped_identical_count": 0,
+            "skipped_ownership_count": 1,
+            "skipped_exists_fallback_count": 0,
+            "before_bytes_total": 0,
+            "after_bytes_total": 0,
+            "changed_lines_estimate_total": 0,
+            "bytes_written_total": 0,
+        },
+    }
+    assert overwrite_paths_from_transparency(transparency) == set()
+
+
+def test_build_write_transparency_skips_identical_modify_when_enabled():
+    project_root = _workspace_dir("dgce_incremental_write_transparency_identical")
+    identical_entry = {
+        "path": "api/modify.py",
+        "purpose": "Modify",
+        "source": "api_surface",
+    }
+    identical_path = project_root / "api" / "modify.py"
+    identical_path.parent.mkdir(parents=True, exist_ok=True)
+    identical_path.write_bytes(render_file_entry_bytes(identical_entry))
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            identical_entry,
+            {"path": "api/create.py", "purpose": "Create", "source": "api_surface"},
+        ],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/create.py", "action": "create", "reason": "expected_target_missing"},
+        {"section_id": "mission-board", "path": "api/modify.py", "action": "modify", "reason": "expected_target_exists"},
+    ]
+
+    write_plan, transparency = build_write_transparency(
+        file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+        owned_paths={"api/modify.py"},
+    )
+
+    assert write_plan == FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/create.py", "purpose": "Create", "source": "api_surface"}],
+    )
+    assert transparency == {
+        "write_decisions": [
+            {"path": "api/modify.py", "decision": "skipped", "reason": "identical"},
+            {"path": "api/create.py", "decision": "written", "reason": "create"},
+        ],
+        "write_summary": {
+            "written_count": 1,
+            "modify_written_count": 0,
+            "diff_visible_count": 0,
+            "skipped_modify_count": 0,
+            "skipped_ignore_count": 0,
+            "skipped_identical_count": 1,
+            "skipped_ownership_count": 0,
+            "skipped_exists_fallback_count": 0,
+            "before_bytes_total": 0,
+            "after_bytes_total": 0,
+            "changed_lines_estimate_total": 0,
+            "bytes_written_total": 0,
+        },
+    }
+
+
+def test_should_write_planned_file_applies_v1_controlled_write_rules():
+    project_root = _workspace_dir("dgce_incremental_write_decision")
+    _write_text(project_root / "api" / "existing.py", "existing")
+    actions_by_path = {
+        "api/create.py": "create",
+        "api/modify.py": "modify",
+        "api/ignore.py": "ignore",
+    }
+
+    assert should_write_planned_file("api/create.py", actions_by_path, project_root) is True
+    assert should_write_planned_file("api/modify.py", actions_by_path, project_root) is False
+    assert should_write_planned_file("api/ignore.py", actions_by_path, project_root) is False
+    assert should_write_planned_file("api/missing.py", actions_by_path, project_root) is True
+    assert should_write_planned_file("api/existing.py", actions_by_path, project_root) is False
+
+
+def test_should_write_planned_file_allows_modify_when_safe_modify_enabled():
+    project_root = _workspace_dir("dgce_incremental_write_decision_modify_enabled")
+    _write_text(project_root / "api" / "modify.py", "existing")
+    actions_by_path = {"api/modify.py": "modify", "api/ignore.py": "ignore"}
+
+    assert should_write_planned_file(
+        "api/modify.py",
+        actions_by_path,
+        project_root,
+        allow_modify_write=True,
+    ) is True
+    assert should_write_planned_file(
+        "api/ignore.py",
+        actions_by_path,
+        project_root,
+        allow_modify_write=True,
+    ) is False
+
+
+def test_run_section_with_workspace_persists_incremental_change_plan(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_workspace")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+    _write_text(project_root / ".venv" / "Lib" / "site-packages" / "pip" / "__init__.py", "skip")
+    _write_text(project_root / "docs" / "notes.md", "keep")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_write_file_plan(file_plan, output_dir, overwrite_paths=None):
+        written_files = []
+        for entry in file_plan.files:
+            path = output_dir / Path(entry["path"])
+            _write_text(path, f"generated:{entry['path']}")
+            written_files.append(entry["path"])
+        return written_files
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.write_file_plan", fake_write_file_plan)
+
+    run_section_with_workspace(_section(), project_root)
+    change_plan = json.loads(
+        (project_root / ".dce" / "plans" / f"{section_id}.change_plan.json").read_text(encoding="utf-8")
+    )
+
+    assert change_plan["section_id"] == section_id
+    assert change_plan["expected_targets"] == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+    assert not any(entry["path"].startswith(".dce") for entry in change_plan["workspace_inventory"])
+    assert not any(entry["path"].startswith(".venv") for entry in change_plan["workspace_inventory"])
+    assert change_plan["changes"] == [
+        {
+            "action": "create",
+            "path": "api/missionboardservice.py",
+            "reason": "expected_target_missing",
+            "section_id": "mission-board",
+        },
+        {
+            "action": "ignore",
+            "path": "docs/notes.md",
+            "reason": "not_in_expected_targets",
+            "section_id": "mission-board",
+        },
+        {
+            "action": "create",
+            "path": "mission_board/models.py",
+            "reason": "expected_target_missing",
+            "section_id": "mission-board",
+        },
+        {
+            "action": "modify",
+            "path": "mission_board/service.py",
+            "reason": "expected_target_exists",
+            "section_id": "mission-board",
+        },
+        {
+            "action": "create",
+            "path": "models/mission.py",
+            "reason": "expected_target_missing",
+            "section_id": "mission-board",
+        },
+    ]
+
+
+def test_run_section_with_workspace_change_plan_uses_current_file_plan_as_source_of_truth(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    repo_root = _workspace_dir("dgce_incremental_current_file_plan_truth")
+    project_root = repo_root / "defiant-sky"
+    section = DGCESection(
+        section_type="system_breakdown",
+        title="System Breakdown",
+        description="Ground expected targets against the host repo consistently.",
+        expected_targets=[
+            "aether/dgce/decompose.py",
+            "aether/dgce/incremental.py",
+            "aether/dgce/file_writer.py",
+            "dce.py",
+        ],
+    )
+    stale_outputs_path = project_root / ".dce" / "outputs" / "system-breakdown.json"
+    stale_outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": "system-breakdown",
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [{"path": "apps/aether_api/routers/dgce.py", "purpose": "stale", "source": "expected_targets"}],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for target in section.expected_targets:
+        _write_text(repo_root / Path(target), f"existing:{target}")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+    result = run_section_with_workspace(section, project_root)
+    change_plan = json.loads(
+        (project_root / ".dce" / "plans" / "system-breakdown.change_plan.json").read_text(encoding="utf-8")
+    )
+
+    assert sorted(entry["path"] for entry in result.file_plan.files) == sorted(section.expected_targets)
+    assert change_plan["expected_targets"] == sorted(section.expected_targets)
+    assert all(entry["action"] == "modify" for entry in change_plan["changes"])
+    assert all(entry["reason"] == "expected_target_exists" for entry in change_plan["changes"])
+
+
+def test_run_section_with_workspace_write_stage_only_writes_create_targets(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_write_control")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root)
+    change_plan = load_change_plan(project_root / ".dce" / "plans" / f"{section_id}.change_plan.json")
+
+    assert [entry["action"] for entry in change_plan] == ["create", "create", "modify", "create"]
+    assert result.run_mode == "create_only"
+    assert result.run_outcome_class == "partial_skipped_modify"
+    assert result.written_files == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "models/mission.py",
+    ]
+    assert (project_root / "api" / "missionboardservice.py").exists()
+    assert (project_root / "mission_board" / "models.py").exists()
+    assert (project_root / "models" / "mission.py").exists()
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing"
+    assert result.execution_outcome == {
+        "section_id": "mission-board",
+        "stage": "WRITE",
+        "status": "partial",
+        "validation_summary": {
+            "ok": True,
+            "error": None,
+            "missing_keys": [],
+        },
+        "change_plan_summary": {
+            "create_count": 3,
+            "modify_count": 1,
+            "ignore_count": 0,
+        },
+        "execution_summary": {
+            "written_files_count": 3,
+            "skipped_modify_count": 1,
+            "skipped_ignore_count": 0,
+            "skipped_identical_count": 0,
+            "skipped_ownership_count": 0,
+            "skipped_exists_fallback_count": 0,
+        },
+    }
+    assert result.advisory == {
+        "type": "process_adjustment",
+        "summary": "Review incremental skip behavior for mission-board",
+        "explanation": ["partial_run", "skipped_modify"],
+    }
+    outputs_payload = json.loads(
+        (project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8")
+    )
+    advisory_index = json.loads((project_root / ".dce" / "advisory_index.json").read_text(encoding="utf-8"))
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+    assert outputs_payload["advisory"] == result.advisory
+    assert outputs_payload["write_transparency"] == result.write_transparency
+    assert ownership_index == result.ownership_index
+    assert result.write_transparency["write_summary"] == {
+        "written_count": 3,
+        "modify_written_count": 0,
+        "diff_visible_count": 0,
+        "skipped_modify_count": 1,
+        "skipped_ignore_count": 0,
+        "skipped_identical_count": 0,
+        "skipped_ownership_count": 0,
+        "skipped_exists_fallback_count": 0,
+        "before_bytes_total": 0,
+        "after_bytes_total": 0,
+        "changed_lines_estimate_total": 0,
+        "bytes_written_total": sum(
+            entry["bytes_written"] for entry in result.write_transparency["write_decisions"] if entry["decision"] == "written"
+        ),
+    }
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "modify"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert any(
+        entry["path"] == "api/missionboardservice.py"
+        and entry["decision"] == "written"
+        and entry["reason"] == "create"
+        and isinstance(entry["bytes_written"], int)
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert all("diff_visibility" not in entry for entry in result.write_transparency["write_decisions"])
+    assert ownership_index == {
+        "files": [
+            {
+                "path": "api/missionboardservice.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/models.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "models/mission.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+        ]
+    }
+    assert advisory_index == {
+        "run_outcome_class": "partial_skipped_modify",
+        "run_mode": "create_only",
+        "section_id": "mission-board",
+        "status": "partial",
+        "validation_ok": True,
+        "advisory_type": "process_adjustment",
+        "advisory_explanation": ["partial_run", "skipped_modify"],
+        "written_files_count": 3,
+        "skipped_modify_count": 1,
+        "skipped_ignore_count": 0,
+    }
+    assert workspace_summary == {
+        "total_sections_seen": 1,
+        "sections": [
+            {
+                "section_id": "mission-board",
+                "latest_run_mode": "create_only",
+                "latest_run_outcome_class": "partial_skipped_modify",
+                "latest_status": "partial",
+                "latest_validation_ok": True,
+                "latest_advisory_type": "process_adjustment",
+                "latest_advisory_explanation": ["partial_run", "skipped_modify"],
+                "latest_written_files_count": 3,
+                "latest_skipped_modify_count": 1,
+                "latest_skipped_ignore_count": 0,
+                "preview_path": None,
+                "review_path": None,
+                "preview_outcome_class": None,
+                "recommended_mode": None,
+                "approval_path": None,
+                "approval_status": None,
+                "selected_mode": None,
+                "execution_permitted": None,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": ".dce/execution/mission-board.execution.json",
+                "execution_status": "execution_not_governed",
+                "approval_consumed": False,
+                "approval_status_after": None,
+            }
+        ],
+    }
+
+
+def test_run_section_with_workspace_safe_modify_enabled_writes_modify_targets(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_safe_modify_enabled")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    outputs_payload = json.loads(
+        (project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8")
+    )
+    advisory_index = json.loads((project_root / ".dce" / "advisory_index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert result.run_mode == "safe_modify"
+    assert result.run_outcome_class == "success_safe_modify"
+    assert outputs_payload["run_mode"] == "safe_modify"
+    assert outputs_payload["run_outcome_class"] == "success_safe_modify"
+    assert result.written_files == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+    assert result.execution_outcome["status"] == "success"
+    assert result.execution_outcome["execution_summary"] == {
+        "written_files_count": 4,
+        "skipped_modify_count": 0,
+        "skipped_ignore_count": 0,
+        "skipped_identical_count": 0,
+        "skipped_ownership_count": 0,
+        "skipped_exists_fallback_count": 0,
+    }
+    assert result.advisory is None
+    modify_entry = next(entry for entry in result.write_transparency["write_decisions"] if entry["path"] == "mission_board/service.py")
+    modify_after_bytes = render_file_entry_bytes(
+        {
+            "path": "mission_board/service.py",
+            "purpose": "coordinate mission generation service orchestration",
+            "source": "system_breakdown",
+        }
+    )
+    assert any(
+        entry["path"] == "mission_board/service.py"
+        and entry["decision"] == "written"
+        and entry["reason"] == "modify"
+        and isinstance(entry["bytes_written"], int)
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert modify_entry["diff_visibility"] == {
+        "before_bytes": len(b"existing"),
+        "after_bytes": len(modify_after_bytes),
+        "changed_lines_estimate": _changed_lines_estimate(b"existing", modify_after_bytes),
+    }
+    assert all(
+        "diff_visibility" not in entry
+        for entry in result.write_transparency["write_decisions"]
+        if entry["path"] != "mission_board/service.py"
+    )
+    assert result.write_transparency["write_summary"] == {
+        "written_count": 4,
+        "modify_written_count": 1,
+        "diff_visible_count": 1,
+        "skipped_modify_count": 0,
+        "skipped_ignore_count": 0,
+        "skipped_identical_count": 0,
+        "skipped_ownership_count": 0,
+        "skipped_exists_fallback_count": 0,
+        "before_bytes_total": len(b"existing"),
+        "after_bytes_total": len(modify_after_bytes),
+        "changed_lines_estimate_total": _changed_lines_estimate(b"existing", modify_after_bytes),
+        "bytes_written_total": sum(
+            entry["bytes_written"] for entry in result.write_transparency["write_decisions"] if entry["decision"] == "written"
+        ),
+    }
+    assert outputs_payload["execution_outcome"] == result.execution_outcome
+    assert outputs_payload["advisory"] == result.advisory
+    assert outputs_payload["write_transparency"] == result.write_transparency
+    assert advisory_index["run_mode"] == "safe_modify"
+    assert advisory_index["run_outcome_class"] == "success_safe_modify"
+    assert workspace_summary["sections"][0]["latest_run_mode"] == "safe_modify"
+    assert workspace_summary["sections"][0]["latest_run_outcome_class"] == "success_safe_modify"
+    assert ownership_index == result.ownership_index
+    assert ownership_index == {
+        "files": [
+            {
+                "path": "api/missionboardservice.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/models.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "modify",
+            },
+            {
+                "path": "models/mission.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+        ]
+    }
+
+
+def test_data_model_preview_recommends_safe_modify_in_development_mode(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    monkeypatch.setenv("AETHER_ENVIRONMENT", "development")
+    project_root = _workspace_dir("dgce_data_model_dev_preview_safe_modify")
+    section = DGCESection(
+        section_type="data_model",
+        title="Data Model",
+        description="Define the governed DGCE data model.",
+        requirements=[
+            "Define SectionInput and ExecutionStamp entities",
+            "Keep the model deterministic and auditable",
+        ],
+        constraints=["Keep the model independent of .dce file paths"],
+        expected_targets=["aether/dgce/decompose.py", "aether/dgce/incremental.py"],
+    )
+    section_id = "data-model"
+
+    for path in section.expected_targets:
+        _write_text(project_root / path, "existing-development-content")
+    _write_ownership_index(project_root, [{"path": path, "section_id": section_id} for path in section.expected_targets])
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    result = run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2")
+    preview = json.loads((project_root / ".dce" / "plans" / f"{section_id}.preview.json").read_text(encoding="utf-8"))
+
+    assert result.run_mode == "incremental_v2_2"
+    assert preview["preview_outcome_class"] == "preview_safe_modify_ready"
+    assert preview["recommended_mode"] == "safe_modify"
+    assert preview["summary"]["total_blocked_modify_disabled"] == 0
+    assert all(entry["planned_action"] == "modify" for entry in preview["previews"])
+    assert all(entry["preview_decision"] == "write" for entry in preview["previews"])
+
+
+def test_data_model_execution_allows_modify_in_development_mode_without_safe_modify_flag(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    monkeypatch.setenv("AETHER_ENVIRONMENT", "development")
+    project_root = _workspace_dir("dgce_data_model_dev_execute_safe_modify")
+    section = DGCESection(
+        section_type="data_model",
+        title="Data Model",
+        description="Define the governed DGCE data model.",
+        requirements=[
+            "Define SectionInput and ExecutionStamp entities",
+            "Keep the model deterministic and auditable",
+        ],
+        constraints=["Keep the model independent of .dce file paths"],
+        expected_targets=["aether/dgce/decompose.py", "aether/dgce/incremental.py"],
+    )
+    section_id = "data-model"
+
+    for path in section.expected_targets:
+        _write_text(project_root / path, "existing-development-content")
+    _write_ownership_index(project_root, [{"path": path, "section_id": section_id} for path in section.expected_targets])
+
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    class FakePlanner:
+        def route(self, task, classification):
+            structured_content = None
+            output = "Summary output"
+
+            if task.task_type == "data_model":
+                structured_content = {
+                    "modules": [
+                        {
+                            "name": "DGCEDataModel",
+                            "entities": ["SectionInput"],
+                            "relationships": ["SectionInput->ExecutionStamp"],
+                            "required": [],
+                            "identity_keys": [],
+                        }
+                    ],
+                    "entities": [{"name": "SectionInput", "fields": [{"name": "section_id", "type": "string"}]}],
+                    "fields": ["section_id"],
+                    "relationships": ["SectionInput->ExecutionStamp"],
+                    "validation_rules": ["section_id required"],
+                }
+                output = json.dumps(structured_content)
+            elif task.task_type == "api_surface":
+                structured_content = {
+                    "interfaces": ["DGCEDataModelService"],
+                    "methods": ["describe_model"],
+                    "inputs": ["section_id"],
+                    "outputs": ["artifact"],
+                    "error_cases": ["section_missing"],
+                }
+                output = json.dumps(structured_content)
+
+            return type(
+                "RouteResult",
+                (),
+                {
+                    "status": ArtifactStatus.EXPERIMENTAL,
+                    "task_bucket": "planning" if task.task_type in {"system_breakdown", "system_summary"} else "code_routine",
+                    "decision": "MID_MODEL",
+                    "output": output,
+                    "reused": False,
+                    "execution_metadata": {"structure_valid": True} if structured_content is not None else {},
+                    "structured_content": structured_content,
+                },
+            )()
+
+    result = run_section_with_workspace(section, project_root, router_planner=FakePlanner())
+    outputs_payload = json.loads((project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8"))
+
+    assert result.run_mode == "safe_modify"
+    assert result.run_outcome_class == "success_safe_modify"
+    assert sorted(result.written_files) == sorted(section.expected_targets)
+    assert outputs_payload["run_mode"] == "safe_modify"
+    assert outputs_payload["run_outcome_class"] == "success_safe_modify"
+
+
+def test_run_section_with_workspace_safe_modify_enabled_writes_when_diff_visibility_read_fails(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_safe_modify_diff_visibility_read_failure")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    target_path = project_root / "mission_board" / "service.py"
+    _write_text(target_path, "existing")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    original_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self):
+        if self.as_posix().endswith("mission_board/service.py"):
+            raise OSError("simulated disappearing file during diff visibility read")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.incremental._has_identical_existing_content", lambda *args, **kwargs: False)
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    outputs_payload = json.loads(
+        (project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8")
+    )
+
+    assert result.run_mode == "safe_modify"
+    assert result.run_outcome_class == "success_safe_modify"
+    assert outputs_payload["run_mode"] == "safe_modify"
+    assert outputs_payload["run_outcome_class"] == "success_safe_modify"
+    modify_entry = next(entry for entry in result.write_transparency["write_decisions"] if entry["path"] == "mission_board/service.py")
+
+    assert "mission_board/service.py" in result.written_files
+    assert modify_entry["decision"] == "written"
+    assert modify_entry["reason"] == "modify"
+    assert "diff_visibility" not in modify_entry
+    assert isinstance(modify_entry["bytes_written"], int)
+    assert result.write_transparency["write_summary"]["modify_written_count"] == 1
+    assert result.write_transparency["write_summary"]["diff_visible_count"] == 0
+    assert result.write_transparency["write_summary"]["before_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["after_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["changed_lines_estimate_total"] == 0
+    assert outputs_payload["write_transparency"] == result.write_transparency
+
+
+def test_run_section_with_workspace_safe_modify_enabled_skips_identical_modify_targets(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_safe_modify_identical")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    identical_entry = {
+        "path": "mission_board/service.py",
+        "purpose": "coordinate mission generation service orchestration",
+        "source": "system_breakdown",
+    }
+    identical_path = project_root / "mission_board" / "service.py"
+    identical_path.parent.mkdir(parents=True, exist_ok=True)
+    identical_path.write_bytes(render_file_entry_bytes(identical_entry))
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    outputs_payload = json.loads(
+        (project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8")
+    )
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert "mission_board/service.py" not in result.written_files
+    assert result.execution_outcome["status"] == "success"
+    assert result.run_outcome_class == "partial_skipped_identical"
+    assert result.execution_outcome["execution_summary"]["skipped_modify_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_identical_count"] == 1
+    assert result.execution_outcome["execution_summary"]["skipped_ownership_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_exists_fallback_count"] == 0
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "identical"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert result.write_transparency["write_summary"]["written_count"] == 3
+    assert result.write_transparency["write_summary"]["modify_written_count"] == 0
+    assert result.write_transparency["write_summary"]["diff_visible_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_modify_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_ignore_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_identical_count"] == 1
+    assert result.write_transparency["write_summary"]["skipped_ownership_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_exists_fallback_count"] == 0
+    assert result.write_transparency["write_summary"]["before_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["after_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["changed_lines_estimate_total"] == 0
+    assert result.write_transparency["write_summary"]["bytes_written_total"] == sum(
+        entry["bytes_written"] for entry in result.write_transparency["write_decisions"] if entry["decision"] == "written"
+    )
+    assert all("diff_visibility" not in entry for entry in result.write_transparency["write_decisions"])
+    assert ownership_index == result.ownership_index
+    assert any(
+        entry["path"] == "mission_board/service.py"
+        and entry["section_id"] == "mission-board"
+        and entry["write_reason"] == "create"
+        for entry in ownership_index["files"]
+    )
+    assert outputs_payload["write_transparency"] == result.write_transparency
+
+
+def test_run_section_with_workspace_safe_modify_enabled_blocks_unowned_modify_targets(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_safe_modify_unowned")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "docs/legacy.md",
+                "section_id": "legacy-section",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert "mission_board/service.py" not in result.written_files
+    assert result.run_outcome_class == "partial_skipped_ownership"
+    assert "api/missionboardservice.py" in result.written_files
+    assert "mission_board/models.py" in result.written_files
+    assert "models/mission.py" in result.written_files
+    assert result.execution_outcome["status"] == "partial"
+    assert result.execution_outcome["execution_summary"]["skipped_modify_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_ignore_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_identical_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_ownership_count"] == 1
+    assert result.execution_outcome["execution_summary"]["skipped_exists_fallback_count"] == 0
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "ownership"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert result.write_transparency["write_summary"]["skipped_ownership_count"] == 1
+    assert result.write_transparency["write_summary"]["modify_written_count"] == 0
+    assert result.write_transparency["write_summary"]["diff_visible_count"] == 0
+    assert result.write_transparency["write_summary"]["before_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["after_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["changed_lines_estimate_total"] == 0
+    assert ownership_index == result.ownership_index
+    assert all(entry["path"] != "mission_board/service.py" for entry in ownership_index["files"])
+    assert any(entry["path"] == "docs/legacy.md" for entry in ownership_index["files"])
+
+
+def test_run_section_with_workspace_preserves_existing_ownership_on_no_write_run(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_preserve_ownership_no_write")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    identical_entry = {
+        "path": "mission_board/service.py",
+        "purpose": "coordinate mission generation service orchestration",
+        "source": "system_breakdown",
+    }
+    identical_path = project_root / "mission_board" / "service.py"
+    identical_path.parent.mkdir(parents=True, exist_ok=True)
+    identical_path.write_bytes(render_file_entry_bytes(identical_entry))
+    existing_ownership = {
+        "files": [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ]
+    }
+    _write_ownership_index(project_root, existing_ownership["files"])
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        if "system breakdown" in lowered:
+            output = json.dumps(
+                {
+                    "module_name": "mission_board",
+                    "purpose": "coordinate mission generation",
+                    "subcomponents": [],
+                    "dependencies": [],
+                    "implementation_order": [],
+                }
+            )
+        elif "data model" in lowered:
+            output = json.dumps(
+                {
+                    "entities": [],
+                    "fields": [],
+                    "relationships": [],
+                    "validation_rules": [],
+                }
+            )
+        elif "api surface" in lowered:
+            output = json.dumps(
+                {
+                    "interfaces": [],
+                    "methods": [],
+                    "inputs": {},
+                    "outputs": {},
+                    "error_cases": {},
+                }
+            )
+        else:
+            output = "Summary output"
+
+        return ExecutionResult(
+            output=output,
+            status=ArtifactStatus.EXPERIMENTAL,
+            executor=executor_name,
+            metadata={
+                "real_model_called": False,
+                "model_backend": "stub",
+                "model_name": None,
+                "estimated_tokens": len(content) / 4,
+                "estimated_cost": (len(content) / 4) * 0.000002,
+                "inference_avoided": False,
+                "backend_used": "stub",
+                "worth_running": True,
+            },
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "success_safe_modify"
+    assert ownership_index == existing_ownership
+    assert ownership_index == result.ownership_index
+
+
+def test_run_section_with_workspace_merges_and_refreshes_ownership_entries(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_merge_refresh_ownership")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "api/missionboardservice.py", "purpose": "API", "source": "api_surface"},
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "docs/legacy.md",
+                "section_id": "legacy-section",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/service.py",
+                "section_id": "legacy-section",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert ownership_index == result.ownership_index
+    assert ownership_index == {
+        "files": [
+            {
+                "path": "api/missionboardservice.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "docs/legacy.md",
+                "section_id": "legacy-section",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/models.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "modify",
+            },
+            {
+                "path": "models/mission.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+        ]
+    }
+
+
+def test_run_section_with_workspace_skips_ignore_paths_without_collision(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_ignore_collision")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/models.py", "purpose": "Models", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "models.py", "existing-models")
+    _write_text(project_root / "api" / "missionboardservice.py", "existing-api")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/models.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root)
+    outputs_payload = json.loads(
+        (project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8")
+    )
+    advisory_index = json.loads((project_root / ".dce" / "advisory_index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert "mission_board/models.py" not in result.written_files
+    assert "api/missionboardservice.py" not in result.written_files
+    assert (project_root / "mission_board" / "models.py").read_text(encoding="utf-8") == "existing-models"
+    assert (project_root / "api" / "missionboardservice.py").read_text(encoding="utf-8") == "existing-api"
+    assert result.execution_outcome["execution_summary"]["skipped_ignore_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_modify_count"] == 1
+    assert result.execution_outcome["execution_summary"]["skipped_identical_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_exists_fallback_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_ownership_count"] == 1
+    assert result.execution_outcome["status"] == "partial"
+    assert outputs_payload["execution_outcome"] == result.execution_outcome
+    assert outputs_payload["advisory"] == result.advisory
+    assert outputs_payload["write_transparency"] == result.write_transparency
+    assert result.advisory == {
+        "type": "process_adjustment",
+        "summary": "Review incremental skip behavior for mission-board",
+        "explanation": ["partial_run", "skipped_modify"],
+    }
+    assert advisory_index == {
+        "run_outcome_class": "partial_skipped_ownership",
+        "run_mode": "create_only",
+        "section_id": "mission-board",
+        "status": "partial",
+        "validation_ok": True,
+        "advisory_type": "process_adjustment",
+        "advisory_explanation": ["partial_run", "skipped_modify"],
+        "written_files_count": 2,
+        "skipped_modify_count": 1,
+        "skipped_ignore_count": 0,
+    }
+    assert any(
+        entry == {"path": "mission_board/models.py", "decision": "skipped", "reason": "modify"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert any(
+        entry == {"path": "api/missionboardservice.py", "decision": "skipped", "reason": "ownership"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert result.write_transparency["write_summary"]["skipped_exists_fallback_count"] == 0
+    assert workspace_summary == {
+        "total_sections_seen": 1,
+        "sections": [
+                {
+                    "section_id": "mission-board",
+                    "latest_run_mode": "create_only",
+                    "latest_run_outcome_class": "partial_skipped_ownership",
+                "latest_status": "partial",
+                "latest_validation_ok": True,
+                "latest_advisory_type": "process_adjustment",
+                "latest_advisory_explanation": ["partial_run", "skipped_modify"],
+                "latest_written_files_count": 2,
+                "latest_skipped_modify_count": 1,
+                "latest_skipped_ignore_count": 0,
+                "preview_path": None,
+                "review_path": None,
+                "preview_outcome_class": None,
+                "recommended_mode": None,
+                "approval_path": None,
+                "approval_status": None,
+                "selected_mode": None,
+                "execution_permitted": None,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": ".dce/execution/mission-board.execution.json",
+                "execution_status": "execution_not_governed",
+                "approval_consumed": False,
+                "approval_status_after": None,
+            }
+        ],
+    }
+
+
+def test_run_section_with_workspace_safe_modify_enabled_still_skips_ignore_paths(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_safe_modify_ignore")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/models.py", "purpose": "Models", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "models.py", "existing-models")
+    _write_text(project_root / "api" / "missionboardservice.py", "existing-api")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/models.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert result.run_mode == "safe_modify"
+    assert result.run_outcome_class == "partial_skipped_ownership"
+    assert "mission_board/models.py" in result.written_files
+    assert "api/missionboardservice.py" not in result.written_files
+    assert result.execution_outcome["status"] == "partial"
+    assert result.execution_outcome["execution_summary"]["skipped_modify_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_ignore_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_identical_count"] == 0
+    assert result.execution_outcome["execution_summary"]["skipped_ownership_count"] == 1
+    assert result.execution_outcome["execution_summary"]["skipped_exists_fallback_count"] == 0
+    assert any(
+        entry["path"] == "mission_board/models.py"
+        and entry["decision"] == "written"
+        and entry["reason"] == "modify"
+        and isinstance(entry["bytes_written"], int)
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert any(
+        entry == {"path": "api/missionboardservice.py", "decision": "skipped", "reason": "ownership"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert result.write_transparency["write_summary"]["skipped_identical_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_ownership_count"] == 1
+    assert result.write_transparency["write_summary"]["modify_written_count"] == 1
+    assert result.write_transparency["write_summary"]["diff_visible_count"] == 1
+    assert result.write_transparency["write_summary"]["before_bytes_total"] == len("existing-models".encode("utf-8"))
+    assert result.write_transparency["write_summary"]["after_bytes_total"] > 0
+    assert result.write_transparency["write_summary"]["changed_lines_estimate_total"] > 0
+    assert ownership_index == result.ownership_index
+    assert ownership_index == {
+        "files": [
+            {
+                "path": "mission_board/models.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "modify",
+            },
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+            {
+                "path": "models/mission.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            },
+        ]
+    }
+
+
+def test_run_section_with_workspace_does_not_raise_file_exists_for_modify_targets(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_no_collision")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root)
+
+    assert result.written_files == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "models/mission.py",
+    ]
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing"
+
+
+def test_run_section_with_workspace_writes_files_missing_from_change_plan(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_missing_change_entry")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {"path": "mission_board/service.py", "purpose": "Service", "source": "system_breakdown"},
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root)
+
+    assert "api/missionboardservice.py" in result.written_files
+    assert "mission_board/models.py" in result.written_files
+    assert "models/mission.py" in result.written_files
+
+
+def test_run_section_with_workspace_records_exists_fallback_transparency(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_exists_fallback")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_text(project_root / "api" / "missionboardservice.py", "existing-api")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_scan_workspace_inventory(project_root_arg):
+        return []
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.scan_workspace_inventory", fake_scan_workspace_inventory)
+
+    result = run_section_with_workspace(_section(), project_root, allow_safe_modify=True)
+    outputs_payload = json.loads((project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8"))
+    ownership_index = json.loads((project_root / ".dce" / "ownership_index.json").read_text(encoding="utf-8"))
+
+    assert "api/missionboardservice.py" not in result.written_files
+    assert any(
+        entry == {"path": "api/missionboardservice.py", "decision": "skipped", "reason": "ownership"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert result.write_transparency["write_summary"]["written_count"] == 3
+    assert result.write_transparency["write_summary"]["modify_written_count"] == 0
+    assert result.write_transparency["write_summary"]["diff_visible_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_modify_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_ignore_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_identical_count"] == 0
+    assert result.write_transparency["write_summary"]["skipped_ownership_count"] == 1
+    assert result.write_transparency["write_summary"]["skipped_exists_fallback_count"] == 0
+    assert result.write_transparency["write_summary"]["before_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["after_bytes_total"] == 0
+    assert result.write_transparency["write_summary"]["changed_lines_estimate_total"] == 0
+    assert result.write_transparency["write_summary"]["bytes_written_total"] == sum(
+        entry["bytes_written"] for entry in result.write_transparency["write_decisions"] if entry["decision"] == "written"
+    )
+    assert outputs_payload["write_transparency"] == result.write_transparency
+    assert ownership_index == result.ownership_index
+    assert all(entry["path"] != "api/missionboardservice.py" for entry in ownership_index["files"])
+    assert result.run_outcome_class == "partial_skipped_ownership"
+
+
+def test_run_section_with_workspace_reports_success_when_repair_normalizes_validation_gaps(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_validation_outcome")
+    planner = RouterPlanner(
+        cache=ExactMatchCache(project_root / ".dce" / "validation_outcome_cache.json"),
+        artifact_store=ArtifactStore(project_root / ".dce" / "validation_outcome_artifacts.jsonl"),
+    )
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        if "system breakdown" in lowered:
+            output = json.dumps(
+                {
+                    "modules": [
+                        {
+                            "name": "MissionBoardCoordinator",
+                            "layer": "DGCE Core",
+                            "responsibility": "Coordinate mission generation",
+                            "inputs": [
+                                {
+                                    "name": "raw_section_input",
+                                    "type": "SectionInputRequest",
+                                    "schema_fields": [
+                                        {"name": "section_id", "type": "string", "required": True}
+                                    ],
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "name": "StaleCheckRecord",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/preflight/{section_id}.stale_check.json",
+                                }
+                            ],
+                            "dependencies": [
+                                {"name": "artifact_writer", "kind": "module", "reference": "planner/io.py"}
+                            ],
+                            "governance_touchpoints": ["input validation"],
+                            "failure_modes": ["invalid input structure"],
+                            "owned_paths": [".dce/preflight/{section_id}.stale_check.json"],
+                            "implementation_order": 1,
+                        }
+                    ],
+                    "build_graph": {"edges": [["MissionBoardCoordinator", "MissionBoardCoordinator"]]},
+                    "tests": [],
+                }
+            )
+        elif "data model" in lowered:
+            output = json.dumps(
+                {
+                    "entities": ["Mission"],
+                    "fields": ["id", "state"],
+                }
+            )
+        elif "api surface" in lowered:
+            output = json.dumps(
+                {
+                    "interfaces": ["MissionBoardService"],
+                    "methods": ["create_mission"],
+                    "inputs": ["template_id"],
+                }
+            )
+        else:
+            output = "Summary output"
+
+        return ExecutionResult(
+            output=output,
+            status=ArtifactStatus.EXPERIMENTAL,
+            executor=executor_name,
+            metadata={
+                "real_model_called": False,
+                "model_backend": "stub",
+                "model_name": None,
+                "estimated_tokens": len(content) / 4,
+                "estimated_cost": (len(content) / 4) * 0.000002,
+                "inference_avoided": False,
+                "backend_used": "stub",
+                "worth_running": True,
+            },
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, router_planner=planner)
+
+    assert result.execution_outcome == {
+        "section_id": "mission-board",
+        "stage": "WRITE",
+        "status": "success",
+        "validation_summary": {
+            "ok": True,
+            "error": None,
+            "missing_keys": [],
+        },
+        "change_plan_summary": {
+            "create_count": 4,
+            "modify_count": 0,
+            "ignore_count": 0,
+        },
+        "execution_summary": {
+            "written_files_count": 4,
+            "skipped_modify_count": 0,
+            "skipped_ignore_count": 0,
+            "skipped_identical_count": 0,
+            "skipped_ownership_count": 0,
+            "skipped_exists_fallback_count": 0,
+        },
+    }
+    assert result.advisory is None
+    outputs_payload = json.loads(
+        (project_root / ".dce" / "outputs" / "mission-board.json").read_text(encoding="utf-8")
+    )
+    advisory_index = json.loads((project_root / ".dce" / "advisory_index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+    assert outputs_payload["advisory"] == result.advisory
+    assert advisory_index == {
+        "run_outcome_class": "success_create_only",
+        "run_mode": "create_only",
+        "section_id": "mission-board",
+        "status": "success",
+        "validation_ok": True,
+        "advisory_type": None,
+        "advisory_explanation": None,
+        "written_files_count": 4,
+        "skipped_modify_count": 0,
+        "skipped_ignore_count": 0,
+    }
+    assert workspace_summary == {
+        "total_sections_seen": 1,
+        "sections": [
+            {
+                "section_id": "mission-board",
+                "latest_run_mode": "create_only",
+                "latest_run_outcome_class": "success_create_only",
+                "latest_status": "success",
+                "latest_validation_ok": True,
+                "latest_advisory_type": None,
+                "latest_advisory_explanation": None,
+                "latest_written_files_count": 4,
+                "latest_skipped_modify_count": 0,
+                "latest_skipped_ignore_count": 0,
+                "preview_path": None,
+                "review_path": None,
+                "preview_outcome_class": None,
+                "recommended_mode": None,
+                "approval_path": None,
+                "approval_status": None,
+                "selected_mode": None,
+                "execution_permitted": None,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": ".dce/execution/mission-board.execution.json",
+                "execution_status": "execution_not_governed",
+                "approval_consumed": False,
+                "approval_status_after": None,
+            }
+        ],
+    }
+
+
+def test_run_section_with_workspace_uses_structured_content_for_validation_summary(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_structured_content_validation_summary")
+    planner = RouterPlanner(
+        cache=ExactMatchCache(project_root / ".dce" / "structured_content_cache.json"),
+        artifact_store=ArtifactStore(project_root / ".dce" / "structured_content_artifacts.jsonl"),
+    )
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        if "system breakdown" in lowered:
+            output = json.dumps(
+                {
+                    "modules": [
+                        {
+                            "name": "MissionBoardCoordinator",
+                            "layer": "DGCE Core",
+                            "responsibility": "Coordinate mission generation",
+                            "inputs": [
+                                {
+                                    "name": "raw_section_input",
+                                    "type": "SectionInputRequest",
+                                    "schema_fields": [
+                                        {"name": "section_id", "type": "string", "required": True}
+                                    ],
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "name": "StaleCheckRecord",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/preflight/{section_id}.stale_check.json",
+                                }
+                            ],
+                            "dependencies": [
+                                {"name": "artifact_writer", "kind": "module", "reference": "planner/io.py"}
+                            ],
+                            "governance_touchpoints": ["input validation"],
+                            "failure_modes": ["invalid input structure"],
+                            "owned_paths": [".dce/preflight/{section_id}.stale_check.json"],
+                            "implementation_order": 1,
+                        }
+                    ],
+                    "build_graph": {"edges": [["MissionBoardCoordinator", "MissionBoardCoordinator"]]},
+                    "tests": [],
+                }
+            )
+        elif "data model" in lowered:
+            output = json.dumps(
+                {
+                    "entities": [
+                        {"name": "Mission", "fields": [{"name": "id", "type": "string"}]},
+                    ],
+                    "fields": ["id"],
+                    "relationships": ["Mission->Player"],
+                    "validation_rules": ["id required"],
+                }
+            )
+        elif "api surface" in lowered:
+            output = json.dumps(
+                {
+                    "interfaces": ["MissionBoardService"],
+                    "methods": ["create_mission"],
+                    "inputs": ["template_id"],
+                    "outputs": ["mission_id"],
+                    "error_cases": ["template_missing"],
+                }
+            )
+        else:
+            output = "Summary output"
+
+        return ExecutionResult(
+            output=output,
+            status=ArtifactStatus.EXPERIMENTAL,
+            executor=executor_name,
+            metadata={
+                "real_model_called": False,
+                "model_backend": "stub",
+                "model_name": None,
+                "estimated_tokens": len(content) / 4,
+                "estimated_cost": (len(content) / 4) * 0.000002,
+                "inference_avoided": False,
+                "backend_used": "stub",
+                "worth_running": True,
+            },
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, router_planner=planner)
+
+    assert result.execution_outcome["validation_summary"] == {
+        "ok": True,
+        "error": None,
+        "missing_keys": [],
+    }
+
+
+def test_run_section_with_workspace_data_model_validation_summary_ignores_cross_schema_metadata(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_validation_summary_schema_isolation")
+
+    class FakePlanner:
+        def route(self, task, classification):
+            structured_content = None
+            execution_metadata = {}
+            output = "Summary output"
+
+            if task.task_type == "system_breakdown":
+                structured_content = {
+                    "modules": [
+                        {
+                            "name": "MissionBoardCoordinator",
+                            "layer": "DGCE Core",
+                            "responsibility": "Coordinate mission generation",
+                            "inputs": [],
+                            "outputs": [
+                                {
+                                    "name": "stale_check_artifact",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/preflight/{section_id}.stale_check.json",
+                                }
+                            ],
+                            "dependencies": [],
+                            "governance_touchpoints": [],
+                            "failure_modes": [],
+                            "owned_paths": [".dce/preflight/{section_id}.stale_check.json"],
+                            "implementation_order": 1,
+                        }
+                    ],
+                    "build_graph": {"edges": [["MissionBoardCoordinator", "MissionBoardCoordinator"]]},
+                    "tests": [],
+                }
+                execution_metadata = {"structure_valid": True}
+                output = json.dumps(structured_content)
+            elif task.task_type == "data_model":
+                structured_content = {
+                    "modules": [
+                        {
+                            "name": "DGCEDataModel",
+                            "entities": ["Mission"],
+                            "relationships": ["Mission->Player"],
+                            "required": [],
+                            "identity_keys": [],
+                        }
+                    ],
+                    "entities": [{"name": "Mission", "fields": [{"name": "id", "type": "string"}]}],
+                    "fields": ["id"],
+                    "relationships": ["Mission->Player"],
+                    "validation_rules": ["id required"],
+                }
+                execution_metadata = {
+                    "structure_valid": False,
+                    "structure_error": "missing_keys",
+                    "structure_missing_keys": ["interfaces"],
+                }
+                output = json.dumps(structured_content)
+            elif task.task_type == "api_surface":
+                structured_content = {
+                    "interfaces": ["MissionBoardService"],
+                    "methods": ["create_mission"],
+                    "inputs": ["template_id"],
+                    "outputs": ["mission_id"],
+                    "error_cases": ["template_missing"],
+                }
+                output = json.dumps(structured_content)
+
+            return type(
+                "RouteResult",
+                (),
+                {
+                    "status": ArtifactStatus.EXPERIMENTAL,
+                    "task_bucket": "planning" if task.task_type in {"system_breakdown", "system_summary"} else "code_routine",
+                    "decision": "MID_MODEL",
+                    "output": output,
+                    "reused": False,
+                    "execution_metadata": execution_metadata,
+                    "structured_content": structured_content,
+                },
+            )()
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        router_planner=FakePlanner(),
+    )
+
+    assert result.execution_outcome["validation_summary"] == {
+        "ok": True,
+        "error": None,
+        "missing_keys": [],
+    }
+
+
+def test_write_stage_data_model_validation_uses_data_model_schema_not_api_surface():
+    task = ClassificationRequest(
+        content="Describe the data model",
+        request_id="dgce-write-stage-data-model-schema",
+        task_type="data_model",
+        output_contract=OutputContract(mode="structured", schema_name="dgce_data_model_v1"),
+    )
+    response = ResponseEnvelope(
+        request_id="dgce-write-stage-data-model-schema",
+        task_type="data_model",
+        status="experimental_output",
+        task_bucket="code_routine",
+        decision="MID_MODEL",
+        output="",
+        reused=False,
+        structured_content={
+            "modules": [
+                {
+                    "name": "DGCEDataModel",
+                    "entities": ["SectionInput"],
+                    "relationships": ["SectionInput->ExecutionStamp"],
+                    "required": [],
+                    "identity_keys": [],
+                }
+            ],
+            "entities": [{"name": "SectionInput", "fields": [{"name": "section_id", "type": "string"}]}],
+            "fields": ["section_id"],
+            "relationships": ["SectionInput->ExecutionStamp"],
+            "validation_rules": ["section_id required"],
+        },
+    )
+
+    validation = _validate_write_stage_structured_content(task, response)
+
+    assert validation is not None
+    assert validation.ok is True
+    assert "interfaces" not in validation.missing_keys
+
+
+def test_final_persisted_validation_summary_ignores_api_surface_metadata_in_data_model_write_flow(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_persisted_validation_summary_schema_isolation")
+    section = DGCESection(
+        section_type="data_model",
+        title="Data Model",
+        description="Define the governed DGCE data model.",
+        requirements=[
+            "Define SectionInput and ExecutionStamp entities",
+            "Keep the model deterministic and auditable",
+        ],
+        constraints=["Keep the model independent of .dce file paths"],
+        expected_targets=["aether/dgce/decompose.py", "aether/dgce/incremental.py"],
+    )
+    section_id = "data-model"
+
+    for path in section.expected_targets:
+        _write_text(project_root / path, "existing-development-content")
+    _write_ownership_index(project_root, [{"path": path, "section_id": section_id} for path in section.expected_targets])
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    class FakePlanner:
+        def route(self, task, classification):
+            structured_content = None
+            execution_metadata = {}
+            output = "Summary output"
+
+            if task.task_type == "data_model":
+                structured_content = {
+                    "modules": [
+                        {
+                            "name": "DGCEDataModel",
+                            "entities": ["SectionInput"],
+                            "relationships": ["SectionInput->ExecutionStamp"],
+                            "required": [],
+                            "identity_keys": [],
+                        }
+                    ],
+                    "entities": [{"name": "SectionInput", "fields": [{"name": "section_id", "type": "string"}]}],
+                    "fields": ["section_id"],
+                    "relationships": ["SectionInput->ExecutionStamp"],
+                    "validation_rules": ["section_id required"],
+                }
+                output = json.dumps(structured_content)
+            elif task.task_type == "api_surface":
+                execution_metadata = {
+                    "structure_valid": False,
+                    "structure_error": "missing_keys",
+                    "structure_missing_keys": ["interfaces", "methods", "inputs", "outputs", "error_cases"],
+                }
+
+            return type(
+                "RouteResult",
+                (),
+                {
+                    "status": ArtifactStatus.EXPERIMENTAL,
+                    "task_bucket": "planning" if task.task_type in {"system_breakdown", "system_summary"} else "code_routine",
+                    "decision": "MID_MODEL",
+                    "output": output,
+                    "reused": False,
+                    "execution_metadata": execution_metadata,
+                    "structured_content": structured_content,
+                },
+            )()
+
+    result = run_section_with_workspace(section, project_root, router_planner=FakePlanner())
+    outputs_payload = json.loads((project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8"))
+
+    assert outputs_payload["execution_outcome"]["stage"] == "WRITE"
+    assert outputs_payload["execution_outcome"]["validation_summary"] == {
+        "ok": True,
+        "error": None,
+        "missing_keys": [],
+    }
+    assert result.execution_outcome["validation_summary"] == {
+        "ok": True,
+        "error": None,
+        "missing_keys": [],
+    }
+    assert result.run_outcome_class != "validation_failure"
+    assert result.advisory == {
+        "type": "process_adjustment",
+        "summary": f"Review failed DGCE run flow for {section_id}",
+        "explanation": ["execution_error"],
+    }
+
+
+def test_run_section_with_workspace_calls_decompose_once(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_single_decompose")
+    call_count = {"count": 0}
+    from aether.dgce.decompose import decompose_section as original_decompose
+
+    def fake_decompose(section):
+        call_count["count"] += 1
+        return original_decompose(section)
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_write_file_plan(file_plan, output_dir, overwrite_paths=None):
+        written_files = []
+        for entry in file_plan.files:
+            path = output_dir / Path(entry["path"])
+            _write_text(path, f"generated:{entry['path']}")
+            written_files.append(entry["path"])
+        return written_files
+
+    monkeypatch.setattr("aether.dgce.decompose.decompose_section", fake_decompose)
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.write_file_plan", fake_write_file_plan)
+
+    run_section_with_workspace(_section(), project_root)
+
+    assert call_count["count"] == 1
+
+
+def test_run_section_with_workspace_incremental_v1_persists_plan_only_artifact(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_plan_only")
+    _write_text(project_root / "mission_board" / "service.py", "existing")
+    _write_text(project_root / "docs" / "readme.md", "existing-doc")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(
+        "aether.dgce.decompose.write_file_plan",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("write_file_plan should not run in incremental_v1")),
+    )
+
+    result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v1")
+    change_plan = json.loads(
+        (project_root / ".dce" / "plans" / "mission-board.change_plan.json").read_text(encoding="utf-8")
+    )
+
+    assert result.written_files == []
+    assert result.run_mode == "incremental_v1"
+    assert result.run_outcome_class == "planned_incremental_v1"
+    assert result.execution_outcome is None
+    assert result.write_transparency is None
+    assert change_plan == {
+        "section_id": "mission-board",
+        "mode": "incremental_v1",
+        "summary": {
+            "create_count": 3,
+            "modify_count": 1,
+            "ignore_count": 1,
+        },
+        "changes": [
+            {
+                "action": "create",
+                "path": "api/missionboardservice.py",
+                "reason": "target_missing_from_workspace",
+            },
+            {
+                "action": "create",
+                "path": "mission_board/models.py",
+                "reason": "target_missing_from_workspace",
+            },
+            {
+                "action": "modify",
+                "path": "mission_board/service.py",
+                "reason": "target_present_in_workspace",
+            },
+            {
+                "action": "create",
+                "path": "models/mission.py",
+                "reason": "target_missing_from_workspace",
+            },
+        ],
+        "ignored_existing_files": ["docs/readme.md"],
+    }
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+    assert (project_root / "mission_board" / "models.py").exists() is False
+    assert (project_root / "models" / "mission.py").exists() is False
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing"
+
+
+def test_run_section_with_workspace_default_flow_still_writes_files(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_default_unchanged")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root)
+
+    assert result.run_mode == "create_only"
+    assert sorted(result.written_files) == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+
+
+def test_build_incremental_preview_artifact_create_target_reports_write_metadata():
+    project_root = _workspace_dir("dgce_incremental_v2_create_preview")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/create.py", "purpose": "Create", "source": "api_surface"}],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/create.py", "action": "create", "reason": "target_missing_from_workspace"},
+    ]
+
+    preview = build_incremental_preview_artifact("mission-board", file_plan, change_plan, project_root)
+    generated_bytes = render_file_entry_bytes({"path": "api/create.py", "purpose": "Create", "source": "api_surface"})
+
+    assert preview == {
+        "section_id": "mission-board",
+        "mode": "incremental_v2",
+        "preview_outcome_class": "preview_create_only",
+        "recommended_mode": "create_only",
+        "summary": {
+            "total_targets": 1,
+            "total_create": 1,
+            "total_modify": 0,
+            "total_ignore": 0,
+            "total_write": 1,
+            "total_skip": 0,
+            "total_eligible": 1,
+            "total_blocked": 0,
+            "total_identical": 0,
+            "total_blocked_ownership": 0,
+            "total_blocked_modify_disabled": 0,
+            "total_blocked_ignore": 0,
+        },
+        "previews": [
+            {
+                "path": "api/create.py",
+                "section_id": "mission-board",
+                "planned_action": "create",
+                "eligibility": "eligible",
+                "preview_decision": "write",
+                "preview_reason": "create",
+                "identical_content": False,
+                "existing_bytes": 0,
+                "generated_bytes": len(generated_bytes),
+                "approximate_line_delta": len(generated_bytes.decode("utf-8").splitlines()),
+            }
+        ],
+    }
+
+
+def test_build_incremental_preview_artifact_modify_target_reports_gated_outcomes():
+    project_root = _workspace_dir("dgce_incremental_v2_modify_preview")
+    modify_entry = {"path": "api/modify.py", "purpose": "Modify", "source": "api_surface"}
+    modify_path = project_root / "api" / "modify.py"
+    modify_path.parent.mkdir(parents=True, exist_ok=True)
+    modify_path.write_text("existing", encoding="utf-8")
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/modify.py", "action": "modify", "reason": "target_present_in_workspace"},
+    ]
+    file_plan = FilePlan(project_name="DGCE", files=[modify_entry])
+
+    blocked_preview = build_incremental_preview_artifact("mission-board", file_plan, change_plan, project_root)
+    owned_preview = build_incremental_preview_artifact(
+        "mission-board",
+        file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+        owned_paths={"api/modify.py"},
+    )
+
+    modify_path.write_bytes(render_file_entry_bytes(modify_entry))
+    identical_preview = build_incremental_preview_artifact(
+        "mission-board",
+        file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+        owned_paths={"api/modify.py"},
+    )
+
+    assert blocked_preview["previews"] == [
+        {
+            "path": "api/modify.py",
+            "section_id": "mission-board",
+            "planned_action": "modify",
+            "eligibility": "blocked",
+            "preview_decision": "skip",
+            "preview_reason": "ownership",
+            "identical_content": False,
+            "existing_bytes": len(b"existing"),
+            "generated_bytes": len(render_file_entry_bytes(modify_entry)),
+            "approximate_line_delta": _changed_lines_estimate(b"existing", render_file_entry_bytes(modify_entry)),
+        }
+    ]
+    assert owned_preview["previews"][0]["preview_decision"] == "write"
+    assert owned_preview["previews"][0]["preview_reason"] == "modify"
+    assert owned_preview["previews"][0]["eligibility"] == "eligible"
+    assert identical_preview["previews"][0]["preview_decision"] == "skip"
+    assert identical_preview["previews"][0]["preview_reason"] == "identical"
+    assert identical_preview["previews"][0]["identical_content"] is True
+
+
+def test_build_incremental_preview_artifact_ignore_target_remains_skipped():
+    project_root = _workspace_dir("dgce_incremental_v2_ignore_preview")
+    _write_text(project_root / "api" / "ignore.py", "existing")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[{"path": "api/ignore.py", "purpose": "Ignore", "source": "api_surface"}],
+    )
+    change_plan = [
+        {"section_id": "mission-board", "path": "api/ignore.py", "action": "ignore", "reason": "not_in_expected_targets"},
+    ]
+
+    preview = build_incremental_preview_artifact("mission-board", file_plan, change_plan, project_root)
+
+    assert preview["previews"] == [
+        {
+            "path": "api/ignore.py",
+            "section_id": "mission-board",
+            "planned_action": "ignore",
+            "eligibility": "blocked",
+            "preview_decision": "skip",
+            "preview_reason": "ignore",
+            "identical_content": False,
+            "existing_bytes": len(b"existing"),
+            "generated_bytes": len(render_file_entry_bytes({"path": "api/ignore.py", "purpose": "Ignore", "source": "api_surface"})),
+            "approximate_line_delta": _changed_lines_estimate(
+                b"existing",
+                render_file_entry_bytes({"path": "api/ignore.py", "purpose": "Ignore", "source": "api_surface"}),
+            ),
+        }
+    ]
+
+
+def test_build_incremental_preview_artifact_reports_existing_bytes_for_host_repo_target():
+    repo_root = _workspace_dir("dgce_incremental_preview_host_repo_existing_bytes")
+    project_root = repo_root / "defiant-sky"
+    existing_content = "existing-cli-content"
+    _write_text(project_root / ".dce" / "input" / "api-surface.json", "{}")
+    _write_text(repo_root / "dce.py", existing_content)
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[{"path": "dce.py", "purpose": "CLI", "source": "expected_targets"}],
+    )
+    change_plan = [
+        {"section_id": "api-surface", "path": "dce.py", "action": "modify", "reason": "expected_target_exists"},
+    ]
+
+    preview = build_incremental_preview_artifact("api-surface", file_plan, change_plan, project_root)
+
+    assert preview["previews"][0]["planned_action"] == "modify"
+    assert preview["previews"][0]["existing_bytes"] == len(existing_content.encode("utf-8"))
+    assert preview["previews"][0]["preview_reason"] in {"ownership", "modify", "identical"}
+
+
+def test_build_incremental_change_plan_keeps_create_for_truly_missing_target():
+    repo_root = _workspace_dir("dgce_incremental_expected_targets_missing")
+    project_root = repo_root / "defiant-sky"
+    _write_text(project_root / ".dce" / "input" / "api-surface.json", "{}")
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[{"path": "apps/aether_api/routers/new_endpoint.py", "purpose": "Router", "source": "expected_targets"}],
+    )
+
+    change_plan = build_incremental_change_plan(
+        "api-surface",
+        file_plan,
+        scan_workspace_file_paths(project_root),
+        project_root=project_root,
+    )
+
+    assert change_plan["changes"] == [
+        {
+            "action": "create",
+            "path": "apps/aether_api/routers/new_endpoint.py",
+            "reason": "target_missing_from_workspace",
+        }
+    ]
+
+
+def test_system_breakdown_host_repo_targets_resolve_consistently_across_preview_and_write_transparency():
+    repo_root = _workspace_dir("dgce_incremental_system_breakdown_host_repo_consistency")
+    project_root = repo_root / "defiant-sky"
+    _write_text(project_root / ".dce" / "input" / "system-breakdown.json", "{}")
+    targets = [
+        "aether/dgce/decompose.py",
+        "aether/dgce/incremental.py",
+        "aether/dgce/file_writer.py",
+        "dce.py",
+    ]
+    for target in targets:
+        _write_text(repo_root / Path(target), f"existing:{target}")
+
+    file_plan = FilePlan(
+        project_name="DGCE",
+        files=[{"path": target, "purpose": target, "source": "expected_targets"} for target in targets],
+    )
+
+    preview = build_incremental_preview_artifact("system-breakdown", file_plan, [], project_root)
+    _, transparency = build_write_transparency(file_plan, [], project_root)
+
+    assert all(entry["planned_action"] == "modify" for entry in preview["previews"])
+    assert all(entry["preview_reason"] == "ownership" for entry in preview["previews"])
+    assert all(entry["existing_bytes"] > 0 for entry in preview["previews"])
+    assert all(entry["reason"] == "ownership" for entry in transparency["write_decisions"])
+
+
+def test_identical_host_repo_expected_targets_resolve_to_identical_skip_consistently():
+    repo_root = _workspace_dir("dgce_incremental_identical_host_repo_targets")
+    project_root = repo_root / "defiant-sky"
+    _write_text(project_root / ".dce" / "input" / "system-breakdown.json", "{}")
+    targets = [
+        "aether/dgce/decompose.py",
+        "aether/dgce/incremental.py",
+        "aether/dgce/file_writer.py",
+        "dce.py",
+    ]
+    file_entries = [{"path": target, "purpose": target, "source": "expected_targets"} for target in targets]
+    for entry in file_entries:
+        (repo_root / Path(entry["path"])).parent.mkdir(parents=True, exist_ok=True)
+        (repo_root / Path(entry["path"])).write_bytes(render_file_entry_bytes(entry))
+
+    file_plan = FilePlan(project_name="DGCE", files=file_entries)
+    owned_paths = {entry["path"] for entry in file_entries}
+    preview = build_incremental_preview_artifact(
+        "system-breakdown",
+        file_plan,
+        [],
+        project_root,
+        allow_modify_write=True,
+        owned_paths=owned_paths,
+    )
+    _, transparency = build_write_transparency(
+        file_plan,
+        [],
+        project_root,
+        allow_modify_write=True,
+        owned_paths=owned_paths,
+    )
+
+    assert all(entry["planned_action"] == "modify" for entry in preview["previews"])
+    assert all(entry["preview_reason"] == "identical" for entry in preview["previews"])
+    assert all(entry["preview_decision"] == "skip" for entry in preview["previews"])
+    assert all(entry["reason"] == "identical" for entry in transparency["write_decisions"])
+
+
+def test_summarize_incremental_preview_derives_summary_counters():
+    previews = [
+        {"planned_action": "create", "eligibility": "eligible", "preview_decision": "write", "preview_reason": "create", "identical_content": False},
+        {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "ownership", "identical_content": False},
+        {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "modify", "identical_content": False},
+        {"planned_action": "ignore", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "ignore", "identical_content": False},
+        {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "identical", "identical_content": True},
+    ]
+
+    summary, preview_outcome_class, recommended_mode = summarize_incremental_preview(previews)
+
+    assert summary == {
+        "total_targets": 5,
+        "total_create": 1,
+        "total_modify": 3,
+        "total_ignore": 1,
+        "total_write": 1,
+        "total_skip": 4,
+        "total_eligible": 1,
+        "total_blocked": 4,
+        "total_identical": 1,
+        "total_blocked_ownership": 1,
+        "total_blocked_modify_disabled": 1,
+        "total_blocked_ignore": 1,
+    }
+    assert preview_outcome_class == "preview_blocked_ownership"
+    assert recommended_mode == "review_required"
+
+
+def test_summarize_incremental_preview_classifies_create_only():
+    summary, preview_outcome_class, recommended_mode = summarize_incremental_preview(
+        [
+            {"planned_action": "create", "eligibility": "eligible", "preview_decision": "write", "preview_reason": "create", "identical_content": False},
+            {"planned_action": "create", "eligibility": "eligible", "preview_decision": "write", "preview_reason": "create", "identical_content": False},
+        ]
+    )
+
+    assert preview_outcome_class == "preview_create_only"
+    assert recommended_mode == "create_only"
+    assert summary["total_write"] == 2
+
+
+def test_summarize_incremental_preview_classifies_safe_modify_ready():
+    summary, preview_outcome_class, recommended_mode = summarize_incremental_preview(
+        [
+            {"planned_action": "modify", "eligibility": "eligible", "preview_decision": "write", "preview_reason": "modify", "identical_content": False},
+            {"planned_action": "create", "eligibility": "eligible", "preview_decision": "write", "preview_reason": "create", "identical_content": False},
+        ]
+    )
+
+    assert preview_outcome_class == "preview_safe_modify_ready"
+    assert recommended_mode == "safe_modify"
+    assert summary["total_blocked_modify_disabled"] == 0
+    assert summary["total_write"] == 2
+
+
+def test_summarize_incremental_preview_classifies_blocked_modify_disabled():
+    _, preview_outcome_class, recommended_mode = summarize_incremental_preview(
+        [
+            {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "modify", "identical_content": False},
+        ]
+    )
+
+    assert preview_outcome_class == "preview_blocked_modify_disabled"
+    assert recommended_mode == "review_required"
+
+
+def test_summarize_incremental_preview_classifies_identical_only():
+    _, preview_outcome_class, recommended_mode = summarize_incremental_preview(
+        [
+            {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "identical", "identical_content": True},
+            {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "identical", "identical_content": True},
+        ]
+    )
+
+    assert preview_outcome_class == "preview_identical_only"
+    assert recommended_mode == "no_changes"
+
+
+def test_summarize_incremental_preview_classifies_ignore_only():
+    _, preview_outcome_class, recommended_mode = summarize_incremental_preview(
+        [
+            {"planned_action": "ignore", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "ignore", "identical_content": False},
+            {"planned_action": "ignore", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "ignore", "identical_content": False},
+        ]
+    )
+
+    assert preview_outcome_class == "preview_ignore_only"
+    assert recommended_mode == "no_changes"
+
+
+def test_summarize_incremental_preview_classifies_mixed():
+    _, preview_outcome_class, recommended_mode = summarize_incremental_preview(
+        [
+            {"planned_action": "create", "eligibility": "eligible", "preview_decision": "write", "preview_reason": "create", "identical_content": False},
+            {"planned_action": "modify", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "modify", "identical_content": False},
+            {"planned_action": "ignore", "eligibility": "blocked", "preview_decision": "skip", "preview_reason": "ignore", "identical_content": False},
+        ]
+    )
+
+    assert preview_outcome_class == "preview_mixed"
+    assert recommended_mode == "review_required"
+
+
+def test_summarize_incremental_preview_classifies_empty():
+    summary, preview_outcome_class, recommended_mode = summarize_incremental_preview([])
+
+    assert summary == {
+        "total_targets": 0,
+        "total_create": 0,
+        "total_modify": 0,
+        "total_ignore": 0,
+        "total_write": 0,
+        "total_skip": 0,
+        "total_eligible": 0,
+        "total_blocked": 0,
+        "total_identical": 0,
+        "total_blocked_ownership": 0,
+        "total_blocked_modify_disabled": 0,
+        "total_blocked_ignore": 0,
+    }
+    assert preview_outcome_class == "preview_empty"
+    assert recommended_mode == "no_changes"
+
+
+def test_render_incremental_review_markdown_groups_files_and_stays_metadata_only():
+    review = render_incremental_review_markdown(
+        {
+            "section_id": "mission-board",
+            "mode": "incremental_v2_2",
+            "preview_outcome_class": "preview_mixed",
+            "recommended_mode": "review_required",
+            "summary": {
+                "total_targets": 5,
+                "total_create": 1,
+                "total_modify": 3,
+                "total_ignore": 1,
+                "total_write": 2,
+                "total_skip": 3,
+                "total_eligible": 2,
+                "total_blocked": 3,
+                "total_identical": 1,
+                "total_blocked_ownership": 1,
+                "total_blocked_modify_disabled": 0,
+                "total_blocked_ignore": 1,
+            },
+            "previews": [
+                {
+                    "path": "api/create.py",
+                    "section_id": "mission-board",
+                    "planned_action": "create",
+                    "preview_decision": "write",
+                    "preview_reason": "create",
+                    "existing_bytes": 0,
+                    "generated_bytes": 120,
+                    "approximate_line_delta": 12,
+                },
+                {
+                    "path": "api/modify.py",
+                    "section_id": "mission-board",
+                    "planned_action": "modify",
+                    "preview_decision": "write",
+                    "preview_reason": "modify",
+                    "existing_bytes": 90,
+                    "generated_bytes": 150,
+                    "approximate_line_delta": 6,
+                },
+                {
+                    "path": "api/blocked.py",
+                    "section_id": "mission-board",
+                    "planned_action": "modify",
+                    "preview_decision": "skip",
+                    "preview_reason": "ownership",
+                    "existing_bytes": 90,
+                    "generated_bytes": 150,
+                    "approximate_line_delta": 6,
+                },
+                {
+                    "path": "api/identical.py",
+                    "section_id": "mission-board",
+                    "planned_action": "modify",
+                    "preview_decision": "skip",
+                    "preview_reason": "identical",
+                    "existing_bytes": 90,
+                    "generated_bytes": 90,
+                    "approximate_line_delta": 0,
+                },
+                {
+                    "path": "api/ignore.py",
+                    "section_id": "mission-board",
+                    "planned_action": "ignore",
+                    "preview_decision": "skip",
+                    "preview_reason": "ignore",
+                    "existing_bytes": 90,
+                    "generated_bytes": 150,
+                    "approximate_line_delta": 0,
+                },
+            ],
+        }
+    )
+
+    assert review.startswith("# Section Review: mission-board\n")
+    assert "- Mode: incremental_v2_2" in review
+    assert "- Preview outcome: preview_mixed" in review
+    assert "- Recommended mode: review_required" in review
+    assert "## Summary" in review
+    assert "- Total targets: 5" in review
+    assert "## Create candidates" in review
+    assert "`api/create.py` -- decision: write / reason: create / existing: 0 / generated: 120 / delta: 12" in review
+    assert "## Modify-ready candidates" in review
+    assert "`api/modify.py` -- decision: write / reason: modify / existing: 90 / generated: 150 / delta: 6" in review
+    assert "## Blocked candidates" in review
+    assert "`api/blocked.py` -- decision: skip / reason: ownership / existing: 90 / generated: 150 / delta: 6" in review
+    assert "## Identical / no-change candidates" in review
+    assert "`api/identical.py` -- decision: skip / reason: identical / existing: 90 / generated: 90 / delta: 0" in review
+    assert "## Ignored candidates" in review
+    assert "`api/ignore.py` -- decision: skip / reason: ignore / existing: 90 / generated: 150 / delta: 0" in review
+    assert "# Generated by Aether" not in review
+    assert "```" not in review
+    assert "@@" not in review
+
+
+def test_compute_artifact_fingerprint_is_identical_for_identical_bytes():
+    project_root = _workspace_dir("dgce_incremental_v3_0_fingerprint_identical")
+    artifact_a = project_root / ".dce" / "plans" / "a.preview.json"
+    artifact_b = project_root / ".dce" / "plans" / "b.preview.json"
+    payload = json.dumps({"section_id": "mission-board", "value": 1}, indent=2, sort_keys=True) + "\n"
+    _write_text(artifact_a, payload)
+    _write_text(artifact_b, payload)
+
+    assert compute_artifact_fingerprint(artifact_a) == compute_artifact_fingerprint(artifact_b)
+
+
+def test_compute_artifact_fingerprint_changes_when_file_bytes_change():
+    project_root = _workspace_dir("dgce_incremental_v3_0_fingerprint_changed")
+    artifact_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    _write_text(artifact_path, "alpha")
+    first = compute_artifact_fingerprint(artifact_path)
+    _write_text(artifact_path, "beta")
+
+    assert first != compute_artifact_fingerprint(artifact_path)
+
+
+def test_compute_json_payload_fingerprint_is_stable_without_artifact_field():
+    payload = {"section_id": "mission-board", "value": 1}
+    stamped_payload = {"section_id": "mission-board", "value": 1, "artifact_fingerprint": "ignored"}
+
+    assert compute_json_payload_fingerprint(payload) == compute_json_payload_fingerprint(stamped_payload)
+
+
+def test_compute_json_payload_fingerprint_ignores_timestamp_fields_and_normalizes_list_order():
+    first = {
+        "section_id": "mission-board",
+        "validation_timestamp": "2026-03-26T00:00:00Z",
+        "requirements": ["track progression state", "support mission templates"],
+        "previews": [
+            {"path": "api/missionboardservice.py", "planned_action": "create"},
+            {"path": "docs/readme.md", "planned_action": "modify"},
+        ],
+    }
+    second = {
+        "previews": [
+            {"planned_action": "modify", "path": "docs/readme.md"},
+            {"planned_action": "create", "path": "api/missionboardservice.py"},
+        ],
+        "requirements": ["support mission templates", "track progression state"],
+        "section_id": "mission-board",
+        "validation_timestamp": "2030-01-01T00:00:00Z",
+    }
+
+    assert compute_json_payload_fingerprint(first) == compute_json_payload_fingerprint(second)
+
+
+def test_compute_preview_payload_fingerprint_canonicalizes_preview_files_and_strings():
+    first = {
+        "section_id": "mission-board",
+        "review_timestamp": "2026-03-26T00:00:00Z",
+        "file_plan": {
+            "project_name": "DGCE",
+            "files": [
+                {"path": "z.py", "purpose": " Zebra ", "source": "api_surface"},
+                {"path": "a.py", "purpose": "Alpha", "source": "system_breakdown"},
+            ],
+        },
+        "previews": [
+            {"path": " z.py ", "preview_reason": "create", "preview_decision": "write"},
+            {"preview_decision": "write", "preview_reason": "create", "path": "a.py"},
+        ],
+    }
+    second = {
+        "previews": [
+            {"path": "a.py", "preview_decision": "write", "preview_reason": "create"},
+            {"path": "z.py", "preview_reason": "create", "preview_decision": "write"},
+        ],
+        "file_plan": {
+            "files": [
+                {"purpose": "Alpha", "source": "system_breakdown", "path": "a.py"},
+                {"source": "api_surface", "purpose": "Zebra", "path": "z.py"},
+            ],
+            "project_name": "DGCE",
+        },
+        "section_id": "mission-board",
+        "review_timestamp": "2030-01-01T00:00:00Z",
+    }
+
+    assert compute_preview_payload_fingerprint(first) == compute_preview_payload_fingerprint(second)
+
+
+def test_incremental_v1_1_skips_modify_when_modify_mode_disabled(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_1_modify_disabled")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v1_1")
+    change_plan = json.loads(
+        (project_root / ".dce" / "plans" / "mission-board.change_plan.json").read_text(encoding="utf-8")
+    )
+
+    assert change_plan["mode"] == "incremental_v1_1"
+    assert "mission_board/service.py" not in result.written_files
+    assert "mission_board/models.py" in result.written_files
+    assert "api/missionboardservice.py" in result.written_files
+    assert "models/mission.py" in result.written_files
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing-service"
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "modify"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+
+
+def test_incremental_v1_1_skips_unowned_modify_candidates(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_1_unowned_modify")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "docs/legacy.md",
+                "section_id": "legacy-section",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        incremental_mode="incremental_v1_1",
+    )
+
+    assert "mission_board/service.py" not in result.written_files
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing-service"
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "ownership"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+
+
+def test_incremental_v1_1_skips_identical_modify_candidates(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_1_identical_modify")
+    identical_entry = {
+        "path": "mission_board/service.py",
+        "purpose": "coordinate mission generation service orchestration",
+        "source": "system_breakdown",
+    }
+    target_path = project_root / "mission_board" / "service.py"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(render_file_entry_bytes(identical_entry))
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        incremental_mode="incremental_v1_1",
+    )
+
+    assert "mission_board/service.py" not in result.written_files
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "identical"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+
+
+def test_incremental_v1_1_allows_modify_when_all_gates_pass(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_1_modify_allowed")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        incremental_mode="incremental_v1_1",
+    )
+
+    assert "mission_board/service.py" in result.written_files
+    assert any(
+        entry["path"] == "mission_board/service.py"
+        and entry["decision"] == "written"
+        and entry["reason"] == "modify"
+        for entry in result.write_transparency["write_decisions"]
+    )
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+
+
+def test_run_section_with_workspace_incremental_v1_1_only_writes_create_targets(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_1_integration_create_only")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(project_root, [])
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v1_1")
+
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing-service"
+    assert "mission_board/service.py" not in result.written_files
+    assert any(
+        entry == {"path": "mission_board/service.py", "decision": "skipped", "reason": "ownership"}
+        for entry in result.write_transparency["write_decisions"]
+    )
+
+
+def test_run_section_with_workspace_incremental_v1_1_allows_owned_modify_when_enabled(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v1_1_integration_owned_modify")
+    _write_text(project_root / "mission_board" / "service.py", "old-service-content")
+    _write_ownership_index(
+        project_root,
+        [
+            {
+                "path": "mission_board/service.py",
+                "section_id": "mission-board",
+                "last_written_stage": "WRITE",
+                "write_reason": "create",
+            }
+        ],
+    )
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v1_1",
+        allow_safe_modify=True,
+    )
+
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") != "old-service-content"
+    assert "mission_board/service.py" in result.written_files
+    assert any(
+        entry["path"] == "mission_board/service.py"
+        and entry["decision"] == "written"
+        and entry["reason"] == "modify"
+        for entry in result.write_transparency["write_decisions"]
+    )
+
+
+def test_run_section_with_workspace_incremental_v2_writes_preview_under_dce_only(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_preview_artifact")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+    _write_ownership_index(project_root, [])
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2")
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview = json.loads(preview_path.read_text(encoding="utf-8"))
+
+    assert result.run_mode == "incremental_v2"
+    assert result.run_outcome_class == "preview_incremental_v2"
+    assert result.written_files == []
+    assert preview_path.exists()
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+    assert (project_root / "mission_board" / "models.py").exists() is False
+    assert (project_root / "models" / "mission.py").exists() is False
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing-service"
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert preview["mode"] == "incremental_v2"
+    assert preview["section_id"] == "mission-board"
+    assert preview["preview_outcome_class"] == "preview_blocked_ownership"
+    assert preview["recommended_mode"] == "review_required"
+    assert sorted(preview["summary"].keys()) == [
+        "total_blocked",
+        "total_blocked_ignore",
+        "total_blocked_modify_disabled",
+        "total_blocked_ownership",
+        "total_create",
+        "total_eligible",
+        "total_identical",
+        "total_ignore",
+        "total_modify",
+        "total_skip",
+        "total_targets",
+        "total_write",
+    ]
+    assert [entry["path"] for entry in preview["previews"]] == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+    assert all(entry["path"] != "docs/readme.md" for entry in preview["previews"])
+    assert "# Generated by Aether" not in json.dumps(preview)
+
+
+def test_run_section_with_workspace_incremental_v2_preview_is_deterministic(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_preview_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_preview_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), first_root, incremental_mode="incremental_v2")
+    run_section_with_workspace(_section(), second_root, incremental_mode="incremental_v2")
+
+    first_preview = (first_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8")
+    second_preview = (second_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8")
+
+    assert first_preview == second_preview
+
+
+def test_run_section_with_workspace_incremental_v2_1_persists_additive_preview_summary(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_1_preview")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(project_root, [])
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_1")
+    preview = json.loads((project_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8"))
+
+    assert result.run_mode == "incremental_v2_1"
+    assert result.run_outcome_class == "preview_incremental_v2_1"
+    assert preview["mode"] == "incremental_v2_1"
+    assert isinstance(preview["summary"], dict)
+    assert isinstance(preview["preview_outcome_class"], str)
+    assert isinstance(preview["recommended_mode"], str)
+    assert isinstance(preview["previews"], list)
+
+
+def test_run_section_with_workspace_incremental_v2_2_writes_review_under_dce_only(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_2_review_artifact")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+    _write_ownership_index(project_root, [])
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    review_path = project_root / ".dce" / "reviews" / "mission-board.review.md"
+    review = review_path.read_text(encoding="utf-8")
+
+    assert result.run_mode == "incremental_v2_2"
+    assert result.run_outcome_class == "review_incremental_v2_2"
+    assert result.written_files == []
+    assert review_path.exists()
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+    assert (project_root / "mission_board" / "models.py").exists() is False
+    assert (project_root / "models" / "mission.py").exists() is False
+    assert (project_root / "mission_board" / "service.py").read_text(encoding="utf-8") == "existing-service"
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert "# Section Review: mission-board" in review
+    assert "- Mode: incremental_v2_2" in review
+    assert "## Summary" in review
+    assert "## Create candidates" in review
+    assert "## Blocked candidates" in review
+    assert "# Generated by Aether" not in review
+    assert "existing-service" not in review
+
+
+def test_run_section_with_workspace_incremental_v2_2_review_is_deterministic(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_2_review_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_2_review_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), first_root, incremental_mode="incremental_v2_2")
+    run_section_with_workspace(_section(), second_root, incremental_mode="incremental_v2_2")
+
+    first_review = (first_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+    second_review = (second_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+
+    assert first_review == second_review
+
+
+def test_run_section_with_workspace_incremental_v2_2_writes_review_index_and_workspace_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_2_review_index")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section_named("Mission Board"), project_root, incremental_mode="incremental_v2_2")
+    run_section_with_workspace(_section_named("Alpha Section"), project_root, incremental_mode="incremental_v2")
+
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert review_index == {
+        "sections": [
+            {
+                "section_id": "alpha-section",
+                "preview_path": ".dce/plans/alpha-section.preview.json",
+                "review_path": None,
+                "preview_outcome_class": "preview_create_only",
+                "recommended_mode": "create_only",
+                "approval_path": None,
+                "approval_status": None,
+                "selected_mode": None,
+                "execution_permitted": None,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": None,
+                "execution_status": None,
+                "approval_consumed": None,
+                "approval_status_after": None,
+            },
+            {
+                "section_id": "mission-board",
+                "preview_path": ".dce/plans/mission-board.preview.json",
+                "review_path": ".dce/reviews/mission-board.review.md",
+                "preview_outcome_class": "preview_create_only",
+                "recommended_mode": "create_only",
+                "approval_path": None,
+                "approval_status": None,
+                "selected_mode": None,
+                "execution_permitted": None,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": None,
+                "execution_status": None,
+                "approval_consumed": None,
+                "approval_status_after": None,
+            },
+        ]
+    }
+    assert workspace_summary["total_sections_seen"] == 2
+    assert [entry["section_id"] for entry in workspace_summary["sections"]] == ["alpha-section", "mission-board"]
+    assert workspace_summary["sections"][0]["preview_path"] == ".dce/plans/alpha-section.preview.json"
+    assert workspace_summary["sections"][0]["review_path"] is None
+    assert workspace_summary["sections"][0]["preview_outcome_class"] == "preview_create_only"
+    assert workspace_summary["sections"][0]["recommended_mode"] == "create_only"
+    assert workspace_summary["sections"][0]["approval_path"] is None
+    assert workspace_summary["sections"][0]["approval_status"] is None
+    assert workspace_summary["sections"][0]["selected_mode"] is None
+    assert workspace_summary["sections"][0]["execution_permitted"] is None
+    assert workspace_summary["sections"][0]["preflight_path"] is None
+    assert workspace_summary["sections"][0]["preflight_status"] is None
+    assert workspace_summary["sections"][0]["stale_check_path"] is None
+    assert workspace_summary["sections"][0]["stale_status"] is None
+    assert workspace_summary["sections"][0]["stale_detected"] is None
+    assert workspace_summary["sections"][0]["execution_allowed"] is None
+    assert workspace_summary["sections"][0]["execution_gate_path"] is None
+    assert workspace_summary["sections"][0]["gate_status"] is None
+    assert workspace_summary["sections"][0]["execution_blocked"] is None
+    assert workspace_summary["sections"][0]["alignment_path"] is None
+    assert workspace_summary["sections"][0]["alignment_status"] is None
+    assert workspace_summary["sections"][0]["alignment_blocked"] is None
+    assert workspace_summary["sections"][0]["execution_path"] is None
+    assert workspace_summary["sections"][0]["execution_status"] is None
+    assert workspace_summary["sections"][0]["approval_consumed"] is None
+    assert workspace_summary["sections"][0]["approval_status_after"] is None
+    assert workspace_summary["sections"][1]["preview_path"] == ".dce/plans/mission-board.preview.json"
+    assert workspace_summary["sections"][1]["review_path"] == ".dce/reviews/mission-board.review.md"
+    assert workspace_summary["sections"][1]["preview_outcome_class"] == "preview_create_only"
+    assert workspace_summary["sections"][1]["recommended_mode"] == "create_only"
+    assert workspace_summary["sections"][1]["approval_path"] is None
+    assert workspace_summary["sections"][1]["approval_status"] is None
+    assert workspace_summary["sections"][1]["selected_mode"] is None
+    assert workspace_summary["sections"][1]["execution_permitted"] is None
+    assert workspace_summary["sections"][1]["preflight_path"] is None
+    assert workspace_summary["sections"][1]["preflight_status"] is None
+    assert workspace_summary["sections"][1]["stale_check_path"] is None
+    assert workspace_summary["sections"][1]["stale_status"] is None
+    assert workspace_summary["sections"][1]["stale_detected"] is None
+    assert workspace_summary["sections"][1]["execution_allowed"] is None
+    assert workspace_summary["sections"][1]["execution_gate_path"] is None
+    assert workspace_summary["sections"][1]["gate_status"] is None
+    assert workspace_summary["sections"][1]["execution_blocked"] is None
+    assert workspace_summary["sections"][1]["alignment_path"] is None
+    assert workspace_summary["sections"][1]["alignment_status"] is None
+    assert workspace_summary["sections"][1]["alignment_blocked"] is None
+    assert workspace_summary["sections"][1]["execution_path"] is None
+    assert workspace_summary["sections"][1]["execution_status"] is None
+    assert workspace_summary["sections"][1]["approval_consumed"] is None
+    assert workspace_summary["sections"][1]["approval_status_after"] is None
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+    assert (project_root / "alpha_section" / "service.py").exists() is False
+
+
+def test_run_section_with_workspace_review_index_is_deterministic(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_review_index_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_review_index_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section_named("Mission Board"), first_root, incremental_mode="incremental_v2_2")
+    run_section_with_workspace(_section_named("Alpha Section"), first_root, incremental_mode="incremental_v2")
+    run_section_with_workspace(_section_named("Mission Board"), second_root, incremental_mode="incremental_v2_2")
+    run_section_with_workspace(_section_named("Alpha Section"), second_root, incremental_mode="incremental_v2")
+
+    first_index = (first_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8")
+    second_index = (second_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8")
+    first_summary = (first_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8")
+    second_summary = (second_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8")
+
+    assert first_index == second_index
+    assert first_summary == second_summary
+
+
+def test_record_section_approval_derives_execution_permitted_correctly(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_4_permission_matrix")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    assert record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )["execution_permitted"] is True
+    assert record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )["execution_permitted"] is True
+    assert record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
+    )["execution_permitted"] is True
+    assert record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="review_required", approval_timestamp="2026-03-26T00:00:00Z"),
+    )["execution_permitted"] is False
+    assert record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="pending", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )["execution_permitted"] is False
+    assert record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="rejected", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )["execution_permitted"] is False
+
+
+def test_record_section_approval_writes_artifact_and_updates_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_4_approval_artifact")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    approval = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="safe_modify",
+            approval_source="manual",
+            approved_by="operator",
+            approval_timestamp="2026-03-26T00:00:00Z",
+            notes="Approved for safe modify after preview review.",
+        ),
+    )
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert approval_path.exists()
+    assert approval == json.loads(approval_path.read_text(encoding="utf-8"))
+    assert approval["section_id"] == "mission-board"
+    assert approval["approval_status"] == "approved"
+    assert approval["selected_mode"] == "safe_modify"
+    assert approval["execution_permitted"] is True
+    assert approval["input_path"] == ".dce/input/mission-board.json"
+    assert approval["preview_path"] == ".dce/plans/mission-board.preview.json"
+    assert approval["review_path"] == ".dce/reviews/mission-board.review.md"
+    from aether.dgce.decompose import compute_review_artifact_fingerprint
+    assert approval["input_fingerprint"] == compute_json_payload_fingerprint(
+        json.loads((project_root / ".dce" / "input" / "mission-board.json").read_text(encoding="utf-8"))
+    )
+    assert approval["preview_fingerprint"] == json.loads(
+        (project_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8")
+    )["artifact_fingerprint"]
+    assert approval["review_fingerprint"] == compute_review_artifact_fingerprint(
+        (project_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+    )
+    assert approval["preview_outcome_class"] == "preview_create_only"
+    assert approval["recommended_mode"] == "create_only"
+    assert approval["approval_source"] == "manual"
+    assert approval["approved_by"] == "operator"
+    assert approval["approval_timestamp"] == "2026-03-26T00:00:00Z"
+    assert approval["notes"] == "Approved for safe modify after preview review."
+    assert isinstance(approval["artifact_fingerprint"], str)
+    assert review_index == {
+        "sections": [
+            {
+                "section_id": "mission-board",
+                "preview_path": ".dce/plans/mission-board.preview.json",
+                "review_path": ".dce/reviews/mission-board.review.md",
+                "preview_outcome_class": "preview_create_only",
+                "recommended_mode": "create_only",
+                "approval_path": ".dce/approvals/mission-board.approval.json",
+                "approval_status": "approved",
+                "selected_mode": "safe_modify",
+                "execution_permitted": True,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": None,
+                "execution_status": None,
+                "approval_consumed": None,
+                "approval_status_after": None,
+            }
+        ]
+    }
+    assert workspace_summary == {
+        "total_sections_seen": 1,
+        "sections": [
+            {
+                "section_id": "mission-board",
+                "latest_run_mode": None,
+                "latest_run_outcome_class": None,
+                "latest_status": None,
+                "latest_validation_ok": None,
+                "latest_advisory_type": None,
+                "latest_advisory_explanation": None,
+                "latest_written_files_count": 0,
+                "latest_skipped_modify_count": 0,
+                "latest_skipped_ignore_count": 0,
+                "preview_path": ".dce/plans/mission-board.preview.json",
+                "review_path": ".dce/reviews/mission-board.review.md",
+                "preview_outcome_class": "preview_create_only",
+                "recommended_mode": "create_only",
+                "approval_path": ".dce/approvals/mission-board.approval.json",
+                "approval_status": "approved",
+                "selected_mode": "safe_modify",
+                "execution_permitted": True,
+                "preflight_path": None,
+                "preflight_status": None,
+                "stale_check_path": None,
+                "stale_status": None,
+                "stale_detected": None,
+                "execution_allowed": None,
+                "execution_gate_path": None,
+                "gate_status": None,
+                "execution_blocked": None,
+                "alignment_path": None,
+                "alignment_status": None,
+                "alignment_blocked": None,
+                "execution_path": None,
+                "execution_status": None,
+                "approval_consumed": None,
+                "approval_status_after": None,
+            }
+        ],
+    }
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+
+
+def test_record_section_approval_is_deterministic_with_fixed_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_4_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_4_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    fixed_input = SectionApprovalInput(
+        approval_status="approved",
+        selected_mode="create_only",
+        approval_source="system_seeded",
+        approved_by="system",
+        approval_timestamp="2026-03-26T00:00:00Z",
+        notes="Seeded deterministic approval.",
+    )
+
+    run_section_with_workspace(_section(), first_root, incremental_mode="incremental_v2")
+    run_section_with_workspace(_section(), second_root, incremental_mode="incremental_v2")
+    record_section_approval(first_root, "mission-board", fixed_input)
+    record_section_approval(second_root, "mission-board", fixed_input)
+
+    assert (first_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "approvals" / "mission-board.approval.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_persisted_artifacts_include_fingerprint_fields(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_artifact_fields")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    approval = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    preflight = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    preview_payload = json.loads((project_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8"))
+    approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+    preflight_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.preflight.json").read_text(encoding="utf-8"))
+    review_text = (project_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+
+    assert isinstance(preview_payload["artifact_fingerprint"], str)
+    assert "- artifact_fingerprint: " in review_text
+    assert isinstance(approval["artifact_fingerprint"], str)
+    assert isinstance(preflight["artifact_fingerprint"], str)
+    from aether.dgce.decompose import verify_artifact_fingerprint, verify_review_artifact_fingerprint
+    assert verify_artifact_fingerprint(project_root / ".dce" / "plans" / "mission-board.preview.json") is True
+    assert verify_artifact_fingerprint(project_root / ".dce" / "approvals" / "mission-board.approval.json") is True
+    assert verify_artifact_fingerprint(project_root / ".dce" / "preflight" / "mission-board.preflight.json") is True
+    assert verify_review_artifact_fingerprint(project_root / ".dce" / "reviews" / "mission-board.review.md") is True
+    assert preview_payload["artifact_fingerprint"] == compute_preview_payload_fingerprint(preview_payload)
+    assert approval_payload["artifact_fingerprint"] == compute_json_payload_fingerprint(approval_payload)
+    assert preflight_payload["artifact_fingerprint"] == compute_json_payload_fingerprint(preflight_payload)
+
+
+def test_record_section_approval_uses_same_preview_fingerprint_as_preview_artifact(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_preview_approval_fingerprint_match")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    approval = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    preview_payload = json.loads((project_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8"))
+
+    assert approval["preview_fingerprint"] == preview_payload["artifact_fingerprint"]
+
+
+def test_record_section_approval_reads_latest_preview_artifact_from_disk(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_approval_reads_latest_preview")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8"))
+    preview_payload["preview_outcome_class"] = "preview_safe_modify_ready"
+    preview_payload["recommended_mode"] = "safe_modify"
+    preview_payload["artifact_fingerprint"] = compute_preview_payload_fingerprint(preview_payload)
+    preview_path.write_text(json.dumps(preview_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    approval = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert approval["preview_fingerprint"] == preview_payload["artifact_fingerprint"]
+    assert approval["preview_outcome_class"] == "preview_safe_modify_ready"
+    assert approval["recommended_mode"] == "safe_modify"
+
+
+def test_record_section_stale_check_invalidates_on_preview_fingerprint_mismatch(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_stale_preview_fingerprint")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8"))
+    preview_payload["artifact_fingerprint"] = "mismatched-preview-fingerprint"
+    preview_path.write_text(json.dumps(preview_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    stale = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert stale["stale_status"] == "stale_invalidated"
+    assert stale["stale_detected"] is True
+    assert stale["stale_reason"] == "approval_preview_fingerprint_mismatch"
+
+
+def test_record_section_stale_check_passes_when_fingerprints_match(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_stale_valid_fingerprint")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    stale = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert stale["stale_status"] == "stale_valid"
+    assert stale["stale_detected"] is False
+    assert stale["approval_input_path"] == ".dce/input/mission-board.json"
+    assert stale["current_input_path"] == ".dce/input/mission-board.json"
+    assert stale["approval_input_fingerprint"] == stale["current_input_fingerprint"]
+
+
+def test_record_section_stale_check_uses_stored_preview_artifact_fingerprint(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stale_uses_stored_preview_fingerprint")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8"))
+    stored_fingerprint = preview_payload["artifact_fingerprint"]
+    preview_payload["summary"]["total_targets"] = 999
+    preview_payload["artifact_fingerprint"] = stored_fingerprint
+    preview_path.write_text(json.dumps(preview_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    stale = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert stale["approval_preview_fingerprint"] == stored_fingerprint
+    assert stale["current_preview_fingerprint"] == stored_fingerprint
+    assert stale["stale_status"] == "stale_valid"
+    assert stale["stale_detected"] is False
+
+
+def test_record_section_stale_check_invalidates_on_input_fingerprint_mismatch(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_1_stale_input_fingerprint")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    input_path = project_root / ".dce" / "input" / "mission-board.json"
+    input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+    input_payload["requirements"].append("require operator ack")
+    input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    stale = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert stale["stale_status"] == "stale_invalidated"
+    assert stale["stale_detected"] is True
+    assert stale["stale_reason"] == "approval_input_fingerprint_mismatch"
+    assert stale["approval_input_path"] == ".dce/input/mission-board.json"
+    assert stale["current_input_path"] == ".dce/input/mission-board.json"
+
+
+def test_record_section_stale_check_is_backward_compatible_without_fingerprints(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_stale_backcompat")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    approval = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    approval.pop("preview_fingerprint", None)
+    approval.pop("review_fingerprint", None)
+    approval.pop("input_fingerprint", None)
+    (project_root / ".dce" / "approvals" / "mission-board.approval.json").write_text(
+        json.dumps(approval, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    stale = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert stale["stale_status"] == "stale_valid"
+    assert stale["stale_detected"] is False
+
+
+def test_verify_artifact_fingerprint_fails_after_json_payload_mutation(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_verify_invalidated")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    from aether.dgce.decompose import verify_artifact_fingerprint
+
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8"))
+
+    assert verify_artifact_fingerprint(preview_path) is True
+    preview_payload["summary"]["total_targets"] = 42
+    preview_path.write_text(json.dumps(preview_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert verify_artifact_fingerprint(preview_path) is False
+
+
+def test_verify_review_artifact_fingerprint_fails_after_review_content_mutation(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_review_verify_invalidated")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    from aether.dgce.decompose import verify_artifact_fingerprint, verify_review_artifact_fingerprint
+
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    review_path = project_root / ".dce" / "reviews" / "mission-board.review.md"
+
+    assert verify_review_artifact_fingerprint(review_path) is True
+    assert verify_artifact_fingerprint(preview_path) is True
+    review_path.write_text(review_path.read_text(encoding="utf-8").replace("- Total targets: 4", "- Total targets: 9"), encoding="utf-8")
+    assert verify_review_artifact_fingerprint(review_path) is False
+    assert verify_artifact_fingerprint(preview_path) is True
+
+
+def test_run_dgce_section_ungoverned_behaves_unchanged(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_ungoverned")
+    _write_section_input(project_root, _section())
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    direct = run_section_with_workspace(_section(), project_root)
+    second_root = _workspace_dir("dgce_productized_ungoverned_orchestrated")
+    _write_section_input(second_root, _section())
+    orchestrated = run_dgce_section("mission-board", second_root, governed=False)
+
+    assert direct.run_outcome_class == "success_create_only"
+    assert orchestrated.status == "success"
+    assert orchestrated.reason == direct.run_outcome_class
+    assert orchestrated.run_outcome_class == direct.run_outcome_class
+    assert orchestrated.artifact_paths["output_path"] == ".dce/outputs/mission-board.json"
+
+
+def test_run_dgce_section_governed_requires_approval(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_approval_required")
+    _write_section_input(project_root, _section())
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    result = run_dgce_section("mission-board", project_root, governed=True)
+
+    assert result.status == "approval_required"
+    assert result.reason == "missing_approval"
+    assert result.artifact_paths["preview_path"] == ".dce/plans/mission-board.preview.json"
+    assert result.artifact_paths["review_path"] == ".dce/reviews/mission-board.review.md"
+    assert result.artifact_paths["approval_path"] is None
+    assert result.artifact_paths["execution_path"] is None
+    assert result.artifact_paths["output_path"] is None
+
+
+def test_run_dgce_section_uses_explicit_section_id_not_title_for_cli_match(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_explicit_section_id_match")
+    section = DGCESection(
+        section_id="data-model",
+        section_type="data_model",
+        title="DGCE Core Data Model",
+        description="Governed data model section.",
+        requirements=["define section input artifacts"],
+        constraints=["keep output deterministic"],
+    )
+    _write_section_input(project_root, section)
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    result = run_dgce_section("data-model", project_root, governed=False)
+
+    assert result.status == "success"
+    assert result.reason == result.run_outcome_class
+    assert result.artifact_paths["input_path"] == ".dce/input/data-model.json"
+    assert result.artifact_paths["output_path"] == ".dce/outputs/data-model.json"
+
+
+def test_run_dgce_section_governed_valid_approval_succeeds(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_governed_success")
+    _write_section_input(project_root, _section())
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_dgce_section("mission-board", project_root, governed=True)
+
+    assert result.status == "success"
+    assert result.reason == "success_create_only"
+    assert result.run_outcome_class == "success_create_only"
+    assert result.artifact_paths["approval_path"] == ".dce/approvals/mission-board.approval.json"
+    assert result.artifact_paths["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
+    assert result.artifact_paths["preflight_path"] == ".dce/preflight/mission-board.preflight.json"
+    assert result.artifact_paths["execution_gate_path"] == ".dce/preflight/mission-board.execution_gate.json"
+    assert result.artifact_paths["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
+    assert result.artifact_paths["execution_path"] == ".dce/execution/mission-board.execution.json"
+    assert result.artifact_paths["output_path"] == ".dce/outputs/mission-board.json"
+
+
+def test_run_dgce_section_governed_stale_blocks(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_governed_stale")
+    _write_section_input(project_root, _section())
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["review_path"] = ".dce/reviews/other.review.md"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_dgce_section("mission-board", project_root, governed=True)
+
+    assert result.status == "blocked"
+    assert result.reason == "blocked_stale"
+    assert result.run_outcome_class == "blocked_stale"
+    assert result.artifact_paths["execution_path"] == ".dce/execution/mission-board.execution.json"
+
+
+def test_run_dgce_section_governed_blocks_when_input_fingerprint_mismatches(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_governed_input_stale")
+    _write_section_input(project_root, _section())
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    input_path = project_root / ".dce" / "input" / "mission-board.json"
+    input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+    input_payload["constraints"].append("operator input changed after approval")
+    input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_dgce_section("mission-board", project_root, governed=True)
+    stale_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))
+    gate_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
+
+    assert result.status == "blocked"
+    assert result.reason == "blocked_stale"
+    assert result.run_outcome_class == "blocked_stale"
+    assert stale_payload["stale_reason"] == "approval_input_fingerprint_mismatch"
+    assert gate_payload["gate_status"] == "gate_blocked_stale"
+
+
+def test_run_dgce_section_governed_alignment_mismatch_blocks(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_governed_alignment")
+    _write_section_input(project_root, _section())
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_dgce_section("mission-board", project_root, governed=True)
+
+    assert result.status == "blocked"
+    assert result.reason == "blocked_alignment"
+    assert result.run_outcome_class == "blocked_alignment"
+    assert result.artifact_paths["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
+
+
+def test_run_dgce_section_governed_safe_modify_succeeds(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_governed_safe_modify")
+    _write_section_input(project_root, _section())
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "run_mode": "create_only",
+                "run_outcome_class": "success_create_only",
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {
+                            "path": "api/missionboardservice.py",
+                            "language": "python",
+                            "purpose": "API surface",
+                            "content": "stale-content",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_ownership_index(project_root, [{"path": "api/missionboardservice.py", "section_id": section_id}])
+    _write_text(project_root / "api" / "missionboardservice.py", "old-content")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_dgce_section(section_id, project_root, governed=True)
+
+    assert result.status == "success"
+    assert result.reason == "success_safe_modify"
+    assert result.run_outcome_class == "success_safe_modify"
+    assert result.artifact_paths["execution_path"] == ".dce/execution/mission-board.execution.json"
+
+
+def test_run_dgce_section_governed_system_breakdown_accepts_rich_contract_and_persists_enriched_fallback(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_productized_system_breakdown_rich_contract")
+    section = DGCESection(
+        section_type="system_breakdown",
+        title="System Breakdown",
+        description="Define the DGCE system as implementation-ready modules and a deterministic build graph.",
+        requirements=[
+            "Define implementation-ready module contracts",
+            "Make build order explicit",
+        ],
+        constraints=[
+            "Do not change DGCE governance",
+            "Avoid narrative-only output",
+        ],
+        expected_targets=[
+            "aether/dgce/decompose.py",
+            "aether/dgce/incremental.py",
+            "dce.py",
+        ],
+    )
+    section_id = "system-breakdown"
+    _write_section_input(project_root, section)
+    _write_ownership_index(
+        project_root,
+        [{"path": path, "section_id": section_id} for path in section.expected_targets],
+    )
+    for path in section.expected_targets:
+        _write_text(project_root / path, "existing governed target\n")
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        if "plan the system breakdown" in lowered:
+            output = json.dumps(
+                {
+                    "modules": [
+                        {
+                            "name": "SectionInputHandler",
+                            "layer": "application",
+                            "responsibility": "accept, validate, fingerprint, and persist section input artifacts",
+                            "inputs": [
+                                {
+                                    "name": "raw_section_input",
+                                    "type": "SectionInputRequest",
+                                    "schema_fields": [
+                                        {"name": "section_id", "type": "string", "required": True},
+                                        {"name": "title", "type": "string", "required": True},
+                                        {"name": "acceptance_criteria", "type": "array", "items": "string", "required": False},
+                                    ],
+                                }
+                            ],
+                            "outputs": [
+                                {"name": "section_input_record", "type": "SectionInput"},
+                                {
+                                    "name": "section_input_artifact",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/input/{section_id}.json",
+                                },
+                            ],
+                            "dependencies": [],
+                            "governance_touchpoints": ["input_capture"],
+                            "failure_modes": ["input_validation_failed"],
+                            "owned_paths": ["aether/dgce/decompose.py"],
+                            "implementation_order": 1,
+                        },
+                        {
+                            "name": "StaleCheckWriter",
+                            "layer": "governance",
+                            "responsibility": "evaluate stale state and persist a distinct stale-check artifact",
+                            "inputs": [
+                                {
+                                    "name": "section_input_artifact",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/input/{section_id}.json",
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "name": "stale_check_artifact",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/preflight/{section_id}.stale_check.json",
+                                }
+                            ],
+                            "dependencies": [
+                                {"name": "section_input_handler", "kind": "module", "reference": "aether/dgce/decompose.py"}
+                            ],
+                            "governance_touchpoints": ["stale_check"],
+                            "failure_modes": ["stale_check_failed"],
+                            "owned_paths": [
+                                "aether/dgce/incremental.py",
+                                ".dce/preflight/{section_id}.stale_check.json",
+                            ],
+                            "implementation_order": 2,
+                        },
+                        {
+                            "name": "ExecutionCoordinator",
+                            "layer": "application",
+                            "responsibility": "coordinate governed execution and record execution artifacts",
+                            "inputs": [
+                                {
+                                    "name": "approval_request",
+                                    "type": "ApprovalRequest",
+                                    "schema_fields": [
+                                        {"name": "section_id", "type": "string", "required": True},
+                                        {"name": "approval_status", "type": "string", "required": True},
+                                    ],
+                                },
+                                {
+                                    "name": "stale_check_artifact",
+                                    "type": "artifact",
+                                    "artifact_path": ".dce/preflight/{section_id}.stale_check.json",
+                                },
+                            ],
+                            "outputs": [
+                                {"name": "execution_stamp", "type": "ExecutionStamp"},
+                            ],
+                            "dependencies": [
+                                {"name": "stale_check_writer", "kind": "module", "reference": "aether/dgce/incremental.py"}
+                            ],
+                            "governance_touchpoints": ["approval", "execution"],
+                            "failure_modes": ["execution_blocked"],
+                            "owned_paths": ["dce.py"],
+                            "implementation_order": 3,
+                        },
+                    ],
+                    "build_graph": {
+                        "type": "directed_acyclic_graph",
+                        "edges": [
+                            ["SectionInputHandler", "StaleCheckWriter"],
+                            ["StaleCheckWriter", "ExecutionCoordinator"],
+                        ],
+                    },
+                    "tests": [
+                        {
+                            "name": "stale_check_path_is_owned",
+                            "purpose": "Verify stale-check ownership stays explicit.",
+                            "targets": ["StaleCheckWriter"],
+                        }
+                    ],
+                }
+            )
+        elif "implement a data model class" in lowered:
+            output = json.dumps(
+                {
+                    "entities": ["SectionInput"],
+                    "fields": ["section_id", "artifact_fingerprint"],
+                    "relationships": ["section_input->execution_stamp"],
+                    "validation_rules": ["section_id required"],
+                }
+            )
+        elif "implement an api surface" in lowered:
+            output = json.dumps(
+                {
+                    "interfaces": ["DGCESectionGovernanceAPI"],
+                    "methods": ["get_section_status"],
+                    "inputs": ["section_id"],
+                    "outputs": ["status"],
+                    "error_cases": ["section_missing"],
+                }
+            )
+        else:
+            output = "Summary output"
+
+        return ExecutionResult(
+            output=output,
+            status=ArtifactStatus.EXPERIMENTAL,
+            executor=executor_name,
+            metadata={
+                "real_model_called": False,
+                "model_backend": "stub",
+                "model_name": None,
+                "estimated_tokens": len(content) / 4,
+                "estimated_cost": (len(content) / 4) * 0.000002,
+                "inference_avoided": False,
+                "backend_used": "stub",
+                "worth_running": True,
+            },
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="safe_modify",
+            approval_timestamp="2026-03-29T00:00:00Z",
+        ),
+    )
+
+    result = run_section_with_workspace(
+        section,
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        preflight_validation_timestamp="2026-03-29T00:00:00Z",
+        gate_timestamp="2026-03-29T00:00:00Z",
+        alignment_timestamp="2026-03-29T00:00:00Z",
+        execution_timestamp="2026-03-29T00:00:00Z",
+    )
+    output_payload = json.loads((project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8"))
+    execution_payload = json.loads((project_root / ".dce" / "execution" / f"{section_id}.execution.json").read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class != "validation_failure"
+    assert output_payload["execution_outcome"]["validation_summary"] == {
+        "ok": True,
+        "error": None,
+        "missing_keys": [],
+    }
+    assert output_payload["file_plan"]["files"] == [
+        {
+            "path": "aether/dgce/decompose.py",
+            "purpose": "System-breakdown orchestration and contract rendering",
+            "requirements": [
+                "Define implementation-ready module contracts",
+                "Make build order explicit",
+                "Module contracts: SectionInputHandler, StaleCheckWriter, ExecutionCoordinator",
+                "Build graph: SectionInputHandler->StaleCheckWriter, StaleCheckWriter->ExecutionCoordinator",
+                "Verification: stale_check_path_is_owned",
+            ],
+            "source": "expected_targets",
+        },
+        {
+            "path": "aether/dgce/incremental.py",
+            "purpose": "System-breakdown target grounding and change planning",
+            "requirements": [
+                "Define implementation-ready module contracts",
+                "Make build order explicit",
+                "Module contracts: SectionInputHandler, StaleCheckWriter, ExecutionCoordinator",
+                "Build graph: SectionInputHandler->StaleCheckWriter, StaleCheckWriter->ExecutionCoordinator",
+                "Verification: stale_check_path_is_owned",
+            ],
+            "source": "expected_targets",
+        },
+        {
+            "path": "dce.py",
+            "purpose": "System-breakdown CLI orchestration entrypoint",
+            "requirements": [
+                "Define implementation-ready module contracts",
+                "Make build order explicit",
+                "Module contracts: SectionInputHandler, StaleCheckWriter, ExecutionCoordinator",
+                "Build graph: SectionInputHandler->StaleCheckWriter, StaleCheckWriter->ExecutionCoordinator",
+                "Verification: stale_check_path_is_owned",
+            ],
+            "source": "expected_targets",
+        },
+    ]
+    assert execution_payload["run_outcome_class"] == result.run_outcome_class
+    assert execution_payload["execution_status"] in {"execution_completed", "execution_completed_no_changes"}
+
+
+def test_record_section_preflight_truth_table_and_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_5_preflight_truth_table")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    missing_approval = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_approval["preflight_status"] == "preflight_missing_approval"
+    assert missing_approval["execution_allowed"] is False
+    assert missing_approval["preflight_reason"] == "missing_approval"
+
+    approval = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="safe_modify",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    review_path = project_root / ".dce" / "reviews" / "mission-board.review.md"
+    review_text = review_path.read_text(encoding="utf-8")
+    review_path.unlink()
+    missing_review = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_review["preflight_status"] == "preflight_missing_review"
+    assert missing_review["preflight_reason"] == "missing_review"
+    review_path.write_text(review_text, encoding="utf-8")
+
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview_text = preview_path.read_text(encoding="utf-8")
+    preview_path.unlink()
+    missing_preview = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_preview["preflight_status"] == "preflight_missing_preview"
+    assert missing_preview["preflight_reason"] == "missing_preview"
+    preview_path.write_text(preview_text, encoding="utf-8")
+
+    invalid_linkage_payload = dict(approval)
+    invalid_linkage_payload["preview_path"] = ".dce/plans/other.preview.json"
+    (project_root / ".dce" / "approvals" / "mission-board.approval.json").write_text(
+        json.dumps(invalid_linkage_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    invalid_linkage = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert invalid_linkage["preflight_status"] == "preflight_invalid_linkage"
+    assert invalid_linkage["preflight_reason"] == "approval_preview_path_mismatch"
+    _write_text(project_root / ".dce" / "approvals" / "mission-board.approval.json", json.dumps(approval, indent=2, sort_keys=True) + "\n")
+
+    permitted_pass = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert permitted_pass["preflight_status"] == "preflight_pass"
+    assert permitted_pass["execution_allowed"] is True
+    assert permitted_pass["preflight_reason"] == "approved_and_linked"
+
+    not_permitted = record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="review_required",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    execution_not_permitted = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert not_permitted["execution_permitted"] is False
+    assert execution_not_permitted["preflight_status"] == "preflight_execution_not_permitted"
+    assert execution_not_permitted["preflight_reason"] == "approval_not_permitted"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="rejected",
+            selected_mode="create_only",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    rejected = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert rejected["preflight_status"] == "preflight_rejected"
+    assert rejected["preflight_reason"] == "approval_rejected"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="superseded",
+            selected_mode="create_only",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    superseded = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert superseded["preflight_status"] == "preflight_superseded"
+    assert superseded["preflight_reason"] == "approval_superseded"
+    assert review_index["sections"][0]["preflight_path"] == ".dce/preflight/mission-board.preflight.json"
+    assert review_index["sections"][0]["preflight_status"] == "preflight_superseded"
+    assert review_index["sections"][0]["execution_allowed"] is False
+    assert workspace_summary["sections"][0]["preflight_path"] == ".dce/preflight/mission-board.preflight.json"
+    assert workspace_summary["sections"][0]["preflight_status"] == "preflight_superseded"
+    assert workspace_summary["sections"][0]["execution_allowed"] is False
+
+
+def test_record_section_preflight_is_deterministic_with_fixed_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_5_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_5_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    fixed_approval = SectionApprovalInput(
+        approval_status="approved",
+        selected_mode="create_only",
+        approval_timestamp="2026-03-26T00:00:00Z",
+    )
+    fixed_preflight = SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z")
+
+    run_section_with_workspace(_section(), first_root, incremental_mode="incremental_v2_2")
+    run_section_with_workspace(_section(), second_root, incremental_mode="incremental_v2_2")
+    record_section_approval(first_root, "mission-board", fixed_approval)
+    record_section_approval(second_root, "mission-board", fixed_approval)
+    record_section_preflight(first_root, "mission-board", fixed_preflight)
+    record_section_preflight(second_root, "mission-board", fixed_preflight)
+
+    assert (first_root / ".dce" / "preflight" / "mission-board.preflight.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "preflight" / "mission-board.preflight.json"
+    ).read_text(encoding="utf-8")
+    assert (first_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "reviews" / "index.json"
+    ).read_text(encoding="utf-8")
+    assert (first_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "workspace_summary.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_record_section_stale_check_truth_table_and_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_9_stale_truth_table")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    missing_approval = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_approval["stale_status"] == "stale_missing_approval"
+    assert missing_approval["stale_detected"] is True
+    assert missing_approval["stale_reason"] == "missing_approval"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    preview_backup = preview_path.read_text(encoding="utf-8")
+    preview_path.unlink()
+    missing_preview = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_preview["stale_status"] == "stale_missing_preview"
+    assert missing_preview["stale_detected"] is True
+    assert missing_preview["stale_reason"] == "missing_preview"
+    preview_path.write_text(preview_backup, encoding="utf-8")
+
+    review_path = project_root / ".dce" / "reviews" / "mission-board.review.md"
+    review_backup = review_path.read_text(encoding="utf-8")
+    review_path.unlink()
+    missing_review = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_review["stale_status"] == "stale_missing_review"
+    assert missing_review["stale_detected"] is True
+    assert missing_review["stale_reason"] == "missing_review"
+    review_path.write_text(review_backup, encoding="utf-8")
+
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["preview_path"] = ".dce/plans/other.preview.json"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    invalidated = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert invalidated["stale_status"] == "stale_invalidated"
+    assert invalidated["stale_detected"] is True
+    assert invalidated["stale_reason"] == "approval_preview_path_mismatch"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    valid = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert valid["stale_status"] == "stale_valid"
+    assert valid["stale_detected"] is False
+    assert valid["stale_reason"] == "approval_links_current"
+    assert review_index["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
+    assert review_index["sections"][0]["stale_status"] == "stale_valid"
+    assert review_index["sections"][0]["stale_detected"] is False
+    assert workspace_summary["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
+    assert workspace_summary["sections"][0]["stale_status"] == "stale_valid"
+    assert workspace_summary["sections"][0]["stale_detected"] is False
+
+
+def test_record_section_stale_check_is_deterministic_with_fixed_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_9_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_9_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    fixed_stale = SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z")
+    fixed_approval = SectionApprovalInput(
+        approval_status="approved",
+        selected_mode="create_only",
+        approval_timestamp="2026-03-26T00:00:00Z",
+    )
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(root, "mission-board", fixed_approval)
+        record_section_stale_check(root, "mission-board", fixed_stale)
+
+    assert (first_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "preflight" / "mission-board.stale_check.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_run_section_with_workspace_repeat_runs_preserve_fingerprints(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_repeat_fingerprint_stability")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    input_path = project_root / ".dce" / "input" / "mission-board.json"
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    first_input_fingerprint = compute_json_payload_fingerprint(json.loads(input_path.read_text(encoding="utf-8")))
+    first_preview_fingerprint = compute_preview_payload_fingerprint(json.loads(preview_path.read_text(encoding="utf-8")))
+
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    second_input_fingerprint = compute_json_payload_fingerprint(json.loads(input_path.read_text(encoding="utf-8")))
+    second_preview_fingerprint = compute_preview_payload_fingerprint(json.loads(preview_path.read_text(encoding="utf-8")))
+
+    assert first_input_fingerprint == second_input_fingerprint
+    assert first_preview_fingerprint == second_preview_fingerprint
+
+
+def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_gate_truth_table")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    not_required = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=False,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert not_required["gate_status"] == "gate_not_required"
+    assert not_required["execution_attempted"] is False
+    assert not_required["execution_blocked"] is False
+
+    missing_approval = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert missing_approval["gate_status"] == "gate_blocked_stale"
+    assert missing_approval["stale_status"] == "stale_missing_approval"
+    assert missing_approval["execution_blocked"] is True
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="review_required", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    execution_not_allowed = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    assert execution_not_allowed["gate_status"] == "gate_blocked_preflight_failed"
+    assert execution_not_allowed["execution_blocked"] is True
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    gate_pass = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert gate_pass["gate_status"] == "gate_pass"
+    assert gate_pass["execution_blocked"] is False
+    assert gate_pass["preflight_status"] == "preflight_pass"
+    assert gate_pass["stale_status"] == "stale_valid"
+    assert review_index["sections"][0]["execution_gate_path"] == ".dce/preflight/mission-board.execution_gate.json"
+    assert review_index["sections"][0]["gate_status"] == "gate_pass"
+    assert review_index["sections"][0]["execution_blocked"] is False
+    assert review_index["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
+    assert review_index["sections"][0]["stale_status"] == "stale_valid"
+    assert review_index["sections"][0]["stale_detected"] is False
+    assert workspace_summary["sections"][0]["execution_gate_path"] == ".dce/preflight/mission-board.execution_gate.json"
+    assert workspace_summary["sections"][0]["gate_status"] == "gate_pass"
+    assert workspace_summary["sections"][0]["execution_blocked"] is False
+    assert workspace_summary["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
+    assert workspace_summary["sections"][0]["stale_status"] == "stale_valid"
+    assert workspace_summary["sections"][0]["stale_detected"] is False
+
+
+def test_run_section_with_workspace_require_preflight_pass_blocks_without_writes(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_blocked_run")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+    )
+    gate_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "blocked_stale"
+    assert result.execution_outcome["status"] == "blocked"
+    assert result.execution_outcome["stale_status"] == "stale_missing_approval"
+    assert gate_artifact["execution_blocked"] is True
+    assert gate_artifact["stale_status"] == "stale_missing_approval"
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+
+
+def test_run_section_with_workspace_stale_gate_blocks_without_project_writes(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_9_blocked_stale")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["review_path"] = ".dce/reviews/other.review.md"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    stale_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))
+    gate_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "blocked_stale"
+    assert result.execution_outcome["status"] == "blocked"
+    assert result.execution_outcome["stale_status"] == "stale_invalidated"
+    assert stale_payload["stale_status"] == "stale_invalidated"
+    assert stale_payload["stale_detected"] is True
+    assert gate_payload["gate_status"] == "gate_blocked_stale"
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+
+
+def test_run_section_with_workspace_require_preflight_pass_allows_normal_execution(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_passed_run")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+    )
+
+    assert result.run_outcome_class == "success_create_only"
+    assert sorted(result.written_files) == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+
+
+def test_run_section_with_workspace_gate_outputs_are_deterministic(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_6_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_6_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    assert (first_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_record_section_alignment_truth_table_and_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_alignment_truth_table")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="review_required", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    review_required = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 0, "modify_written_count": 0}},
+    )
+    assert review_required["alignment_status"] == "alignment_blocked"
+    assert review_required["alignment_blocked"] is True
+    assert review_required["selected_mode"] == "review_required"
+    assert review_required["effective_execution_mode"] == "no_changes"
+    assert review_required["alignment_reason"] == "review_required_selected"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    no_changes = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 1, "modify_written_count": 0}},
+    )
+    assert no_changes["alignment_status"] == "alignment_blocked"
+    assert no_changes["alignment_blocked"] is True
+    assert no_changes["effective_execution_mode"] == "create_only"
+    assert no_changes["alignment_reason"] == "writes_detected"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    create_only = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+    )
+    assert create_only["alignment_status"] == "alignment_blocked"
+    assert create_only["alignment_blocked"] is True
+    assert create_only["effective_execution_mode"] == "safe_modify"
+    assert create_only["alignment_reason"] == "modify_write_detected"
+
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    safe_modify = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+    )
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert safe_modify["alignment_status"] == "alignment_pass"
+    assert safe_modify["alignment_blocked"] is False
+    assert safe_modify["selected_mode"] == "safe_modify"
+    assert safe_modify["effective_execution_mode"] == "safe_modify"
+    assert safe_modify["alignment_reason"] == "safe_modify_permitted"
+    assert review_index["sections"][0]["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
+    assert review_index["sections"][0]["alignment_status"] == "alignment_pass"
+    assert review_index["sections"][0]["alignment_blocked"] is False
+    assert workspace_summary["sections"][0]["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
+    assert workspace_summary["sections"][0]["alignment_status"] == "alignment_pass"
+    assert workspace_summary["sections"][0]["alignment_blocked"] is False
+
+
+def test_run_section_with_workspace_alignment_not_executed_when_preflight_not_required(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_alignment_not_required")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    result = run_section_with_workspace(_section(), project_root)
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class == "success_create_only"
+    assert (project_root / ".dce" / "preflight" / "mission-board.alignment.json").exists() is False
+    assert workspace_summary["sections"][0]["alignment_path"] is None
+    assert workspace_summary["sections"][0]["alignment_status"] is None
+    assert workspace_summary["sections"][0]["alignment_blocked"] is None
+
+
+def test_run_section_with_workspace_alignment_blocks_no_changes_without_project_writes(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_blocked_no_changes")
+    _write_text(project_root / "docs" / "readme.md", "keep-doc")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+    )
+    alignment_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "blocked_alignment"
+    assert result.execution_outcome["status"] == "blocked"
+    assert result.execution_outcome["alignment_status"] == "alignment_blocked"
+    assert alignment_artifact["alignment_blocked"] is True
+    assert alignment_artifact["selected_mode"] == "no_changes"
+    assert alignment_artifact["effective_execution_mode"] == "create_only"
+    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
+    assert (project_root / "api" / "missionboardservice.py").exists() is False
+
+
+def test_run_section_with_workspace_alignment_blocks_create_only_when_modify_would_occur(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_blocked_create_only_modify")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "run_mode": "create_only",
+                "run_outcome_class": "success_create_only",
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {
+                            "path": "api/missionboardservice.py",
+                            "language": "python",
+                            "purpose": "API surface",
+                            "content": "stale-content",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_ownership_index(project_root, [{"path": "api/missionboardservice.py", "section_id": section_id}])
+    _write_text(project_root / "api" / "missionboardservice.py", "old-content")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+    )
+    alignment_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "blocked_alignment"
+    assert alignment_artifact["alignment_blocked"] is True
+    assert alignment_artifact["selected_mode"] == "create_only"
+    assert alignment_artifact["effective_execution_mode"] == "safe_modify"
+    assert (project_root / "api" / "missionboardservice.py").read_text(encoding="utf-8") == "old-content"
+    assert (project_root / "mission_board" / "models.py").exists() is False
+
+
+def test_run_section_with_workspace_alignment_passes_safe_modify_and_executes(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_safe_modify_pass")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "run_mode": "create_only",
+                "run_outcome_class": "success_create_only",
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {
+                            "path": "api/missionboardservice.py",
+                            "language": "python",
+                            "purpose": "API surface",
+                            "content": "stale-content",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_ownership_index(project_root, [{"path": "api/missionboardservice.py", "section_id": section_id}])
+    _write_text(project_root / "api" / "missionboardservice.py", "old-content")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+    )
+    alignment_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class == "success_safe_modify"
+    assert sorted(result.written_files) == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+    assert alignment_artifact["alignment_status"] == "alignment_pass"
+    assert alignment_artifact["alignment_blocked"] is False
+    assert alignment_artifact["effective_execution_mode"] == "safe_modify"
+
+
+def test_run_section_with_workspace_alignment_outputs_are_deterministic(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_7_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_7_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    assert (first_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "preflight" / "mission-board.alignment.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_run_section_with_workspace_execution_stamp_written_under_dce_execution_only(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_execution_path")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_path = project_root / ".dce" / "execution" / "mission-board.execution.json"
+    payload = json.loads(execution_path.read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class == "success_create_only"
+    assert execution_path.exists()
+    assert sorted(path.relative_to(project_root).as_posix() for path in project_root.rglob("*.execution.json")) == [
+        ".dce/execution/mission-board.execution.json"
+    ]
+    assert payload["execution_status"] == "execution_not_governed"
+    assert payload["governed_execution"] is False
+    assert payload["require_preflight_pass"] is False
+    assert payload["written_file_count"] == 4
+    assert payload["modify_written_count"] == 0
+    assert payload["created_written_count"] == 4
+
+
+def test_run_section_with_workspace_governed_execution_consumes_approval_and_updates_linkage(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_governed_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+    approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class == "success_create_only"
+    assert execution_payload["execution_status"] == "execution_completed"
+    assert execution_payload["governed_execution"] is True
+    assert execution_payload["execution_blocked"] is False
+    assert execution_payload["approval_status_before"] == "approved"
+    assert execution_payload["approval_consumed"] is True
+    assert execution_payload["approval_status_after"] == "superseded"
+    assert execution_payload["selected_mode"] == "create_only"
+    assert execution_payload["effective_execution_mode"] == "create_only"
+    assert execution_payload["written_file_count"] == 4
+    assert execution_payload["modify_written_count"] == 0
+    assert execution_payload["created_written_count"] == 4
+    assert approval_payload["approval_status"] == "superseded"
+    assert approval_payload["execution_permitted"] is False
+    assert review_index["sections"][0]["execution_path"] == ".dce/execution/mission-board.execution.json"
+    assert review_index["sections"][0]["execution_status"] == "execution_completed"
+    assert review_index["sections"][0]["approval_consumed"] is True
+    assert review_index["sections"][0]["approval_status_after"] == "superseded"
+    assert workspace_summary["sections"][0]["execution_path"] == ".dce/execution/mission-board.execution.json"
+    assert workspace_summary["sections"][0]["execution_status"] == "execution_completed"
+    assert workspace_summary["sections"][0]["approval_consumed"] is True
+    assert workspace_summary["sections"][0]["approval_status_after"] == "superseded"
+    assert workspace_summary["sections"][0]["approval_status"] == "superseded"
+
+
+def test_run_section_with_workspace_governed_execution_completed_no_changes_consumes_approval(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_governed_no_changes")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "partial_skipped_identical"
+    assert execution_payload["execution_status"] == "execution_completed_no_changes"
+    assert execution_payload["approval_consumed"] is True
+    assert execution_payload["approval_status_after"] == "superseded"
+    assert execution_payload["effective_execution_mode"] == "no_changes"
+    assert execution_payload["written_file_count"] == 0
+    assert execution_payload["modify_written_count"] == 0
+    assert execution_payload["created_written_count"] == 0
+
+
+def test_run_section_with_workspace_governed_data_model_empty_output_no_changes_still_fails_validation(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_governed_data_model_empty_output")
+    section = DGCESection(
+        section_type="data_model",
+        title="Data Model",
+        description="Define the governed DGCE data model.",
+        requirements=[
+            "Define SectionInput and ExecutionStamp entities",
+            "Keep the model deterministic and auditable",
+        ],
+        constraints=["Keep the model independent of .dce file paths"],
+        expected_targets=["aether/dgce/decompose.py", "aether/dgce/incremental.py"],
+    )
+    section_id = "data-model"
+    expected_files = [
+        {
+            "path": path,
+            "purpose": "",
+            "source": "expected_targets",
+            "requirements": section.requirements,
+        }
+        for path in section.expected_targets
+    ]
+
+    for file_entry in expected_files:
+        target_path = project_root / file_entry["path"]
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(render_file_entry_bytes(file_entry))
+    _write_section_input(project_root, section)
+    _write_ownership_index(project_root, [{"path": path, "section_id": section_id} for path in section.expected_targets])
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        if "implement a data model class" in lowered:
+            output = ""
+        elif "plan the system breakdown" in lowered:
+            output = json.dumps(
+                {
+                    "module_name": "dgce_data_model",
+                    "purpose": "describe governed dgce data entities",
+                    "subcomponents": ["section_input", "execution_stamp"],
+                    "dependencies": ["audit_log"],
+                    "implementation_order": ["section_input", "execution_stamp"],
+                }
+            )
+        elif "implement an api surface" in lowered:
+            output = json.dumps(
+                {
+                    "interfaces": ["DGCEDataModelService"],
+                    "methods": ["describe"],
+                    "inputs": ["section_id"],
+                    "outputs": ["artifact"],
+                    "error_cases": ["section_missing"],
+                }
+            )
+        else:
+            output = "Summary output"
+
+        return ExecutionResult(
+            output=output,
+            status=ArtifactStatus.EXPERIMENTAL,
+            executor=executor_name,
+            metadata={
+                "real_model_called": False,
+                "model_backend": "stub",
+                "model_name": None,
+                "estimated_tokens": len(content) / 4,
+                "estimated_cost": (len(content) / 4) * 0.000002,
+                "inference_avoided": False,
+                "backend_used": "stub",
+                "worth_running": True,
+            },
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    run_section_with_workspace(section, project_root)
+    run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        section,
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_payload = json.loads((project_root / ".dce" / "execution" / f"{section_id}.execution.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "validation_failure"
+    assert result.execution_outcome["validation_summary"] == {
+        "ok": False,
+        "error": "invalid_json",
+        "missing_keys": [],
+    }
+    assert result.execution_outcome["execution_summary"]["skipped_identical_count"] == 2
+    assert execution_payload["execution_status"] == "execution_completed_no_changes"
+    assert execution_payload["run_outcome_class"] == "validation_failure"
+
+
+def test_run_section_with_workspace_governed_data_model_malformed_output_still_fails_validation(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_governed_data_model_malformed_output")
+    section = DGCESection(
+        section_type="data_model",
+        title="Data Model",
+        description="Define the governed DGCE data model.",
+        requirements=[
+            "Define SectionInput and ExecutionStamp entities",
+            "Keep the model deterministic and auditable",
+        ],
+        constraints=["Keep the model independent of .dce file paths"],
+        expected_targets=["aether/dgce/decompose.py", "aether/dgce/incremental.py"],
+    )
+    section_id = "data-model"
+    expected_files = [
+        {
+            "path": path,
+            "purpose": "",
+            "source": "expected_targets",
+            "requirements": section.requirements,
+        }
+        for path in section.expected_targets
+    ]
+
+    for file_entry in expected_files:
+        target_path = project_root / file_entry["path"]
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(render_file_entry_bytes(file_entry))
+    _write_section_input(project_root, section)
+    _write_ownership_index(project_root, [{"path": path, "section_id": section_id} for path in section.expected_targets])
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        if "implement a data model class" in lowered:
+            output = "not valid json"
+        elif "plan the system breakdown" in lowered:
+            output = json.dumps(
+                {
+                    "module_name": "dgce_data_model",
+                    "purpose": "describe governed dgce data entities",
+                    "subcomponents": ["section_input", "execution_stamp"],
+                    "dependencies": ["audit_log"],
+                    "implementation_order": ["section_input", "execution_stamp"],
+                }
+            )
+        elif "implement an api surface" in lowered:
+            output = json.dumps(
+                {
+                    "interfaces": ["DGCEDataModelService"],
+                    "methods": ["describe"],
+                    "inputs": ["section_id"],
+                    "outputs": ["artifact"],
+                    "error_cases": ["section_missing"],
+                }
+            )
+        else:
+            output = "Summary output"
+
+        return ExecutionResult(
+            output=output,
+            status=ArtifactStatus.EXPERIMENTAL,
+            executor=executor_name,
+            metadata={
+                "real_model_called": False,
+                "model_backend": "stub",
+                "model_name": None,
+                "estimated_tokens": len(content) / 4,
+                "estimated_cost": (len(content) / 4) * 0.000002,
+                "inference_avoided": False,
+                "backend_used": "stub",
+                "worth_running": True,
+            },
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose.build_file_plan", lambda responses: FilePlan(project_name="DGCE", files=[]))
+
+    run_section_with_workspace(section, project_root)
+    run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        section,
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_payload = json.loads((project_root / ".dce" / "execution" / f"{section_id}.execution.json").read_text(encoding="utf-8"))
+
+    assert result.written_files == []
+    assert result.run_outcome_class == "validation_failure"
+    assert result.execution_outcome["validation_summary"] == {
+        "ok": False,
+        "error": "invalid_json",
+        "missing_keys": [],
+    }
+    assert result.execution_outcome["execution_summary"]["skipped_identical_count"] == 2
+    assert execution_payload["execution_status"] == "execution_completed_no_changes"
+    assert execution_payload["run_outcome_class"] == "validation_failure"
+
+
+def test_run_section_with_workspace_governed_blocked_execution_preserves_approval(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_governed_blocked")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "run_mode": "create_only",
+                "run_outcome_class": "success_create_only",
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {
+                            "path": "api/missionboardservice.py",
+                            "language": "python",
+                            "purpose": "API surface",
+                            "content": "stale-content",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_ownership_index(project_root, [{"path": "api/missionboardservice.py", "section_id": section_id}])
+    _write_text(project_root / "api" / "missionboardservice.py", "old-content")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+    approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class == "blocked_alignment"
+    assert execution_payload["execution_status"] == "execution_blocked"
+    assert execution_payload["governed_execution"] is True
+    assert execution_payload["execution_blocked"] is True
+    assert execution_payload["approval_consumed"] is False
+    assert execution_payload["approval_status_before"] == "approved"
+    assert execution_payload["approval_status_after"] == "approved"
+    assert execution_payload["effective_execution_mode"] == "safe_modify"
+    assert execution_payload["written_file_count"] == 0
+    assert execution_payload["modify_written_count"] == 0
+    assert execution_payload["created_written_count"] == 0
+    assert approval_payload["approval_status"] == "approved"
+
+
+def test_record_section_execution_stamp_is_deterministic_with_fixed_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_8_repeat_a")
+    second_root = _workspace_dir("dgce_incremental_v2_8_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+            execution_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    assert (first_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "execution" / "mission-board.execution.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_record_section_execution_stamp_helper_derives_effective_mode_from_write_transparency(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_execution_helper")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    stamp = record_section_execution_stamp(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        execution=SectionExecutionStampInput(execution_timestamp="2026-03-26T00:00:00Z"),
+        run_outcome_class="blocked_alignment",
+        execution_blocked=True,
+        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+    )
+
+    assert stamp["execution_status"] == "execution_blocked"
+    assert stamp["effective_execution_mode"] == "safe_modify"
+    assert stamp["written_file_count"] == 0
+    assert stamp["modify_written_count"] == 0
+    assert stamp["created_written_count"] == 0
+
+
+def test_build_run_outcome_class_treats_skipped_modify_zero_write_run_as_execution_no_changes():
+    execution_outcome = {
+        "status": "error",
+        "validation_summary": {
+            "ok": True,
+            "error": None,
+            "missing_keys": [],
+        },
+        "change_plan_summary": {
+            "create_count": 0,
+            "modify_count": 3,
+            "ignore_count": 0,
+        },
+        "execution_summary": {
+            "written_files_count": 0,
+            "skipped_modify_count": 3,
+            "skipped_ignore_count": 0,
+            "skipped_identical_count": 0,
+            "skipped_ownership_count": 0,
+            "skipped_exists_fallback_count": 0,
+        },
+    }
+
+    assert _build_run_outcome_class("create_only", execution_outcome) == "execution_no_changes"
