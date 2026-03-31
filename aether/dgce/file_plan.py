@@ -5,6 +5,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from pydantic import BaseModel
+from aether_core.router.api_surface_contract import DGCE_CORE_API_INTERFACE_METHODS
 
 if TYPE_CHECKING:
     from aether.dgce.decompose import ResponseEnvelope
@@ -51,16 +52,6 @@ _NAME_STOPWORDS = {
 }
 _ENTITY_SUFFIXES = ("artifact", "record", "input", "output", "gate", "stamp", "model", "entity")
 _INTERFACE_SUFFIXES = ("service", "api", "gateway", "client", "interface")
-_DGCE_CORE_API_INTERFACE_METHODS = {
-    "PreviewService": ("preview",),
-    "ReviewService": ("review",),
-    "ApprovalService": ("approval",),
-    "PreflightService": ("preflight",),
-    "GateService": ("gate",),
-    "AlignmentService": ("alignment",),
-    "ExecutionService": ("execution",),
-    "StatusService": ("status",),
-}
 _SEMANTIC_VOCABULARY = (
     "alignment",
     "api",
@@ -357,7 +348,7 @@ def _normalize_interface_label(value: str) -> str:
 
 def _api_surface_file_metadata(payload: dict[str, Any], interface_label: str) -> dict[str, Any]:
     """Return implementation-ready interface metadata for one validated api-surface interface."""
-    method_names = _DGCE_CORE_API_INTERFACE_METHODS.get(interface_label, ())
+    method_names = DGCE_CORE_API_INTERFACE_METHODS.get(interface_label, ())
     methods_payload = payload.get("methods", {})
     inputs_payload = payload.get("inputs", {})
     outputs_payload = payload.get("outputs", {})
