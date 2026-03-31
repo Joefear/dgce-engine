@@ -5284,6 +5284,168 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     assert workspace_summary["sections"][0]["stale_detected"] is False
 
 
+def test_record_section_execution_gate_emits_deterministic_structured_contract(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_gate_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="create_only",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    gate = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert sorted(gate.keys()) == [
+        "checked_artifacts",
+        "checks",
+        "decision_summary",
+        "execution_allowed",
+        "execution_attempted",
+        "execution_blocked",
+        "gate_reason",
+        "gate_status",
+        "gate_timestamp",
+        "preflight_path",
+        "preflight_status",
+        "reasons",
+        "require_preflight_pass",
+        "section_id",
+        "selected_mode",
+        "stale_check_path",
+        "stale_detected",
+        "stale_status",
+    ]
+    assert [entry["artifact_role"] for entry in gate["checked_artifacts"]] == ["preflight", "stale_check"]
+    assert [entry["present"] for entry in gate["checked_artifacts"]] == [True, True]
+    assert [check["check_id"] for check in gate["checks"]] == [
+        "preflight_required",
+        "stale_check_clear",
+        "preflight_artifact_present",
+        "preflight_status_passed",
+        "execution_permission_confirmed",
+    ]
+    assert [check["result"] for check in gate["checks"]] == [
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+    ]
+    assert all(
+        sorted(check.keys()) == [
+            "category",
+            "check_id",
+            "checked_artifact_path",
+            "checked_artifact_role",
+            "detail",
+            "issue_code",
+            "result",
+        ]
+        for check in gate["checks"]
+    )
+    assert gate["reasons"] == []
+    assert gate["decision_summary"] == {
+        "allow_execution": True,
+        "blocking_reason_count": 0,
+        "checked_artifact_count": 2,
+        "failed_check_count": 0,
+        "gate_reason": "preflight_passed",
+        "gate_status": "gate_pass",
+        "not_evaluated_check_count": 0,
+        "not_required_check_count": 0,
+        "passed_check_count": 5,
+        "total_check_count": 5,
+    }
+
+
+def test_record_section_execution_gate_normalizes_blocking_reasons(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_7_gate_blocking_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+
+    gate = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert gate["gate_status"] == "gate_blocked_stale"
+    assert gate["execution_blocked"] is True
+    assert [check["result"] for check in gate["checks"]] == [
+        "passed",
+        "failed",
+        "passed",
+        "failed",
+        "failed",
+    ]
+    assert gate["reasons"] == [
+        {
+            "category": "stale_check",
+            "checked_artifact_path": ".dce/preflight/mission-board.stale_check.json",
+            "checked_artifact_role": "stale_check",
+            "issue_code": "stale_detected",
+            "message": "stale check blocked execution",
+            "reason_id": "02_stale_check_clear",
+            "section_id": "mission-board",
+            "severity": "critical",
+        },
+        {
+            "category": "preflight",
+            "checked_artifact_path": ".dce/preflight/mission-board.preflight.json",
+            "checked_artifact_role": "preflight",
+            "issue_code": "preflight_failed",
+            "message": "preflight status blocks execution: preflight_missing_approval",
+            "reason_id": "04_preflight_status_passed",
+            "section_id": "mission-board",
+            "severity": "error",
+        },
+        {
+            "category": "execution_permission",
+            "checked_artifact_path": ".dce/preflight/mission-board.preflight.json",
+            "checked_artifact_role": "preflight",
+            "issue_code": "execution_not_allowed",
+            "message": "execution permission blocked",
+            "reason_id": "05_execution_permission_confirmed",
+            "section_id": "mission-board",
+            "severity": "error",
+        },
+    ]
+    assert gate["decision_summary"] == {
+        "allow_execution": False,
+        "blocking_reason_count": 3,
+        "checked_artifact_count": 2,
+        "failed_check_count": 3,
+        "gate_reason": "stale_detected",
+        "gate_status": "gate_blocked_stale",
+        "not_evaluated_check_count": 0,
+        "not_required_check_count": 0,
+        "passed_check_count": 2,
+        "total_check_count": 5,
+    }
+
+
 def test_run_section_with_workspace_require_preflight_pass_blocks_without_writes(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_v2_6_blocked_run")

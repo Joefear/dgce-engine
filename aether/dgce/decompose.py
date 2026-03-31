@@ -2171,12 +2171,45 @@ def _build_execution_gate_artifact(
         execution_blocked = False
         gate_reason = "preflight_passed"
 
+    checked_artifacts = [
+        {
+            "artifact_role": "preflight",
+            "artifact_path": preflight_path_str,
+            "present": preflight_payload is not None,
+        },
+        {
+            "artifact_role": "stale_check",
+            "artifact_path": stale_check_path_str,
+            "present": stale_check_payload is not None,
+        },
+    ]
+    checks = _build_gate_checks(
+        require_preflight_pass=require_preflight_pass,
+        preflight_path=preflight_path_str,
+        stale_check_path=stale_check_path_str,
+        preflight_payload=preflight_payload,
+        stale_check_payload=stale_check_payload,
+    )
+    reasons = _build_gate_reasons(section_id, checks)
+    decision_summary = _build_gate_decision_summary(
+        checked_artifacts=checked_artifacts,
+        checks=checks,
+        reasons=reasons,
+        gate_status=gate_status,
+        gate_reason=gate_reason,
+        execution_blocked=execution_blocked,
+    )
+
     return {
         "section_id": section_id,
         "require_preflight_pass": require_preflight_pass,
         "gate_status": gate_status,
         "execution_attempted": execution_attempted,
         "execution_blocked": execution_blocked,
+        "checked_artifacts": checked_artifacts,
+        "checks": checks,
+        "reasons": reasons,
+        "decision_summary": decision_summary,
         "preflight_path": preflight_path_str,
         "preflight_status": preflight_payload.get("preflight_status") if preflight_payload else None,
         "stale_check_path": stale_check_path_str,
@@ -2186,6 +2219,214 @@ def _build_execution_gate_artifact(
         "selected_mode": preflight_payload.get("selected_mode") if preflight_payload else None,
         "gate_reason": gate_reason,
         "gate_timestamp": str(gate_input.gate_timestamp),
+    }
+
+
+def _build_gate_checks(
+    *,
+    require_preflight_pass: bool,
+    preflight_path: str | None,
+    stale_check_path: str | None,
+    preflight_payload: dict[str, Any] | None,
+    stale_check_payload: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    preflight_present = preflight_payload is not None
+    stale_check_present = stale_check_payload is not None
+    stale_detected = stale_check_payload.get("stale_detected") is True if stale_check_payload else False
+    preflight_passed = preflight_payload.get("preflight_status") == "preflight_pass" if preflight_payload else False
+    execution_allowed = preflight_payload.get("execution_allowed") is True if preflight_payload else False
+    return [
+        _gate_check_entry(
+            check_id="preflight_required",
+            category="policy",
+            checked_artifact_role="gate",
+            checked_artifact_path=None,
+            result="passed" if require_preflight_pass else "not_required",
+            issue_code=None if not require_preflight_pass else None,
+            detail="preflight gate required" if require_preflight_pass else "preflight gate not required",
+        ),
+        _gate_check_entry(
+            check_id="stale_check_clear",
+            category="stale_check",
+            checked_artifact_role="stale_check",
+            checked_artifact_path=stale_check_path,
+            result=(
+                "not_required"
+                if not require_preflight_pass
+                else "passed"
+                if stale_check_present and not stale_detected
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not require_preflight_pass or (stale_check_present and not stale_detected)
+                else "stale_detected"
+            ),
+            detail=(
+                "stale check not required"
+                if not require_preflight_pass
+                else "stale check clear"
+                if stale_check_present and not stale_detected
+                else "stale check blocked execution"
+            ),
+        ),
+        _gate_check_entry(
+            check_id="preflight_artifact_present",
+            category="preflight",
+            checked_artifact_role="preflight",
+            checked_artifact_path=preflight_path,
+            result=(
+                "not_required"
+                if not require_preflight_pass
+                else "passed"
+                if preflight_present
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not require_preflight_pass or preflight_present
+                else "missing_preflight"
+            ),
+            detail=(
+                "preflight artifact not required"
+                if not require_preflight_pass
+                else "preflight artifact present"
+                if preflight_present
+                else "preflight artifact missing"
+            ),
+        ),
+        _gate_check_entry(
+            check_id="preflight_status_passed",
+            category="preflight",
+            checked_artifact_role="preflight",
+            checked_artifact_path=preflight_path,
+            result=(
+                "not_required"
+                if not require_preflight_pass
+                else "not_evaluated"
+                if not preflight_present
+                else "passed"
+                if preflight_passed
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not require_preflight_pass or not preflight_present or preflight_passed
+                else "preflight_failed"
+            ),
+            detail=(
+                "preflight status not required"
+                if not require_preflight_pass
+                else "preflight artifact unavailable for status validation"
+                if not preflight_present
+                else "preflight status passed"
+                if preflight_passed
+                else f"preflight status blocks execution: {preflight_payload.get('preflight_status')}"
+            ),
+        ),
+        _gate_check_entry(
+            check_id="execution_permission_confirmed",
+            category="execution_permission",
+            checked_artifact_role="preflight",
+            checked_artifact_path=preflight_path,
+            result=(
+                "not_required"
+                if not require_preflight_pass
+                else "not_evaluated"
+                if not preflight_present
+                else "passed"
+                if execution_allowed
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not require_preflight_pass or not preflight_present or execution_allowed
+                else "execution_not_allowed"
+            ),
+            detail=(
+                "execution permission not required"
+                if not require_preflight_pass
+                else "preflight artifact unavailable for execution permission validation"
+                if not preflight_present
+                else "execution permission confirmed"
+                if execution_allowed
+                else "execution permission blocked"
+            ),
+        ),
+    ]
+
+
+def _gate_check_entry(
+    *,
+    check_id: str,
+    category: str,
+    checked_artifact_role: str,
+    checked_artifact_path: str | None,
+    result: str,
+    issue_code: str | None,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "category": category,
+        "check_id": check_id,
+        "checked_artifact_path": checked_artifact_path,
+        "checked_artifact_role": checked_artifact_role,
+        "detail": detail,
+        "issue_code": issue_code,
+        "result": result,
+    }
+
+
+def _gate_reason_severity(issue_code: Any) -> str:
+    if issue_code in {"stale_detected", "missing_preflight"}:
+        return "critical"
+    return "error"
+
+
+def _build_gate_reasons(section_id: str, checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    reasons: list[dict[str, Any]] = []
+    for index, check in enumerate(checks, start=1):
+        if check["result"] not in {"failed"}:
+            continue
+        reasons.append(
+            {
+                "category": str(check["category"]),
+                "checked_artifact_path": check["checked_artifact_path"],
+                "checked_artifact_role": check["checked_artifact_role"],
+                "issue_code": check["issue_code"],
+                "message": check["detail"],
+                "reason_id": f"{index:02d}_{check['check_id']}",
+                "section_id": section_id,
+                "severity": _gate_reason_severity(check.get("issue_code")),
+            }
+        )
+    return reasons
+
+
+def _build_gate_decision_summary(
+    *,
+    checked_artifacts: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+    reasons: list[dict[str, Any]],
+    gate_status: str,
+    gate_reason: str,
+    execution_blocked: bool,
+) -> dict[str, Any]:
+    passed_check_count = sum(1 for check in checks if check["result"] == "passed")
+    failed_check_count = sum(1 for check in checks if check["result"] == "failed")
+    not_evaluated_check_count = sum(1 for check in checks if check["result"] == "not_evaluated")
+    not_required_check_count = sum(1 for check in checks if check["result"] == "not_required")
+    return {
+        "allow_execution": execution_blocked is False,
+        "blocking_reason_count": len(reasons),
+        "checked_artifact_count": len(checked_artifacts),
+        "failed_check_count": failed_check_count,
+        "gate_reason": gate_reason,
+        "gate_status": gate_status,
+        "not_evaluated_check_count": not_evaluated_check_count,
+        "not_required_check_count": not_required_check_count,
+        "passed_check_count": passed_check_count,
+        "total_check_count": len(checks),
     }
 
 
