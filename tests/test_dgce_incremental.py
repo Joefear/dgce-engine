@@ -429,6 +429,10 @@ def _consumer_contract_payload(project_root: Path) -> dict:
     return json.loads((project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"))
 
 
+def _export_contract_payload(project_root: Path) -> dict:
+    return json.loads((project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"))
+
+
 def _expected_consumer_contract_reference(payload: dict) -> str:
     lines = [
         "# DGCE Consumer Contract Reference",
@@ -534,6 +538,25 @@ def _assert_exportable_contract_is_deterministic(project_root: Path) -> None:
     for entry in exportable_contract["supported_artifacts"]:
         assert entry["export_scope"] == "external"
         assert entry["export_fields"] == entry.get("export_fields", entry["supported_fields"])
+
+
+def _assert_export_contract_aligns(project_root: Path) -> None:
+    consumer_contract = _consumer_contract_payload(project_root)
+    export_contract = _export_contract_payload(project_root)
+    manifest_by_path = _artifact_manifest_by_path(project_root)
+    assert export_contract == {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": dgce_decompose._get_exportable_contract(consumer_contract)["supported_artifacts"],
+    }
+    for entry in export_contract["supported_artifacts"]:
+        assert entry["export_scope"] == "external"
+        assert isinstance(entry["export_fields"], list) and entry["export_fields"]
+        assert entry["artifact_path"] in manifest_by_path
+        manifest_entry = manifest_by_path[entry["artifact_path"]]
+        assert manifest_entry["artifact_type"] == entry["artifact_type"]
+        assert manifest_entry["schema_version"] == entry["schema_version"]
+        assert manifest_entry["scope"] == "workspace"
+        assert manifest_entry["section_id"] is None
 
 
 def _assert_workspace_index_links_resolve_to_manifest(project_root: Path) -> None:
@@ -7729,6 +7752,44 @@ def test_consumer_contract_reference_is_deterministic_and_derived_from_consumer_
     _assert_reference_aligns_with_contract(second_root)
 
 
+def test_export_contract_is_deterministic_for_repeated_governed_runs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_export_contract_repeat_a")
+    second_root = _workspace_dir("dgce_export_contract_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+            execution_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    first_export = _export_contract_payload(first_root)
+    second_export = _export_contract_payload(second_root)
+
+    assert first_export == second_export
+    assert (first_root / ".dce" / "export_contract.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "export_contract.json"
+    ).read_text(encoding="utf-8")
+    _assert_export_contract_aligns(first_root)
+    _assert_export_contract_aligns(second_root)
+
+
 def test_consumer_contract_schema_rejects_export_fields_outside_supported_fields():
     payload = {
         **_expected_artifact_metadata("consumer_contract"),
@@ -7748,6 +7809,39 @@ def test_consumer_contract_schema_rejects_export_fields_outside_supported_fields
 
     with pytest.raises(ValueError):
         dgce_decompose._validate_consumer_contract_schema(payload)
+
+
+def test_export_contract_schema_rejects_non_external_scope_and_missing_export_fields():
+    payload_missing = {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "contract_stability": "supported",
+                "export_scope": "external",
+            }
+        ],
+    }
+    payload_internal = {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "contract_stability": "supported",
+                "export_scope": "internal",
+                "export_fields": ["section_order"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError):
+        dgce_decompose._validate_export_contract_schema(payload_missing)
+    with pytest.raises(ValueError):
+        dgce_decompose._validate_export_contract_schema(payload_internal)
 
 
 def test_get_exportable_contract_filters_to_external_entries_and_preserves_order():
@@ -7795,6 +7889,38 @@ def test_get_exportable_contract_filters_to_external_entries_and_preserves_order
     }
 
 
+def test_build_export_contract_derives_strictly_from_exportable_contract():
+    payload = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order", "sections[].section_id"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            },
+            {
+                "artifact_type": "workspace_index",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/workspace_index.json",
+                "supported_fields": ["section_order"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["sdk"],
+                "export_scope": "internal",
+            },
+        ],
+    }
+
+    assert dgce_decompose._build_export_contract(payload) == {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": dgce_decompose._get_exportable_contract(payload)["supported_artifacts"],
+    }
+
+
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_refresh_efficiency")
@@ -7829,6 +7955,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
         "artifact_manifest": (project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"),
         "consumer_contract": (project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"),
+        "export_contract": (project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"),
         "consumer_contract_reference": (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8"),
     }
 
@@ -7839,6 +7966,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": 0,
         "artifact_manifest": 0,
         "consumer_contract": 0,
+        "export_contract": 0,
         "consumer_contract_reference": 0,
     }
     original_build_review_index = dgce_decompose._build_review_index
@@ -7847,6 +7975,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
     original_build_dashboard_view = dgce_decompose._build_dashboard_view
     original_build_artifact_manifest = dgce_decompose._build_artifact_manifest
     original_build_consumer_contract = dgce_decompose._build_consumer_contract
+    original_build_export_contract = dgce_decompose._build_export_contract
     original_build_consumer_contract_reference = dgce_decompose._build_consumer_contract_reference
 
     def counting_build_review_index(*args, **kwargs):
@@ -7873,6 +8002,10 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         call_counts["consumer_contract"] += 1
         return original_build_consumer_contract(*args, **kwargs)
 
+    def counting_build_export_contract(*args, **kwargs):
+        call_counts["export_contract"] += 1
+        return original_build_export_contract(*args, **kwargs)
+
     def counting_build_consumer_contract_reference(*args, **kwargs):
         call_counts["consumer_contract_reference"] += 1
         return original_build_consumer_contract_reference(*args, **kwargs)
@@ -7883,6 +8016,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
     monkeypatch.setattr(dgce_decompose, "_build_dashboard_view", counting_build_dashboard_view)
     monkeypatch.setattr(dgce_decompose, "_build_artifact_manifest", counting_build_artifact_manifest)
     monkeypatch.setattr(dgce_decompose, "_build_consumer_contract", counting_build_consumer_contract)
+    monkeypatch.setattr(dgce_decompose, "_build_export_contract", counting_build_export_contract)
     monkeypatch.setattr(dgce_decompose, "_build_consumer_contract_reference", counting_build_consumer_contract_reference)
 
     dgce_decompose._refresh_workspace_views(dgce_decompose._ensure_workspace(project_root))
@@ -7894,6 +8028,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": 1,
         "artifact_manifest": 1,
         "consumer_contract": 1,
+        "export_contract": 1,
         "consumer_contract_reference": 1,
     }
     assert before_refresh == {
@@ -7904,6 +8039,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
         "artifact_manifest": (project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"),
         "consumer_contract": (project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"),
+        "export_contract": (project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"),
         "consumer_contract_reference": (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8"),
     }
 
@@ -7941,6 +8077,7 @@ def test_locked_artifact_schemas_accept_current_dgce_artifacts(monkeypatch):
         project_root / ".dce" / "dashboard.json",
         project_root / ".dce" / "artifact_manifest.json",
         project_root / ".dce" / "consumer_contract.json",
+        project_root / ".dce" / "export_contract.json",
         project_root / ".dce" / "outputs" / "mission-board.json",
         project_root / ".dce" / "execution" / "mission-board.execution.json",
     ):
@@ -7981,6 +8118,7 @@ def test_locked_artifact_schemas_reject_missing_required_fields(monkeypatch):
         (project_root / ".dce" / "dashboard.json", ("sections", 0, "progress")),
         (project_root / ".dce" / "artifact_manifest.json", ("artifacts", 0, "artifact_type")),
         (project_root / ".dce" / "consumer_contract.json", ("supported_artifacts", 0, "artifact_type")),
+        (project_root / ".dce" / "export_contract.json", ("supported_artifacts", 0, "artifact_type")),
         (project_root / ".dce" / "outputs" / "mission-board.json", ("output_summary",)),
         (project_root / ".dce" / "execution" / "mission-board.execution.json", ("execution_record_summary",)),
     ]
@@ -8004,6 +8142,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
         "dashboard": 0,
         "artifact_manifest": 0,
         "consumer_contract": 0,
+        "export_contract": 0,
         "outputs": 0,
         "execution": 0,
     }
@@ -8015,6 +8154,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
     monkeypatch.setattr(dgce_decompose, "_validate_dashboard_schema", lambda payload: calls.__setitem__("dashboard", calls["dashboard"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_artifact_manifest_schema", lambda payload: calls.__setitem__("artifact_manifest", calls["artifact_manifest"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_consumer_contract_schema", lambda payload: calls.__setitem__("consumer_contract", calls["consumer_contract"] + 1))
+    monkeypatch.setattr(dgce_decompose, "_validate_export_contract_schema", lambda payload: calls.__setitem__("export_contract", calls["export_contract"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_execution_output_schema", lambda payload: calls.__setitem__("outputs", calls["outputs"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_execution_stamp_schema", lambda payload: calls.__setitem__("execution", calls["execution"] + 1))
 
@@ -8027,6 +8167,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
         (Path("workspace/.dce/dashboard.json"), "dashboard"),
         (Path("workspace/.dce/artifact_manifest.json"), "artifact_manifest"),
         (Path("workspace/.dce/consumer_contract.json"), "consumer_contract"),
+        (Path("workspace/.dce/export_contract.json"), "export_contract"),
         (Path("workspace/.dce/outputs/mission-board.json"), "outputs"),
         (Path("workspace/.dce/execution/mission-board.execution.json"), "execution"),
         (Path("workspace\\nested\\.dce\\outputs\\mission-board.json"), "outputs"),
@@ -8049,6 +8190,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
         Path("workspace/.dce/dashboard.json.tmp"),
         Path("workspace/.dce/artifact_manifest.json.bak"),
         Path("workspace/.dce/consumer_contract.json.bak"),
+        Path("workspace/.dce/export_contract.json.bak"),
         Path("workspace/.dce/outputs/mission-board.execution.json"),
         Path("workspace/.dce/execution/mission-board.json"),
         Path("workspace/similar/.dcex/outputs/mission-board.json"),
@@ -8346,6 +8488,7 @@ def test_cross_artifact_section_summaries_converge_across_mixed_section_states(m
     _assert_workspace_index_links_resolve_to_manifest(project_root)
     _assert_review_and_trace_links_resolve_to_manifest(project_root)
     _assert_consumer_contract_aligns_with_manifest(project_root)
+    _assert_export_contract_aligns(project_root)
     _assert_reference_aligns_with_contract(project_root)
     _assert_exportable_contract_is_deterministic(project_root)
     _assert_consumer_contract_has_no_cross_section_leakage(project_root, "alpha-section", "mission-board")
@@ -8519,6 +8662,13 @@ def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries
             {
                 "artifact_path": ".dce/consumer_contract.json",
                 "artifact_type": "consumer_contract",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/export_contract.json",
+                "artifact_type": "export_contract",
                 "schema_version": "1.0",
                 "scope": "workspace",
                 "section_id": None,

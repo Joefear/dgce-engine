@@ -1958,6 +1958,32 @@ def _validate_consumer_contract_schema(payload: Any) -> None:
             _expect_str_list(consumer_scopes, artifact_name, f"supported_artifacts[{index}].consumer_scopes")
 
 
+def _validate_export_contract_schema(payload: Any) -> None:
+    artifact_name = "export_contract.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "export_contract")
+    supported_artifacts = _expect_list(
+        _expect_required_field(artifact, "supported_artifacts", artifact_name),
+        artifact_name,
+        "supported_artifacts",
+    )
+    for index, entry in enumerate(supported_artifacts):
+        export_entry = _expect_dict(entry, artifact_name, f"supported_artifacts[{index}]")
+        _expect_str(_expect_required_field(export_entry, "artifact_type", artifact_name), artifact_name, f"supported_artifacts[{index}].artifact_type")
+        _expect_str(_expect_required_field(export_entry, "schema_version", artifact_name), artifact_name, f"supported_artifacts[{index}].schema_version")
+        _expect_str(_expect_required_field(export_entry, "artifact_path", artifact_name), artifact_name, f"supported_artifacts[{index}].artifact_path")
+        _expect_str(_expect_required_field(export_entry, "contract_stability", artifact_name), artifact_name, f"supported_artifacts[{index}].contract_stability")
+        export_scope = _expect_required_field(export_entry, "export_scope", artifact_name)
+        _expect_str(export_scope, artifact_name, f"supported_artifacts[{index}].export_scope")
+        if export_scope != "external":
+            _schema_error(artifact_name, f"supported_artifacts[{index}].export_scope must be external")
+        export_fields = _expect_required_field(export_entry, "export_fields", artifact_name)
+        _expect_str_list(export_fields, artifact_name, f"supported_artifacts[{index}].export_fields")
+        consumer_scopes = export_entry.get("consumer_scopes")
+        if consumer_scopes is not None:
+            _expect_str_list(consumer_scopes, artifact_name, f"supported_artifacts[{index}].consumer_scopes")
+
+
 def _normalized_path_parts(path: Path) -> tuple[str, ...]:
     normalized = os.path.normpath(str(path))
     return tuple(Path(normalized).parts)
@@ -1998,6 +2024,8 @@ def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
         _validate_artifact_manifest_schema(payload)
     elif _artifact_path_matches(path, (".dce", "consumer_contract.json")):
         _validate_consumer_contract_schema(payload)
+    elif _artifact_path_matches(path, (".dce", "export_contract.json")):
+        _validate_export_contract_schema(payload)
     elif _artifact_path_matches_outputs_json(path):
         _validate_execution_output_schema(payload)
     elif _artifact_path_matches_execution_json(path):
@@ -4361,6 +4389,7 @@ def _build_artifact_manifest(
         (_normalized_workspace_artifact_path("dashboard.json"), dashboard),
         (_normalized_workspace_artifact_path("artifact_manifest.json"), _with_artifact_metadata("artifact_manifest", {})),
         (_normalized_workspace_artifact_path("consumer_contract.json"), _with_artifact_metadata("consumer_contract", {})),
+        (_normalized_workspace_artifact_path("export_contract.json"), _with_artifact_metadata("export_contract", {})),
     ]
     artifacts = [
         {
@@ -4475,6 +4504,11 @@ def _get_exportable_contract(consumer_contract: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _build_export_contract(consumer_contract: dict[str, Any]) -> dict[str, Any]:
+    exportable_contract = _get_exportable_contract(consumer_contract)
+    return _with_artifact_metadata("export_contract", {"supported_artifacts": list(exportable_contract["supported_artifacts"])})
+
+
 def _assert_contract_aligns_with_manifest(artifact_manifest: dict[str, Any], consumer_contract: dict[str, Any]) -> None:
     manifest_entries = _artifact_manifest_entries_by_path(artifact_manifest)
     for index, contract_entry in enumerate(consumer_contract.get("supported_artifacts", [])):
@@ -4508,6 +4542,28 @@ def _assert_contract_aligns_with_manifest(artifact_manifest: dict[str, Any], con
         supported_fields = [str(field_name) for field_name in exportable_entry.get("supported_fields", [])]
         if any(field_name not in supported_fields for field_name in export_fields):
             raise ValueError(f"exportable contract supported_artifacts[{index}].export_fields must be a subset of supported_fields")
+
+
+def _assert_export_contract_aligns(
+    artifact_manifest: dict[str, Any],
+    consumer_contract: dict[str, Any],
+    export_contract: dict[str, Any],
+) -> None:
+    manifest_entries = _artifact_manifest_entries_by_path(artifact_manifest)
+    exportable_contract = _get_exportable_contract(consumer_contract)
+    if list(export_contract.get("supported_artifacts", [])) != list(exportable_contract.get("supported_artifacts", [])):
+        raise ValueError("export_contract.json must match _get_exportable_contract(...) exactly")
+    for index, export_entry in enumerate(export_contract.get("supported_artifacts", [])):
+        if not isinstance(export_entry, dict):
+            raise ValueError(f"export_contract supported_artifacts[{index}] must be a dict")
+        artifact_path = _normalize_artifact_path(export_entry.get("artifact_path"))
+        if artifact_path is None or artifact_path not in manifest_entries:
+            raise ValueError(f"export_contract supported_artifacts[{index}] must resolve to artifact_manifest")
+        if str(export_entry.get("export_scope")) != "external":
+            raise ValueError(f"export_contract supported_artifacts[{index}].export_scope must be external")
+        export_fields = export_entry.get("export_fields")
+        if not isinstance(export_fields, list) or not all(isinstance(field_name, str) for field_name in export_fields):
+            raise ValueError(f"export_contract supported_artifacts[{index}].export_fields must be a list[str]")
 
 
 def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str:
@@ -4598,6 +4654,8 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
         artifact_manifest,
     )
     _assert_contract_aligns_with_manifest(artifact_manifest, consumer_contract)
+    export_contract = _build_export_contract(consumer_contract)
+    _assert_export_contract_aligns(artifact_manifest, consumer_contract, export_contract)
     consumer_contract_reference = _build_consumer_contract_reference(consumer_contract)
     _assert_reference_aligns_with_contract(consumer_contract, consumer_contract_reference)
     _write_json(workspace["reviews"] / "index.json", review_index)
@@ -4607,6 +4665,7 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     _write_json(workspace["root"] / "dashboard.json", dashboard)
     _write_json(workspace["root"] / "artifact_manifest.json", artifact_manifest)
     _write_json(workspace["root"] / "consumer_contract.json", consumer_contract)
+    _write_json(workspace["root"] / "export_contract.json", export_contract)
     (workspace["root"] / "consumer_contract_reference.md").write_text(consumer_contract_reference, encoding="utf-8")
 
 

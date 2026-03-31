@@ -3918,6 +3918,13 @@ def test_dgce_artifact_manifest_single_section_success(monkeypatch):
                 "section_id": None,
             },
             {
+                "artifact_path": ".dce/export_contract.json",
+                "artifact_type": "export_contract",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
                 "artifact_path": ".dce/execution/mission-board.execution.json",
                 "artifact_type": "execution_record",
                 "schema_version": "1.0",
@@ -3971,6 +3978,33 @@ def test_dgce_consumer_contract_single_section_success(monkeypatch):
     assert all(isinstance(entry["supported_fields"], list) and entry["supported_fields"] for entry in payload["supported_artifacts"])
     assert all(entry["export_scope"] == "external" for entry in payload["supported_artifacts"])
     assert all("export_fields" not in entry for entry in payload["supported_artifacts"])
+
+
+def test_dgce_export_contract_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_export_contract_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"))
+
+    assert payload["artifact_type"] == "export_contract"
+    assert payload["generated_by"] == "DGCE"
+    assert payload["schema_version"] == "1.0"
+    assert [entry["artifact_path"] for entry in payload["supported_artifacts"]] == [
+        ".dce/dashboard.json",
+        ".dce/workspace_index.json",
+        ".dce/reviews/index.json",
+        ".dce/lifecycle_trace.json",
+        ".dce/artifact_manifest.json",
+        ".dce/workspace_summary.json",
+    ]
+    assert all(entry["export_scope"] == "external" for entry in payload["supported_artifacts"])
+    assert all(isinstance(entry["export_fields"], list) and entry["export_fields"] for entry in payload["supported_artifacts"])
 
 
 def test_dgce_consumer_contract_reference_single_section_success(monkeypatch):
