@@ -140,108 +140,133 @@ class RouterPlanner:
         "ExecutionService",
         "StatusService",
     )
+    _DGCE_CORE_API_OPERATION_ORDER = (
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "status",
+    )
+    _DGCE_CORE_API_SCHEMA_ORDER = (
+        "PreviewRequest",
+        "PreviewResponse",
+        "ReviewRequest",
+        "ReviewResponse",
+        "ApprovalRequest",
+        "ApprovalResponse",
+        "PreflightRequest",
+        "PreflightResponse",
+        "GateRequest",
+        "GateResponse",
+        "AlignmentRequest",
+        "AlignmentResponse",
+        "ExecutionRequest",
+        "ExecutionResponse",
+        "StatusResponse",
+        "ApiError",
+    )
     _DGCE_CORE_API_METHOD_SPECS = {
-        "generate_preview": {
+        "preview": {
+            "interface": "PreviewService",
             "method": "POST",
-            "path": "/sections/{section_id}/preview",
+            "path": "/preview",
+            "request_schema": "PreviewRequest",
+            "response_schema": "PreviewResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"artifact_fingerprint": "string", "preview_path": "string"},
-            "error_cases": ["section_missing", "invalid_input"],
+            "output": {"section_id": "string", "status": "string", "preview_path": "string"},
+            "error_cases": ["invalid_preview_request", "section_missing"],
         },
-        "get_preview": {
-            "method": "GET",
-            "path": "/sections/{section_id}/preview",
-            "input": {"section_id": "string"},
-            "output": {"artifact_fingerprint": "string", "preview_path": "string"},
-            "error_cases": ["section_missing"],
-        },
-        "submit_review": {
+        "review": {
+            "interface": "ReviewService",
             "method": "POST",
-            "path": "/sections/{section_id}/review",
-            "input": {"section_id": "string", "review_decision": "string"},
-            "output": {"review_path": "string", "status": "string"},
-            "error_cases": ["section_missing", "invalid_review"],
-        },
-        "get_review": {
-            "method": "GET",
-            "path": "/sections/{section_id}/review",
+            "path": "/review",
+            "request_schema": "ReviewRequest",
+            "response_schema": "ReviewResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"review_path": "string", "status": "string"},
-            "error_cases": ["section_missing"],
+            "output": {"review_path": "string", "section_id": "string", "status": "string"},
+            "error_cases": ["invalid_review_request", "section_missing"],
         },
-        "approve_section": {
+        "approval": {
+            "interface": "ApprovalService",
             "method": "POST",
-            "path": "/sections/{section_id}/approval",
-            "input": {"section_id": "string", "approval_status": "string", "selected_mode": "string"},
-            "output": {"approval_path": "string", "execution_permitted": "boolean"},
+            "path": "/approval",
+            "request_schema": "ApprovalRequest",
+            "response_schema": "ApprovalResponse",
+            "error_schema": "ApiError",
+            "input": {"section_id": "string"},
+            "output": {"approval_path": "string", "execution_permitted": "boolean", "section_id": "string", "status": "string"},
             "error_cases": ["section_missing", "invalid_approval"],
         },
-        "get_approval": {
-            "method": "GET",
-            "path": "/sections/{section_id}/approval",
-            "input": {"section_id": "string"},
-            "output": {"approval_path": "string", "approval_status": "string"},
-            "error_cases": ["section_missing"],
-        },
-        "run_preflight": {
+        "preflight": {
+            "interface": "PreflightService",
             "method": "POST",
-            "path": "/sections/{section_id}/preflight",
+            "path": "/preflight",
+            "request_schema": "PreflightRequest",
+            "response_schema": "PreflightResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"preflight_path": "string", "preflight_status": "string"},
+            "output": {"preflight_path": "string", "section_id": "string", "status": "string"},
             "error_cases": ["section_missing", "approval_required"],
         },
-        "get_preflight": {
-            "method": "GET",
-            "path": "/sections/{section_id}/preflight",
-            "input": {"section_id": "string"},
-            "output": {"preflight_path": "string", "preflight_status": "string"},
-            "error_cases": ["section_missing"],
-        },
-        "evaluate_gate": {
+        "gate": {
+            "interface": "GateService",
             "method": "POST",
-            "path": "/sections/{section_id}/gate",
+            "path": "/gate",
+            "request_schema": "GateRequest",
+            "response_schema": "GateResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"gate_status": "string", "execution_allowed": "boolean"},
+            "output": {"execution_allowed": "boolean", "section_id": "string", "status": "string"},
             "error_cases": ["section_missing", "preflight_required"],
         },
-        "validate_alignment": {
+        "alignment": {
+            "interface": "AlignmentService",
             "method": "POST",
-            "path": "/sections/{section_id}/alignment",
+            "path": "/alignment",
+            "request_schema": "AlignmentRequest",
+            "response_schema": "AlignmentResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"alignment_status": "string", "alignment_reason": "string"},
+            "output": {"alignment_path": "string", "section_id": "string", "status": "string"},
             "error_cases": ["section_missing", "execution_mode_mismatch"],
         },
-        "execute_section": {
+        "execution": {
+            "interface": "ExecutionService",
             "method": "POST",
-            "path": "/sections/{section_id}/execution",
+            "path": "/execution",
+            "request_schema": "ExecutionRequest",
+            "response_schema": "ExecutionResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"execution_path": "string", "execution_status": "string"},
+            "output": {"execution_path": "string", "section_id": "string", "status": "string"},
             "error_cases": ["section_missing", "approval_required", "stale_detected"],
         },
-        "get_execution": {
+        "status": {
+            "interface": "StatusService",
             "method": "GET",
-            "path": "/sections/{section_id}/execution",
+            "path": "/status/{section_id}",
+            "request_schema": None,
+            "response_schema": "StatusResponse",
+            "error_schema": "ApiError",
             "input": {"section_id": "string"},
-            "output": {"execution_path": "string", "execution_status": "string"},
-            "error_cases": ["section_missing"],
-        },
-        "get_section_status": {
-            "method": "GET",
-            "path": "/sections/{section_id}/status",
-            "input": {"section_id": "string"},
-            "output": {"status": "string", "next_action": "string"},
+            "output": {"section_id": "string", "status": "string", "next_action": "string"},
             "error_cases": ["section_missing"],
         },
     }
     _DGCE_CORE_API_INTERFACE_METHODS = {
-        "PreviewService": ("generate_preview", "get_preview"),
-        "ReviewService": ("submit_review", "get_review"),
-        "ApprovalService": ("approve_section", "get_approval"),
-        "PreflightService": ("run_preflight", "get_preflight"),
-        "GateService": ("evaluate_gate",),
-        "AlignmentService": ("validate_alignment",),
-        "ExecutionService": ("execute_section", "get_execution"),
-        "StatusService": ("get_section_status",),
+        "PreviewService": ("preview",),
+        "ReviewService": ("review",),
+        "ApprovalService": ("approval",),
+        "PreflightService": ("preflight",),
+        "GateService": ("gate",),
+        "AlignmentService": ("alignment",),
+        "ExecutionService": ("execution",),
+        "StatusService": ("status",),
     }
     _ORDERED_SEMANTIC_STRING_LIST_KEYS = {"identity_keys", "required"}
     _ORDERED_SYSTEM_BREAKDOWN_STRING_LIST_KEYS = {
@@ -1047,11 +1072,19 @@ class RouterPlanner:
     def _canonicalize_api_surface_value(self, value: object, *, parent_key: str = "") -> object:
         """Return a deterministically ordered DGCE api-surface payload value."""
         if isinstance(value, dict):
-            normalized = {
-                key: self._canonicalize_api_surface_value(item, parent_key=str(key))
+            normalized_items = [
+                (
+                    key,
+                    self._canonicalize_api_surface_value(item, parent_key=str(key)),
+                )
                 for key, item in value.items()
-            }
-            return dict(sorted(normalized.items(), key=lambda entry: str(entry[0])))
+            ]
+            return dict(
+                sorted(
+                    normalized_items,
+                    key=lambda entry: self._api_surface_dict_sort_key(parent_key, str(entry[0])),
+                )
+            )
 
         if isinstance(value, list):
             normalized_items = [
@@ -1101,6 +1134,26 @@ class RouterPlanner:
             str(item.get("name", "")),
             json.dumps(item, sort_keys=True),
         )
+
+    def _api_surface_dict_sort_key(self, parent_key: str, key: str) -> tuple[int, str]:
+        """Return a stable ordering key for api-surface dict keys."""
+        if parent_key in {"methods", "inputs", "outputs", "error_cases"}:
+            try:
+                return (self._DGCE_CORE_API_OPERATION_ORDER.index(key), key)
+            except ValueError:
+                return (len(self._DGCE_CORE_API_OPERATION_ORDER), key)
+        if parent_key == "schemas":
+            try:
+                return (self._DGCE_CORE_API_SCHEMA_ORDER.index(key), key)
+            except ValueError:
+                return (len(self._DGCE_CORE_API_SCHEMA_ORDER), key)
+        if parent_key in {"request_body", "success_response"}:
+            ordered_fields = ("section_id", "status", "preview_path", "review_path", "approval_path", "execution_permitted", "preflight_path", "execution_allowed", "alignment_path", "execution_path", "next_action")
+            try:
+                return (ordered_fields.index(key), key)
+            except ValueError:
+                return (len(ordered_fields), key)
+        return (0, key)
 
     def _normalize_api_surface_methods_from_endpoints(self, endpoints: list) -> dict:
         """Build legacy api-surface method entries from explicit endpoint contracts."""
@@ -1479,49 +1532,126 @@ class RouterPlanner:
 
         return normalized
 
-    def _apply_dgce_core_api_surface_contract(self, parsed: dict) -> dict:
+    def _apply_dgce_core_api_surface_contract(self, parsed: dict, metadata: dict | None = None) -> dict:
         """Backfill deterministic governed lifecycle interfaces and methods for DGCE api-surface tasks."""
         repaired = self._clean_api_surface_quality(dict(parsed))
-        existing_interfaces = repaired.get("interfaces", [])
-        repaired["interfaces"] = self._merge_ordered_string_list(
-            list(self._DGCE_CORE_API_INTERFACE_ORDER),
-            existing_interfaces,
-        )
-
-        existing_methods = repaired.get("methods", {})
-        method_map: dict[str, dict] = {}
-        if isinstance(existing_methods, dict):
-            for method_name, method_payload in existing_methods.items():
-                cleaned_name = self._clean_method_name(method_name)
-                method_map[cleaned_name] = dict(method_payload) if isinstance(method_payload, dict) else {}
-
-        for method_name, method_spec in self._DGCE_CORE_API_METHOD_SPECS.items():
-            merged_method = method_map.get(method_name, {})
-            merged_method.setdefault("method", method_spec["method"])
-            merged_method.setdefault("path", method_spec["path"])
-            merged_method.setdefault("input", dict(method_spec["input"]))
-            merged_method.setdefault("output", dict(method_spec["output"]))
-            merged_method.setdefault("error_cases", list(method_spec["error_cases"]))
-            method_map[method_name] = merged_method
+        disabled_operations = self._disabled_dgce_api_operations(metadata)
+        enabled_operations = [
+            operation
+            for operation in self._DGCE_CORE_API_OPERATION_ORDER
+            if operation not in disabled_operations
+        ]
+        repaired["interfaces"] = [
+            self._DGCE_CORE_API_METHOD_SPECS[operation]["interface"]
+            for operation in enabled_operations
+        ]
 
         repaired["methods"] = {
-            method_name: method_map[method_name]
-            for method_name in sorted(method_map)
+            operation: {
+                "error_cases": list(self._DGCE_CORE_API_METHOD_SPECS[operation]["error_cases"]),
+                "error_schema": self._DGCE_CORE_API_METHOD_SPECS[operation]["error_schema"],
+                "method": self._DGCE_CORE_API_METHOD_SPECS[operation]["method"],
+                "operation_name": operation,
+                "path": self._DGCE_CORE_API_METHOD_SPECS[operation]["path"],
+                "request_schema": self._DGCE_CORE_API_METHOD_SPECS[operation]["request_schema"],
+                "response_schema": self._DGCE_CORE_API_METHOD_SPECS[operation]["response_schema"],
+            }
+            for operation in enabled_operations
         }
-
-        repaired["inputs"] = self._merge_dgce_core_api_field_maps(
-            repaired.get("inputs", {}),
-            "input",
-        )
-        repaired["outputs"] = self._merge_dgce_core_api_field_maps(
-            repaired.get("outputs", {}),
-            "output",
-        )
-        repaired["error_cases"] = self._merge_dgce_core_api_field_maps(
-            repaired.get("error_cases", {}),
-            "error_cases",
-        )
+        repaired["inputs"] = {
+            operation: dict(self._DGCE_CORE_API_METHOD_SPECS[operation]["input"])
+            for operation in enabled_operations
+        }
+        repaired["outputs"] = {
+            operation: dict(self._DGCE_CORE_API_METHOD_SPECS[operation]["output"])
+            for operation in enabled_operations
+        }
+        repaired["error_cases"] = {
+            operation: list(self._DGCE_CORE_API_METHOD_SPECS[operation]["error_cases"])
+            for operation in enabled_operations
+        }
+        repaired["schemas"] = self._dgce_core_api_schemas(enabled_operations)
+        repaired["endpoints"] = [
+            self._dgce_core_api_endpoint(operation)
+            for operation in enabled_operations
+        ]
         return self._canonicalize_api_surface_value(repaired)
+
+    def _disabled_dgce_api_operations(self, metadata: dict | None) -> set[str]:
+        """Return explicitly disabled lifecycle operations for DGCE api-surface backfill."""
+        if not isinstance(metadata, dict):
+            return set()
+        disabled: set[str] = set()
+        for metadata_key in ("disabled_operations", "disabled_api_operations", "disabled_lifecycle_operations"):
+            raw_value = metadata.get(metadata_key)
+            if not isinstance(raw_value, list):
+                continue
+            for item in raw_value:
+                cleaned_name = self._clean_method_name(item)
+                if cleaned_name in self._DGCE_CORE_API_METHOD_SPECS:
+                    disabled.add(cleaned_name)
+                    continue
+                for operation_name, spec in self._DGCE_CORE_API_METHOD_SPECS.items():
+                    if self._clean_interface_name(item) == spec["interface"]:
+                        disabled.add(operation_name)
+                        break
+        return disabled
+
+    def _dgce_core_api_endpoint(self, operation: str) -> dict:
+        """Return the deterministic endpoint contract for one DGCE lifecycle operation."""
+        spec = self._DGCE_CORE_API_METHOD_SPECS[operation]
+        endpoint = {
+            "error_responses": [
+                {
+                    "error_code": error_code,
+                    "schema": spec["error_schema"],
+                    "status_code": 400 if error_code != "section_missing" else 404,
+                }
+                for error_code in spec["error_cases"]
+            ],
+            "method": spec["method"],
+            "name": operation,
+            "order": self._DGCE_CORE_API_OPERATION_ORDER.index(operation) + 1,
+            "path": spec["path"],
+            "request_body": dict(spec["input"]),
+            "request_schema": spec["request_schema"],
+            "response_schema": spec["response_schema"],
+            "side_effects": [],
+            "success_response": dict(spec["output"]),
+        }
+        if operation == "status":
+            endpoint["request_body"] = {}
+        return endpoint
+
+    def _dgce_core_api_schemas(self, enabled_operations: list[str]) -> dict[str, dict]:
+        """Return deterministic schema definitions for DGCE lifecycle API generation."""
+        schemas: dict[str, dict] = {
+            "ApiError": {
+                "fields": [
+                    {"name": "code", "order": 1, "required": True, "type": "string"},
+                    {"name": "message", "order": 2, "required": True, "type": "string"},
+                    {"name": "section_id", "order": 3, "required": False, "type": "string"},
+                ]
+            }
+        }
+        for operation in enabled_operations:
+            spec = self._DGCE_CORE_API_METHOD_SPECS[operation]
+            request_schema = spec["request_schema"]
+            if isinstance(request_schema, str):
+                schemas[request_schema] = {
+                    "fields": [
+                        {"name": field_name, "order": index + 1, "required": True, "type": field_type}
+                        for index, (field_name, field_type) in enumerate(spec["input"].items())
+                    ]
+                }
+            response_schema = spec["response_schema"]
+            schemas[response_schema] = {
+                "fields": [
+                    {"name": field_name, "order": index + 1, "required": True, "type": field_type}
+                    for index, (field_name, field_type) in enumerate(spec["output"].items())
+                ]
+            }
+        return schemas
 
     def _merge_dgce_core_api_field_maps(self, existing: object, field_name: str) -> dict:
         """Backfill deterministic api-surface input/output/error maps from the governed method contract."""
@@ -1995,7 +2125,7 @@ class RouterPlanner:
             if validation is not None:
                 assert "interfaces" not in validation.missing_keys
         if schema_name == "dgce_api_surface_v1" and metadata.get("section_type") == "api_surface":
-            parsed = self._apply_dgce_core_api_surface_contract(parsed)
+            parsed = self._apply_dgce_core_api_surface_contract(parsed, metadata)
             validation = self._validate_dgce_api_surface_payload(parsed)
         if validation is None:
             validation = validate_output(schema_name, parsed)

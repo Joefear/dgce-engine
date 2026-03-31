@@ -819,24 +819,80 @@ def test_router_backfills_dgce_core_api_surface_contract_deterministically(route
         "ExecutionService",
         "StatusService",
     ]
-    assert sorted(structured_first["methods"]) == [
-        "approve_section",
-        "evaluate_gate",
-        "execute_section",
-        "generate_preview",
-        "get_approval",
-        "get_execution",
-        "get_preflight",
-        "get_preview",
-        "get_review",
-        "get_section_status",
-        "run_preflight",
-        "submit_review",
-        "validate_alignment",
+    assert list(structured_first["methods"]) == [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "status",
     ]
-    assert structured_first["inputs"]["execute_section"] == {"section_id": "string"}
-    assert structured_first["outputs"]["get_section_status"] == {"next_action": "string", "status": "string"}
-    assert structured_first["error_cases"]["approve_section"] == ["invalid_approval", "section_missing"]
+    assert structured_first["methods"]["preview"] == {
+        "error_cases": ["invalid_preview_request", "section_missing"],
+        "error_schema": "ApiError",
+        "method": "POST",
+        "operation_name": "preview",
+        "path": "/preview",
+        "request_schema": "PreviewRequest",
+        "response_schema": "PreviewResponse",
+    }
+    assert structured_first["methods"]["status"] == {
+        "error_cases": ["section_missing"],
+        "error_schema": "ApiError",
+        "method": "GET",
+        "operation_name": "status",
+        "path": "/status/{section_id}",
+        "request_schema": None,
+        "response_schema": "StatusResponse",
+    }
+    assert structured_first["inputs"]["execution"] == {"section_id": "string"}
+    assert structured_first["outputs"]["status"] == {"section_id": "string", "status": "string", "next_action": "string"}
+    assert structured_first["schemas"]["PreviewRequest"]["fields"] == [
+        {"name": "section_id", "order": 1, "required": True, "type": "string"}
+    ]
+    assert structured_first["schemas"]["StatusResponse"]["fields"] == [
+        {"name": "section_id", "order": 1, "required": True, "type": "string"},
+        {"name": "status", "order": 2, "required": True, "type": "string"},
+        {"name": "next_action", "order": 3, "required": True, "type": "string"},
+    ]
+    assert structured_first["schemas"]["ApiError"]["fields"] == [
+        {"name": "code", "order": 1, "required": True, "type": "string"},
+        {"name": "message", "order": 2, "required": True, "type": "string"},
+        {"name": "section_id", "order": 3, "required": False, "type": "string"},
+    ]
+    assert [endpoint["name"] for endpoint in structured_first["endpoints"]] == [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "status",
+    ]
+    assert structured_first["endpoints"][-1]["path"] == "/status/{section_id}"
+
+
+def test_router_api_surface_contract_only_backfills_real_api_surface_sections(router):
+    payload = {
+        "interfaces": ["preview_service"],
+        "methods": {"generate preview": {"method": "POST", "path": "/sections/{section_id}/preview"}},
+        "inputs": {},
+        "outputs": {},
+        "error_cases": {},
+    }
+
+    metadata, structured = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1", metadata={"section_type": "system_breakdown"}),
+        json.dumps(payload),
+    )
+
+    assert metadata == {"structure_valid": True}
+    assert structured["interfaces"] == ["PreviewService"]
+    assert list(structured["methods"]) == ["generate_preview"]
+    assert "schemas" not in structured
 
 
 def test_router_system_breakdown_fix_does_not_change_api_surface_schema(router):

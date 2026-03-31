@@ -413,6 +413,35 @@ def _render_api_surface_content(file_entry: dict, header: list[str]) -> str:
 
     class_name = str(interface_schema.get("name") or _class_name(Path(str(file_entry["path"])).stem))
     methods = interface_schema.get("methods", [])
+    schemas = interface_schema.get("schemas", {})
+    if isinstance(methods, list) and methods and isinstance(schemas, dict) and any(
+        isinstance(method, dict) and isinstance(method.get("response_schema"), str)
+        for method in methods
+    ):
+        body = [
+            f'"""Service contract for {class_name}."""',
+            "",
+            "from __future__ import annotations",
+            "",
+            "from typing import Any",
+            "",
+            "from fastapi import APIRouter",
+            "from pydantic import BaseModel",
+            "",
+            "router = APIRouter()",
+            "",
+        ]
+        body.extend(_render_api_surface_schema_models(schemas))
+        if body[-1] != "":
+            body.append("")
+        for index, method in enumerate(methods):
+            if not isinstance(method, dict):
+                continue
+            if index:
+                body.append("")
+            body.extend(_render_api_surface_endpoint_lines(method, schemas))
+        return "\n".join(header + body + [""])
+
     body = [
         f'"""Service contract for {class_name}."""',
         "",
@@ -523,6 +552,124 @@ def _render_api_surface_method_lines(method: dict) -> list[str]:
         rendered.append(f"        # error_cases: {', '.join(str(case) for case in error_cases)}")
     rendered.extend(response_lines)
     return rendered
+
+
+def _render_api_surface_schema_models(schemas: dict) -> list[str]:
+    """Render deterministic Pydantic schema models for one api-surface file."""
+    rendered: list[str] = []
+    for schema_name, schema_payload in schemas.items():
+        if not isinstance(schema_payload, dict):
+            continue
+        fields = schema_payload.get("fields", [])
+        rendered.append(f"class {schema_name}(BaseModel):")
+        schema_fields = _render_api_surface_schema_field_lines(fields)
+        rendered.extend(schema_fields or ["    pass"])
+        rendered.append("")
+    if rendered and rendered[-1] == "":
+        rendered.pop()
+    return rendered
+
+
+def _render_api_surface_schema_field_lines(fields: object) -> list[str]:
+    """Render deterministic schema field lines in their normalized order."""
+    if not isinstance(fields, list):
+        return []
+    rendered: list[str] = []
+    seen_fields: set[str] = set()
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        field_name = _python_attribute_name(str(field.get("name", "")))
+        if not field_name or field_name in seen_fields:
+            continue
+        annotation = _python_type_for_data_model_field(field.get("type"), set())
+        rendered.append(
+            _render_pydantic_field_line(field_name, annotation, bool(field.get("required", False)))
+        )
+        seen_fields.add(field_name)
+    return rendered
+
+
+def _render_api_surface_endpoint_lines(method: dict, schemas: dict) -> list[str]:
+    """Render a FastAPI-style endpoint scaffold from one deterministic lifecycle method."""
+    operation_name = str(method.get("operation_name") or method.get("name") or "handle")
+    request_schema = method.get("request_schema")
+    response_schema = str(method.get("response_schema") or "dict[str, Any]")
+    decorator_name = str(method.get("method", "GET")).lower()
+    route_path = str(method.get("path", "/"))
+    signature = _api_surface_endpoint_signature(method)
+    response_lines = _api_surface_model_response_lines(method, schemas)
+    rendered = [
+        f'@router.{decorator_name}("{route_path}", response_model={response_schema})',
+        f"def {operation_name}({signature}) -> {response_schema}:",
+        f'    """{str(method.get("method", "GET"))} {route_path}."""',
+    ]
+    error_schema = method.get("error_schema")
+    error_cases = method.get("error_cases", [])
+    if isinstance(error_schema, str) and error_schema:
+        if isinstance(error_cases, list) and error_cases:
+            rendered.append(f"    # Errors use {error_schema}: {', '.join(str(case) for case in error_cases)}")
+        else:
+            rendered.append(f"    # Errors use {error_schema}.")
+    rendered.extend(response_lines)
+    return rendered
+
+
+def _api_surface_endpoint_signature(method: dict) -> str:
+    """Render the endpoint signature for a deterministic lifecycle operation."""
+    operation_name = str(method.get("operation_name") or method.get("name") or "")
+    request_schema = method.get("request_schema")
+    if isinstance(request_schema, str) and request_schema:
+        return f"payload: {request_schema}"
+    if operation_name == "status":
+        return "section_id: str"
+    return "payload: dict[str, Any] | None = None"
+
+
+def _api_surface_model_response_lines(method: dict, schemas: dict) -> list[str]:
+    """Render a deterministic placeholder response model instance."""
+    response_schema_name = method.get("response_schema")
+    if not isinstance(response_schema_name, str):
+        return ["    return {}"]
+    schema_payload = schemas.get(response_schema_name)
+    if not isinstance(schema_payload, dict):
+        return [f"    return {response_schema_name}()"]
+    fields = schema_payload.get("fields", [])
+    if not isinstance(fields, list) or not fields:
+        return [f"    return {response_schema_name}()"]
+
+    lines = [f"    return {response_schema_name}("]
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        field_name = _python_attribute_name(str(field.get("name", "")))
+        if not field_name:
+            continue
+        lines.append(f"        {field_name}={_api_surface_placeholder_value(method, field)},")
+    lines.append("    )")
+    return lines
+
+
+def _api_surface_placeholder_value(method: dict, field: dict) -> str:
+    """Return one stable placeholder value for an api-surface response field."""
+    field_name = _python_attribute_name(str(field.get("name", "")))
+    field_type = str(field.get("type", "")).strip().lower()
+    request_schema = method.get("request_schema")
+    if field_name == "section_id":
+        if isinstance(request_schema, str) and request_schema:
+            return "payload.section_id"
+        return "section_id"
+    if field_name == "status":
+        return '"pending"'
+    if field_name == "next_action":
+        return '"review"'
+    if field_type in {"bool", "boolean"}:
+        return "False"
+    if field_type in {"int", "integer"}:
+        return "0"
+    if field_type in {"float", "number"}:
+        return "0.0"
+    return '""'
 
 
 def _api_surface_method_signature(input_payload: object) -> str:

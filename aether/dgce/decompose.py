@@ -349,28 +349,26 @@ def _api_surface_generation_prompt(section: DGCESection) -> str:
         return base_prompt
 
     required_endpoints = [
-        "create_or_update_section_input",
-        "generate_preview",
-        "submit_review",
-        "submit_approval",
-        "run_preflight",
-        "evaluate_gate",
-        "check_alignment",
-        "execute_section",
-        "get_section_status",
-        "get_section_output",
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "status",
     ]
     endpoint_list = ", ".join(required_endpoints)
     return (
         f"{base_prompt}\n"
         "Model the DGCE governed lifecycle without bypassing preview, review, approval, preflight, gate, alignment, execution, or output controls.\n"
-        f"Required endpoints in stable order: {endpoint_list}.\n"
+        f"Required lifecycle operations in stable order: {endpoint_list}.\n"
         "Interface names must be short intentional PascalCase names such as DGCEGovernanceAPI or SectionLifecycleService.\n"
         "Avoid repeated suffixes like InterfaceInterface, and never leak description_ or field-dump text into interface, method, input, or output names.\n"
-        "Method names should be concise snake_case verbs, and input/output identifiers should be concise snake_case nouns.\n"
-        "Use JSON-over-HTTP endpoint contracts with explicit request schemas, success response shapes, structured error responses, lifecycle preconditions, idempotency expectations, and side effects.\n"
-        "Include an explicit status_contract with next_action and an explicit error_model with stable error codes.\n"
-        'Example naming shape: {"interfaces":["DGCEGovernanceAPI"],"methods":{"get_section_status":{"method":"GET","path":"/sections/{section_id}/status","input":{"section_id":"string"},"output":{"status":"string","next_action":"string"},"error_cases":["section_missing","approval_required"]}},"inputs":{"get_section_status":{"section_id":"string"}},"outputs":{"get_section_status":{"status":"string","next_action":"string"}},"error_cases":{"get_section_status":["section_missing","approval_required"]}}.\n'
+        "Method names should exactly match the lifecycle operation names, and input/output identifiers should be concise snake_case nouns.\n"
+        "Use JSON-over-HTTP endpoint contracts with explicit request_schema, response_schema, error_schema, success response shapes, structured error responses, lifecycle preconditions, idempotency expectations, and side effects.\n"
+        "Include an explicit schemas map, an explicit status_contract with next_action, and an explicit error_model with stable error codes.\n"
+        'Example naming shape: {"interfaces":["PreviewService"],"methods":{"status":{"method":"GET","path":"/status/{section_id}","response_schema":"StatusResponse","error_schema":"ApiError"}},"inputs":{"status":{"section_id":"string"}},"outputs":{"status":{"section_id":"string","status":"string","next_action":"string"}},"error_cases":{"status":["section_missing"]},"schemas":{"StatusResponse":{"fields":[{"name":"section_id","type":"string","required":true},{"name":"status","type":"string","required":true},{"name":"next_action","type":"string","required":true}]}}}.\n'
         "Preserve Guardrail authority and describe blocked or stale governance states as structured contract outcomes."
     )
 

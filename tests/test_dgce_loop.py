@@ -304,13 +304,13 @@ def test_api_surface_section_uses_contract_driven_generation_prompt():
 
     assert "Produce a deterministic, implementation-ready API contract as structured JSON" in api_surface_task.content
     assert "Use top-level keys interfaces, methods, inputs, outputs, error_cases, and endpoints" in api_surface_task.content
-    assert "Required endpoints in stable order" in api_surface_task.content
-    assert "create_or_update_section_input, generate_preview, submit_review, submit_approval, run_preflight, evaluate_gate, check_alignment, execute_section, get_section_status, get_section_output" in api_surface_task.content
+    assert "Required lifecycle operations in stable order" in api_surface_task.content
+    assert "preview, review, approval, preflight, gate, alignment, execution, status" in api_surface_task.content
     assert "status_contract" in api_surface_task.content
     assert "error_model" in api_surface_task.content
     assert "Avoid repeated suffixes like InterfaceInterface" in api_surface_task.content
-    assert "Method names should be concise snake_case verbs" in api_surface_task.content
-    assert 'Example naming shape: {"interfaces":["DGCEGovernanceAPI"]' in api_surface_task.content
+    assert "Method names should exactly match the lifecycle operation names" in api_surface_task.content
+    assert 'Example naming shape: {"interfaces":["PreviewService"]' in api_surface_task.content
     assert "Preserve Guardrail authority" in api_surface_task.content
 
 
@@ -366,8 +366,8 @@ def test_non_api_section_does_not_get_governance_endpoint_prompt_from_dgce_descr
     api_surface_task = tasks[2]
 
     assert "Produce a deterministic, implementation-ready API contract as structured JSON" in api_surface_task.content
-    assert "Required endpoints in stable order" not in api_surface_task.content
-    assert "create_or_update_section_input" not in api_surface_task.content
+    assert "Required lifecycle operations in stable order" not in api_surface_task.content
+    assert "preview, review, approval" not in api_surface_task.content
     assert "Preserve Guardrail authority" not in api_surface_task.content
 
 
@@ -1707,24 +1707,53 @@ def test_render_file_entry_content_generates_structured_api_service_from_interfa
                 "name": "PreviewService",
                 "methods": [
                     {
-                        "name": "generate_preview",
+                        "name": "preview",
                         "method": "POST",
-                        "path": "/sections/{section_id}/preview",
+                        "operation_name": "preview",
+                        "path": "/preview",
+                        "request_schema": "PreviewRequest",
+                        "response_schema": "PreviewResponse",
+                        "error_schema": "ApiError",
                         "input": {"section_id": "string"},
-                        "output": {"artifact_fingerprint": "string", "preview_path": "string"},
-                        "error_cases": ["section_missing", "invalid_input"],
+                        "output": {"section_id": "string", "status": "string", "preview_path": "string"},
+                        "error_cases": ["section_missing", "invalid_preview_request"],
                     }
                 ],
+                "schemas": {
+                    "PreviewRequest": {
+                        "fields": [
+                            {"name": "section_id", "type": "string", "required": True},
+                        ]
+                    },
+                    "PreviewResponse": {
+                        "fields": [
+                            {"name": "section_id", "type": "string", "required": True},
+                            {"name": "status", "type": "string", "required": True},
+                            {"name": "preview_path", "type": "string", "required": True},
+                        ]
+                    },
+                    "ApiError": {
+                        "fields": [
+                            {"name": "code", "type": "string", "required": True},
+                            {"name": "message", "type": "string", "required": True},
+                            {"name": "section_id", "type": "string", "required": False},
+                        ]
+                    },
+                },
             },
         }
     )
 
     assert '"""Service contract for PreviewService."""' in content
-    assert "class PreviewService:" in content
-    assert "def generate_preview(self, section_id: str) -> dict[str, Any]:" in content
-    assert "# error_cases: section_missing, invalid_input" in content
-    assert '"artifact_fingerprint": None' in content
-    assert '"preview_path": None' in content
+    assert "from fastapi import APIRouter" in content
+    assert "class PreviewRequest(BaseModel):" in content
+    assert "class PreviewResponse(BaseModel):" in content
+    assert "@router.post(\"/preview\", response_model=PreviewResponse)" in content
+    assert "def preview(payload: PreviewRequest) -> PreviewResponse:" in content
+    assert "# Errors use ApiError: section_missing, invalid_preview_request" in content
+    assert "section_id=payload.section_id" in content
+    assert 'status="pending"' in content
+    assert 'preview_path=""' in content
 
 
 def test_expected_targets_model_scaffold_is_purpose_and_type_aware():

@@ -52,14 +52,14 @@ _NAME_STOPWORDS = {
 _ENTITY_SUFFIXES = ("artifact", "record", "input", "output", "gate", "stamp", "model", "entity")
 _INTERFACE_SUFFIXES = ("service", "api", "gateway", "client", "interface")
 _DGCE_CORE_API_INTERFACE_METHODS = {
-    "PreviewService": ("generate_preview", "get_preview"),
-    "ReviewService": ("submit_review", "get_review"),
-    "ApprovalService": ("approve_section", "get_approval"),
-    "PreflightService": ("run_preflight", "get_preflight"),
-    "GateService": ("evaluate_gate",),
-    "AlignmentService": ("validate_alignment",),
-    "ExecutionService": ("execute_section", "get_execution"),
-    "StatusService": ("get_section_status",),
+    "PreviewService": ("preview",),
+    "ReviewService": ("review",),
+    "ApprovalService": ("approval",),
+    "PreflightService": ("preflight",),
+    "GateService": ("gate",),
+    "AlignmentService": ("alignment",),
+    "ExecutionService": ("execution",),
+    "StatusService": ("status",),
 }
 _SEMANTIC_VOCABULARY = (
     "alignment",
@@ -362,19 +362,31 @@ def _api_surface_file_metadata(payload: dict[str, Any], interface_label: str) ->
     inputs_payload = payload.get("inputs", {})
     outputs_payload = payload.get("outputs", {})
     error_cases_payload = payload.get("error_cases", {})
+    schemas_payload = payload.get("schemas", {})
     if not isinstance(methods_payload, dict):
         return {}
 
     interface_methods: list[dict[str, Any]] = []
+    required_schema_names: list[str] = []
     for method_name in method_names:
         method_payload = methods_payload.get(method_name)
         if not isinstance(method_payload, dict):
             continue
+        request_schema = method_payload.get("request_schema")
+        response_schema = method_payload.get("response_schema")
+        error_schema = method_payload.get("error_schema")
+        for schema_name in (request_schema, response_schema, error_schema):
+            if isinstance(schema_name, str) and schema_name and schema_name not in required_schema_names:
+                required_schema_names.append(schema_name)
         interface_methods.append(
             {
+                "error_schema": error_schema,
                 "name": method_name,
                 "method": method_payload.get("method"),
+                "operation_name": method_payload.get("operation_name", method_name),
                 "path": method_payload.get("path"),
+                "request_schema": request_schema,
+                "response_schema": response_schema,
                 "input": inputs_payload.get(method_name, method_payload.get("input", {})) if isinstance(inputs_payload, dict) else method_payload.get("input", {}),
                 "output": outputs_payload.get(method_name, method_payload.get("output", {})) if isinstance(outputs_payload, dict) else method_payload.get("output", {}),
                 "error_cases": error_cases_payload.get(method_name, method_payload.get("error_cases", [])) if isinstance(error_cases_payload, dict) else method_payload.get("error_cases", []),
@@ -388,6 +400,11 @@ def _api_surface_file_metadata(payload: dict[str, Any], interface_label: str) ->
         "interface_schema": {
             "name": interface_label,
             "methods": sorted(interface_methods, key=lambda item: str(item.get("name", ""))),
+            "schemas": {
+                schema_name: schemas_payload.get(schema_name)
+                for schema_name in required_schema_names
+                if isinstance(schemas_payload, dict) and isinstance(schemas_payload.get(schema_name), dict)
+            },
         }
     }
 
