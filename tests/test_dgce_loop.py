@@ -1632,6 +1632,101 @@ def test_dgce_core_data_model_file_plan_and_rendering_are_identical_across_repea
     )
 
 
+def test_dgce_core_api_surface_file_plan_and_rendering_are_identical_across_repeated_repairs():
+    router = RouterPlanner()
+    payload = {
+        "interfaces": ["preview service"],
+        "methods": {
+            "generate preview": {
+                "method": "POST",
+                "path": "/sections/{section_id}/preview",
+            }
+        },
+        "inputs": {},
+        "outputs": {},
+        "error_cases": {},
+    }
+    request = ClassificationRequest(
+        content="Structured output for dgce_api_surface_v1",
+        request_id="repeatable-dgce-core-api-surface",
+        output_contract=OutputContract(mode="structured", schema_name="dgce_api_surface_v1"),
+        metadata={"section_type": "api_surface", "task_subtype": "api_surface"},
+    )
+    _, structured_first = router._validate_structured_output(request, json.dumps(payload))
+    _, structured_second = router._validate_structured_output(request, json.dumps(payload))
+
+    responses_first = [
+        ResponseEnvelope(
+            request_id="first-api",
+            task_type="api_surface",
+            status="experimental_output",
+            task_bucket="planning",
+            decision="MID_MODEL",
+            output=json.dumps(structured_first),
+            reused=False,
+            structured_content=structured_first,
+        )
+    ]
+    responses_second = [
+        ResponseEnvelope(
+            request_id="second-api",
+            task_type="api_surface",
+            status="experimental_output",
+            task_bucket="planning",
+            decision="MID_MODEL",
+            output=json.dumps(structured_second),
+            reused=False,
+            structured_content=structured_second,
+        )
+    ]
+
+    file_plan_first = build_file_plan(responses_first)
+    file_plan_second = build_file_plan(responses_second)
+
+    assert file_plan_first == file_plan_second
+
+    first_by_path = {entry["path"]: entry for entry in file_plan_first.files}
+    second_by_path = {entry["path"]: entry for entry in file_plan_second.files}
+    assert first_by_path["api/previewservice.py"]["interface_schema"] == second_by_path["api/previewservice.py"]["interface_schema"]
+    assert first_by_path["api/approvalservice.py"]["interface_schema"] == second_by_path["api/approvalservice.py"]["interface_schema"]
+    assert render_file_entry_content(first_by_path["api/previewservice.py"]) == render_file_entry_content(
+        second_by_path["api/previewservice.py"]
+    )
+    assert render_file_entry_content(first_by_path["api/approvalservice.py"]) == render_file_entry_content(
+        second_by_path["api/approvalservice.py"]
+    )
+
+
+def test_render_file_entry_content_generates_structured_api_service_from_interface_schema():
+    content = render_file_entry_content(
+        {
+            "path": "api/previewservice.py",
+            "purpose": "API interface for PreviewService",
+            "source": "api_surface",
+            "interface_schema": {
+                "name": "PreviewService",
+                "methods": [
+                    {
+                        "name": "generate_preview",
+                        "method": "POST",
+                        "path": "/sections/{section_id}/preview",
+                        "input": {"section_id": "string"},
+                        "output": {"artifact_fingerprint": "string", "preview_path": "string"},
+                        "error_cases": ["section_missing", "invalid_input"],
+                    }
+                ],
+            },
+        }
+    )
+
+    assert '"""Service contract for PreviewService."""' in content
+    assert "class PreviewService:" in content
+    assert "def generate_preview(self, section_id: str) -> dict[str, Any]:" in content
+    assert "# error_cases: section_missing, invalid_input" in content
+    assert '"artifact_fingerprint": None' in content
+    assert '"preview_path": None' in content
+
+
 def test_expected_targets_model_scaffold_is_purpose_and_type_aware():
     content = render_file_entry_content(
         {

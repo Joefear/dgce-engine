@@ -73,6 +73,9 @@ def render_file_entry_content(file_entry: dict) -> str:
     if source == "data_model" and relative_path.parts[:1] == ("models",):
         return _render_data_model_content(file_entry, header)
 
+    if source == "api_surface" and relative_path.parts[:1] == ("api",) and isinstance(file_entry.get("interface_schema"), dict):
+        return _render_api_surface_content(file_entry, header)
+
     if relative_path.parts[:1] == ("models",):
         return "\n".join(
             header
@@ -389,6 +392,56 @@ def _render_data_model_content(file_entry: dict, header: list[str]) -> str:
     return "\n".join(header + imports + fields + [""])
 
 
+def _render_api_surface_content(file_entry: dict, header: list[str]) -> str:
+    """Render an implementation-ready service class from validated api-surface metadata when available."""
+    interface_schema = file_entry.get("interface_schema")
+    if not isinstance(interface_schema, dict):
+        relative_path = Path(str(file_entry["path"]))
+        class_name = _class_name(relative_path.stem)
+        return "\n".join(
+            header
+            + [
+                f'"""API scaffold for {file_entry["purpose"]}."""',
+                "",
+                f"class {class_name}:",
+                '    """Structured fallback API service when interface schema details are unavailable."""',
+                "",
+                "    pass",
+                "",
+            ]
+        )
+
+    class_name = str(interface_schema.get("name") or _class_name(Path(str(file_entry["path"])).stem))
+    methods = interface_schema.get("methods", [])
+    body = [
+        f'"""Service contract for {class_name}."""',
+        "",
+        "from __future__ import annotations",
+        "",
+        "from typing import Any",
+        "",
+        f"class {class_name}:",
+        f'    """Implementation-ready DGCE API service for {class_name}."""',
+        "",
+    ]
+    if isinstance(methods, list) and methods:
+        for index, method in enumerate(methods):
+            if not isinstance(method, dict):
+                continue
+            if index:
+                body.append("")
+            body.extend(_render_api_surface_method_lines(method))
+    else:
+        body.extend(
+            [
+                "    def handle(self, payload: dict[str, Any]) -> dict[str, Any]:",
+                '        """Fallback API handler."""',
+                "        return payload",
+            ]
+        )
+    return "\n".join(header + body + [""])
+
+
 def _class_name(value: str) -> str:
     """Return a deterministic Python class name from a file stem or directory name."""
     return "".join(part.capitalize() for part in value.replace("-", "_").split("_")) or "GeneratedStub"
@@ -452,6 +505,71 @@ def _render_pydantic_field_line(field_name: str, annotation: str, required: bool
     if required:
         return f"    {field_name}: {annotation}"
     return f"    {field_name}: {annotation} | None = None"
+
+
+def _render_api_surface_method_lines(method: dict) -> list[str]:
+    """Render one deterministic API service method stub."""
+    method_name = str(method.get("name", "handle"))
+    input_payload = method.get("input", {})
+    output_payload = method.get("output", {})
+    error_cases = method.get("error_cases", [])
+    signature = _api_surface_method_signature(input_payload)
+    response_lines = _api_surface_response_lines(output_payload)
+    rendered = [
+        f"    def {method_name}(self, {signature}) -> dict[str, Any]:",
+        f'        """{str(method.get("method", "GET"))} {str(method.get("path", "/"))}."""',
+    ]
+    if isinstance(error_cases, list) and error_cases:
+        rendered.append(f"        # error_cases: {', '.join(str(case) for case in error_cases)}")
+    rendered.extend(response_lines)
+    return rendered
+
+
+def _api_surface_method_signature(input_payload: object) -> str:
+    """Render a typed Python signature from one api-surface input schema."""
+    if not isinstance(input_payload, dict) or not input_payload:
+        return "payload: dict[str, Any] | None = None"
+
+    parts: list[str] = []
+    for field_name in sorted(input_payload):
+        attribute_name = _python_attribute_name(str(field_name))
+        if not attribute_name:
+            continue
+        annotation = _python_type_for_api_surface_field(input_payload[field_name])
+        parts.append(f"{attribute_name}: {annotation}")
+    return ", ".join(parts) if parts else "payload: dict[str, Any] | None = None"
+
+
+def _api_surface_response_lines(output_payload: object) -> list[str]:
+    """Render a deterministic structured response body for one api-surface method."""
+    if not isinstance(output_payload, dict) or not output_payload:
+        return ["        return {}"]
+
+    lines = ["        return {"]
+    for field_name in sorted(output_payload):
+        lines.append(f'            "{field_name}": None,')
+    lines.append("        }")
+    return lines
+
+
+def _python_type_for_api_surface_field(value: object) -> str:
+    """Map api-surface primitive field types into Python annotations."""
+    if not isinstance(value, str):
+        return "Any"
+    normalized = value.strip().lower()
+    primitive_map = {
+        "boolean": "bool",
+        "bool": "bool",
+        "float": "float",
+        "int": "int",
+        "integer": "int",
+        "number": "float",
+        "str": "str",
+        "string": "str",
+    }
+    if normalized in primitive_map:
+        return primitive_map[normalized]
+    return "Any"
 
 
 def _python_type_for_data_model_field(value: object, known_entity_names: set[str]) -> str:

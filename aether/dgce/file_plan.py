@@ -51,6 +51,16 @@ _NAME_STOPWORDS = {
 }
 _ENTITY_SUFFIXES = ("artifact", "record", "input", "output", "gate", "stamp", "model", "entity")
 _INTERFACE_SUFFIXES = ("service", "api", "gateway", "client", "interface")
+_DGCE_CORE_API_INTERFACE_METHODS = {
+    "PreviewService": ("generate_preview", "get_preview"),
+    "ReviewService": ("submit_review", "get_review"),
+    "ApprovalService": ("approve_section", "get_approval"),
+    "PreflightService": ("run_preflight", "get_preflight"),
+    "GateService": ("evaluate_gate",),
+    "AlignmentService": ("validate_alignment",),
+    "ExecutionService": ("execute_section", "get_execution"),
+    "StatusService": ("get_section_status",),
+}
 _SEMANTIC_VOCABULARY = (
     "alignment",
     "api",
@@ -106,15 +116,19 @@ def build_file_plan(responses: List["ResponseEnvelope"]) -> FilePlan:
                     file_entry
                 )
         elif response.task_type == "api_surface":
+            structured_payload = getattr(response, "structured_content", None)
             for interface in payload["interfaces"]:
                 interface_label = _normalize_interface_label(str(interface))
                 interface_name = _slug(interface_label)
+                file_entry = {
+                    "path": f"api/{interface_name}.py",
+                    "purpose": f"API interface for {interface_label}",
+                    "source": "api_surface",
+                }
+                if isinstance(structured_payload, dict):
+                    file_entry.update(_api_surface_file_metadata(structured_payload, interface_label))
                 files.append(
-                    {
-                        "path": f"api/{interface_name}.py",
-                        "purpose": f"API interface for {interface_label}",
-                        "source": "api_surface",
-                    }
+                    file_entry
                 )
 
     deduped = {
@@ -339,6 +353,43 @@ def _normalize_interface_label(value: str) -> str:
     if _is_clean_class_name(value, _INTERFACE_SUFFIXES):
         return value.strip()
     return _normalize_class_like_label(value, suffix_mode="last", suffixes=_INTERFACE_SUFFIXES, default="Interface")
+
+
+def _api_surface_file_metadata(payload: dict[str, Any], interface_label: str) -> dict[str, Any]:
+    """Return implementation-ready interface metadata for one validated api-surface interface."""
+    method_names = _DGCE_CORE_API_INTERFACE_METHODS.get(interface_label, ())
+    methods_payload = payload.get("methods", {})
+    inputs_payload = payload.get("inputs", {})
+    outputs_payload = payload.get("outputs", {})
+    error_cases_payload = payload.get("error_cases", {})
+    if not isinstance(methods_payload, dict):
+        return {}
+
+    interface_methods: list[dict[str, Any]] = []
+    for method_name in method_names:
+        method_payload = methods_payload.get(method_name)
+        if not isinstance(method_payload, dict):
+            continue
+        interface_methods.append(
+            {
+                "name": method_name,
+                "method": method_payload.get("method"),
+                "path": method_payload.get("path"),
+                "input": inputs_payload.get(method_name, method_payload.get("input", {})) if isinstance(inputs_payload, dict) else method_payload.get("input", {}),
+                "output": outputs_payload.get(method_name, method_payload.get("output", {})) if isinstance(outputs_payload, dict) else method_payload.get("output", {}),
+                "error_cases": error_cases_payload.get(method_name, method_payload.get("error_cases", [])) if isinstance(error_cases_payload, dict) else method_payload.get("error_cases", []),
+            }
+        )
+
+    if not interface_methods:
+        return {}
+
+    return {
+        "interface_schema": {
+            "name": interface_label,
+            "methods": sorted(interface_methods, key=lambda item: str(item.get("name", ""))),
+        }
+    }
 
 
 def _normalize_class_like_label(value: str, *, suffix_mode: str, suffixes: tuple[str, ...], default: str) -> str:

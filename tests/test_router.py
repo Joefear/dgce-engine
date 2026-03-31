@@ -783,6 +783,62 @@ def test_router_normalizes_noisy_api_surface_names(router):
     }
 
 
+def test_router_backfills_dgce_core_api_surface_contract_deterministically(router):
+    payload = {
+        "interfaces": ["preview_service"],
+        "methods": {
+            "generate preview": {
+                "method": "POST",
+                "path": "/sections/{section_id}/preview",
+            }
+        },
+        "inputs": {},
+        "outputs": {},
+        "error_cases": {},
+    }
+
+    metadata_first, structured_first = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1", metadata={"section_type": "api_surface", "task_subtype": "api_surface"}),
+        json.dumps(payload),
+    )
+    metadata_second, structured_second = router._validate_structured_output(
+        _structured_request("dgce_api_surface_v1", metadata={"section_type": "api_surface", "task_subtype": "api_surface"}),
+        json.dumps(payload),
+    )
+
+    assert metadata_first == {"structure_valid": True}
+    assert metadata_second == {"structure_valid": True}
+    assert structured_first == structured_second
+    assert structured_first["interfaces"] == [
+        "PreviewService",
+        "ReviewService",
+        "ApprovalService",
+        "PreflightService",
+        "GateService",
+        "AlignmentService",
+        "ExecutionService",
+        "StatusService",
+    ]
+    assert sorted(structured_first["methods"]) == [
+        "approve_section",
+        "evaluate_gate",
+        "execute_section",
+        "generate_preview",
+        "get_approval",
+        "get_execution",
+        "get_preflight",
+        "get_preview",
+        "get_review",
+        "get_section_status",
+        "run_preflight",
+        "submit_review",
+        "validate_alignment",
+    ]
+    assert structured_first["inputs"]["execute_section"] == {"section_id": "string"}
+    assert structured_first["outputs"]["get_section_status"] == {"next_action": "string", "status": "string"}
+    assert structured_first["error_cases"]["approve_section"] == ["invalid_approval", "section_missing"]
+
+
 def test_router_system_breakdown_fix_does_not_change_api_surface_schema(router):
     payload = _valid_api_surface_payload()
 
