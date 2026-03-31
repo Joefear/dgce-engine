@@ -11,6 +11,7 @@ from aether_core.itera.exact_cache import ExactMatchCache
 from aether_core.router.planner import RouterPlanner
 from aether_core.telemetry.logger import TelemetryLogger
 from apps.aether_api.routers import health, classify, decide, execute, telemetry, promote, dgce
+from aether.dgce.read_api_http import router as dgce_read_router
 
 
 def create_app(
@@ -33,6 +34,7 @@ def create_app(
     app.include_router(decide.router)
     app.include_router(execute.router)
     app.include_router(dgce.router)
+    app.include_router(dgce_read_router)
     app.include_router(promote.router)
     app.include_router(telemetry.router)
 
