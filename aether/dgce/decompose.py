@@ -4544,26 +4544,99 @@ def _assert_contract_aligns_with_manifest(artifact_manifest: dict[str, Any], con
             raise ValueError(f"exportable contract supported_artifacts[{index}].export_fields must be a subset of supported_fields")
 
 
-def _assert_export_contract_aligns(
+def _assert_export_contract_fully_converged(
     artifact_manifest: dict[str, Any],
     consumer_contract: dict[str, Any],
+    consumer_contract_reference: str,
     export_contract: dict[str, Any],
 ) -> None:
     manifest_entries = _artifact_manifest_entries_by_path(artifact_manifest)
     exportable_contract = _get_exportable_contract(consumer_contract)
+    if str(export_contract.get("artifact_type")) != "export_contract":
+        raise ValueError("export_contract.json artifact_type must remain export_contract")
+    if str(export_contract.get("schema_version")) != str(consumer_contract.get("schema_version")):
+        raise ValueError("export_contract.json schema_version must match consumer_contract.json")
+    if str(export_contract.get("generated_by")) != str(consumer_contract.get("generated_by")):
+        raise ValueError("export_contract.json generated_by must match consumer_contract.json")
     if list(export_contract.get("supported_artifacts", [])) != list(exportable_contract.get("supported_artifacts", [])):
         raise ValueError("export_contract.json must match _get_exportable_contract(...) exactly")
+    consumer_entries_by_path = {
+        str(_normalize_artifact_path(entry.get("artifact_path"))): dict(entry)
+        for entry in consumer_contract.get("supported_artifacts", [])
+        if isinstance(entry, dict) and _normalize_artifact_path(entry.get("artifact_path")) is not None
+    }
+    expected_export_order = [
+        str(_normalize_artifact_path(entry.get("artifact_path")))
+        for entry in consumer_contract.get("supported_artifacts", [])
+        if isinstance(entry, dict) and entry.get("export_scope") == "external"
+    ]
+    actual_export_order = [
+        str(_normalize_artifact_path(entry.get("artifact_path")))
+        for entry in export_contract.get("supported_artifacts", [])
+        if isinstance(entry, dict) and _normalize_artifact_path(entry.get("artifact_path")) is not None
+    ]
+    if actual_export_order != expected_export_order:
+        raise ValueError("export_contract.json ordering must match consumer_contract.json export ordering exactly")
     for index, export_entry in enumerate(export_contract.get("supported_artifacts", [])):
         if not isinstance(export_entry, dict):
             raise ValueError(f"export_contract supported_artifacts[{index}] must be a dict")
         artifact_path = _normalize_artifact_path(export_entry.get("artifact_path"))
         if artifact_path is None or artifact_path not in manifest_entries:
             raise ValueError(f"export_contract supported_artifacts[{index}] must resolve to artifact_manifest")
+        if artifact_path not in consumer_entries_by_path:
+            raise ValueError(f"export_contract supported_artifacts[{index}] must resolve to consumer_contract")
+        consumer_entry = consumer_entries_by_path[artifact_path]
+        for key in ("artifact_type", "schema_version"):
+            if str(export_entry.get(key)) != str(consumer_entry.get(key)):
+                raise ValueError(
+                    f"export_contract supported_artifacts[{index}].{key} must match consumer_contract for {artifact_path}"
+                )
+        expected_export_fields = consumer_entry.get("export_fields")
+        if expected_export_fields is None:
+            expected_export_fields = consumer_entry.get("supported_fields", [])
+        if list(export_entry.get("export_fields", [])) != list(expected_export_fields):
+            raise ValueError(
+                f"export_contract supported_artifacts[{index}].export_fields must match consumer_contract exportable fields"
+            )
+        manifest_entry = manifest_entries[artifact_path]
+        if artifact_path != _normalize_artifact_path(manifest_entry.get("artifact_path")):
+            raise ValueError(f"export_contract supported_artifacts[{index}].artifact_path must match artifact_manifest for {artifact_path}")
+        for key in ("artifact_type", "schema_version"):
+            if str(export_entry.get(key)) != str(manifest_entry.get(key)):
+                raise ValueError(
+                    f"export_contract supported_artifacts[{index}].{key} must match artifact_manifest for {artifact_path}"
+                )
         if str(export_entry.get("export_scope")) != "external":
             raise ValueError(f"export_contract supported_artifacts[{index}].export_scope must be external")
         export_fields = export_entry.get("export_fields")
         if not isinstance(export_fields, list) or not all(isinstance(field_name, str) for field_name in export_fields):
             raise ValueError(f"export_contract supported_artifacts[{index}].export_fields must be a list[str]")
+    reference_entries: list[dict[str, str]] = []
+    current_reference_entry: dict[str, str] | None = None
+    for line in consumer_contract_reference.splitlines():
+        if line.startswith("### "):
+            if current_reference_entry is not None:
+                reference_entries.append(current_reference_entry)
+            current_reference_entry = {"artifact_type": line.removeprefix("### ")}
+        elif current_reference_entry is not None and line.startswith("- path: "):
+            current_reference_entry["artifact_path"] = line.removeprefix("- path: ")
+        elif current_reference_entry is not None and line.startswith("- schema_version: "):
+            current_reference_entry["schema_version"] = line.removeprefix("- schema_version: ")
+    if current_reference_entry is not None:
+        reference_entries.append(current_reference_entry)
+    export_reference_entries = [
+        entry
+        for entry in reference_entries
+        if _normalize_artifact_path(entry.get("artifact_path")) in actual_export_order
+    ]
+    export_reference_paths = [str(_normalize_artifact_path(entry.get("artifact_path"))) for entry in export_reference_entries]
+    if export_reference_paths != actual_export_order:
+        raise ValueError("export_contract.json ordering must remain a reference-aligned subset of consumer_contract_reference.md")
+    for index, reference_entry in enumerate(export_reference_entries):
+        export_entry = export_contract["supported_artifacts"][index]
+        for key in ("artifact_type", "schema_version"):
+            if str(reference_entry.get(key)) != str(export_entry.get(key)):
+                raise ValueError(f"export_contract supported_artifacts[{index}].{key} must match consumer_contract_reference.md")
 
 
 def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str:
@@ -4655,8 +4728,8 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     )
     _assert_contract_aligns_with_manifest(artifact_manifest, consumer_contract)
     export_contract = _build_export_contract(consumer_contract)
-    _assert_export_contract_aligns(artifact_manifest, consumer_contract, export_contract)
     consumer_contract_reference = _build_consumer_contract_reference(consumer_contract)
+    _assert_export_contract_fully_converged(artifact_manifest, consumer_contract, consumer_contract_reference, export_contract)
     _assert_reference_aligns_with_contract(consumer_contract, consumer_contract_reference)
     _write_json(workspace["reviews"] / "index.json", review_index)
     _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)

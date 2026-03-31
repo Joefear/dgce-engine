@@ -541,7 +541,9 @@ def _assert_exportable_contract_is_deterministic(project_root: Path) -> None:
 
 
 def _assert_export_contract_aligns(project_root: Path) -> None:
+    artifact_manifest = json.loads((project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"))
     consumer_contract = _consumer_contract_payload(project_root)
+    consumer_contract_reference = _consumer_contract_reference_text(project_root)
     export_contract = _export_contract_payload(project_root)
     manifest_by_path = _artifact_manifest_by_path(project_root)
     assert export_contract == {
@@ -557,6 +559,12 @@ def _assert_export_contract_aligns(project_root: Path) -> None:
         assert manifest_entry["schema_version"] == entry["schema_version"]
         assert manifest_entry["scope"] == "workspace"
         assert manifest_entry["section_id"] is None
+    dgce_decompose._assert_export_contract_fully_converged(
+        artifact_manifest,
+        consumer_contract,
+        consumer_contract_reference,
+        export_contract,
+    )
 
 
 def _assert_workspace_index_links_resolve_to_manifest(project_root: Path) -> None:
@@ -7919,6 +7927,144 @@ def test_build_export_contract_derives_strictly_from_exportable_contract():
         **_expected_artifact_metadata("export_contract"),
         "supported_artifacts": dgce_decompose._get_exportable_contract(payload)["supported_artifacts"],
     }
+
+
+def test_export_contract_full_convergence_rejects_missing_consumer_contract_entry():
+    artifact_manifest = {
+        **_expected_artifact_metadata("artifact_manifest"),
+        "artifacts": [
+            {
+                "artifact_path": ".dce/dashboard.json",
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            }
+        ],
+    }
+    consumer_contract = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [],
+    }
+    export_contract = {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "contract_stability": "supported",
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            }
+        ],
+    }
+    consumer_contract_reference = dgce_decompose._build_consumer_contract_reference(
+        {
+            **_expected_artifact_metadata("consumer_contract"),
+            "supported_artifacts": [
+                {
+                    "artifact_type": "dashboard",
+                    "schema_version": "1.0",
+                    "artifact_path": ".dce/dashboard.json",
+                    "supported_fields": ["section_order"],
+                    "contract_stability": "supported",
+                    "export_scope": "external",
+                    "export_fields": ["section_order"],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="must match _get_exportable_contract"):
+        dgce_decompose._assert_export_contract_fully_converged(
+            artifact_manifest,
+            consumer_contract,
+            consumer_contract_reference,
+            export_contract,
+        )
+
+
+def test_export_contract_full_convergence_rejects_mismatched_schema_version():
+    artifact_manifest = {
+        **_expected_artifact_metadata("artifact_manifest"),
+        "artifacts": [
+            {
+                "artifact_path": ".dce/dashboard.json",
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            }
+        ],
+    }
+    consumer_contract = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            }
+        ],
+    }
+    export_contract = dgce_decompose._build_export_contract(consumer_contract)
+    export_contract["supported_artifacts"][0]["schema_version"] = "9.9"
+    consumer_contract_reference = dgce_decompose._build_consumer_contract_reference(consumer_contract)
+
+    with pytest.raises(ValueError, match="must match _get_exportable_contract|schema_version must match consumer_contract"):
+        dgce_decompose._assert_export_contract_fully_converged(
+            artifact_manifest,
+            consumer_contract,
+            consumer_contract_reference,
+            export_contract,
+        )
+
+
+def test_export_contract_full_convergence_rejects_mismatched_export_fields():
+    artifact_manifest = {
+        **_expected_artifact_metadata("artifact_manifest"),
+        "artifacts": [
+            {
+                "artifact_path": ".dce/dashboard.json",
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            }
+        ],
+    }
+    consumer_contract = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order", "sections[].section_id"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            }
+        ],
+    }
+    export_contract = dgce_decompose._build_export_contract(consumer_contract)
+    export_contract["supported_artifacts"][0]["export_fields"] = ["sections[].section_id"]
+    consumer_contract_reference = dgce_decompose._build_consumer_contract_reference(consumer_contract)
+
+    with pytest.raises(ValueError, match="must match _get_exportable_contract|export_fields must match consumer_contract exportable fields"):
+        dgce_decompose._assert_export_contract_fully_converged(
+            artifact_manifest,
+            consumer_contract,
+            consumer_contract_reference,
+            export_contract,
+        )
 
 
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
