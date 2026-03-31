@@ -470,6 +470,45 @@ def _consumer_contract_reference_text(project_root: Path) -> str:
     return (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8")
 
 
+def _expected_export_contract_reference(payload: dict) -> str:
+    lines = [
+        "# DGCE Export Contract Reference",
+        "",
+        "## Metadata",
+        f"- schema_version: {payload['schema_version']}",
+        f"- generated_by: {payload['generated_by']}",
+        f"- artifact_type: {payload['artifact_type']}",
+        "",
+        "## Supported Artifacts",
+        "",
+    ]
+    for artifact in payload["supported_artifacts"]:
+        lines.extend(
+            [
+                f"### {artifact['artifact_type']}",
+                f"- artifact_path: {artifact['artifact_path']}",
+                f"- schema_version: {artifact['schema_version']}",
+                f"- contract_stability: {artifact['contract_stability']}",
+                f"- export_scope: {artifact['export_scope']}",
+            ]
+        )
+        if artifact.get("consumer_scopes"):
+            lines.append(f"- consumer_scopes: {', '.join(artifact['consumer_scopes'])}")
+        lines.extend(
+            [
+                "",
+                "#### Exported Fields",
+            ]
+        )
+        lines.extend(f"- {field_name}" for field_name in artifact["export_fields"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _export_contract_reference_text(project_root: Path) -> str:
+    return (project_root / ".dce" / "export_contract_reference.md").read_text(encoding="utf-8")
+
+
 def _assert_dashboard_links_resolve_to_manifest(project_root: Path) -> None:
     manifest_by_path = _artifact_manifest_by_path(project_root)
     dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
@@ -565,6 +604,23 @@ def _assert_export_contract_aligns(project_root: Path) -> None:
         consumer_contract_reference,
         export_contract,
     )
+
+
+def _assert_export_reference_aligns(project_root: Path) -> None:
+    export_contract = _export_contract_payload(project_root)
+    reference_text = _export_contract_reference_text(project_root)
+    assert reference_text == _expected_export_contract_reference(export_contract)
+    assert [line.removeprefix("### ") for line in reference_text.splitlines() if line.startswith("### ")] == [
+        entry["artifact_type"] for entry in export_contract["supported_artifacts"]
+    ]
+    assert [line.removeprefix("- artifact_path: ") for line in reference_text.splitlines() if line.startswith("- artifact_path: ")] == [
+        entry["artifact_path"] for entry in export_contract["supported_artifacts"]
+    ]
+    assert [line.removeprefix("- schema_version: ") for line in reference_text.splitlines() if line.startswith("- schema_version: ")][1:] == [
+        entry["schema_version"] for entry in export_contract["supported_artifacts"]
+    ]
+    assert all("- export_scope: internal" not in line for line in reference_text.splitlines())
+    dgce_decompose._assert_export_reference_matches_export_contract(export_contract, reference_text)
 
 
 def _assert_workspace_index_links_resolve_to_manifest(project_root: Path) -> None:
@@ -7760,6 +7816,32 @@ def test_consumer_contract_reference_is_deterministic_and_derived_from_consumer_
     _assert_reference_aligns_with_contract(second_root)
 
 
+def test_export_contract_reference_is_deterministic_and_derived_from_export_contract(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_export_contract_reference_repeat_a")
+    second_root = _workspace_dir("dgce_export_contract_reference_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), first_root)
+    run_section_with_workspace(_section(), second_root)
+
+    first_export = _export_contract_payload(first_root)
+    second_export = _export_contract_payload(second_root)
+    first_reference = _export_contract_reference_text(first_root)
+    second_reference = _export_contract_reference_text(second_root)
+
+    assert first_reference == _expected_export_contract_reference(first_export)
+    assert second_reference == _expected_export_contract_reference(second_export)
+    assert first_reference == second_reference
+    assert _export_contract_reference_text(first_root) == (second_root / ".dce" / "export_contract_reference.md").read_text(encoding="utf-8")
+    _assert_export_reference_aligns(first_root)
+    _assert_export_reference_aligns(second_root)
+
+
 def test_export_contract_is_deterministic_for_repeated_governed_runs(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     first_root = _workspace_dir("dgce_export_contract_repeat_a")
@@ -8161,6 +8243,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "consumer_contract": (project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"),
         "export_contract": (project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"),
         "consumer_contract_reference": (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8"),
+        "export_contract_reference": (project_root / ".dce" / "export_contract_reference.md").read_text(encoding="utf-8"),
     }
 
     call_counts = {
@@ -8172,6 +8255,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "consumer_contract": 0,
         "export_contract": 0,
         "consumer_contract_reference": 0,
+        "export_contract_reference": 0,
     }
     original_build_review_index = dgce_decompose._build_review_index
     original_build_lifecycle_trace = dgce_decompose._build_lifecycle_trace
@@ -8181,6 +8265,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
     original_build_consumer_contract = dgce_decompose._build_consumer_contract
     original_build_export_contract = dgce_decompose._build_export_contract
     original_build_consumer_contract_reference = dgce_decompose._build_consumer_contract_reference
+    original_build_export_contract_reference = dgce_decompose._build_export_contract_reference
 
     def counting_build_review_index(*args, **kwargs):
         call_counts["review_index"] += 1
@@ -8214,6 +8299,10 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         call_counts["consumer_contract_reference"] += 1
         return original_build_consumer_contract_reference(*args, **kwargs)
 
+    def counting_build_export_contract_reference(*args, **kwargs):
+        call_counts["export_contract_reference"] += 1
+        return original_build_export_contract_reference(*args, **kwargs)
+
     monkeypatch.setattr(dgce_decompose, "_build_review_index", counting_build_review_index)
     monkeypatch.setattr(dgce_decompose, "_build_lifecycle_trace", counting_build_lifecycle_trace)
     monkeypatch.setattr(dgce_decompose, "_build_workspace_index", counting_build_workspace_index)
@@ -8222,6 +8311,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
     monkeypatch.setattr(dgce_decompose, "_build_consumer_contract", counting_build_consumer_contract)
     monkeypatch.setattr(dgce_decompose, "_build_export_contract", counting_build_export_contract)
     monkeypatch.setattr(dgce_decompose, "_build_consumer_contract_reference", counting_build_consumer_contract_reference)
+    monkeypatch.setattr(dgce_decompose, "_build_export_contract_reference", counting_build_export_contract_reference)
 
     dgce_decompose._refresh_workspace_views(dgce_decompose._ensure_workspace(project_root))
 
@@ -8234,6 +8324,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "consumer_contract": 1,
         "export_contract": 1,
         "consumer_contract_reference": 1,
+        "export_contract_reference": 1,
     }
     assert before_refresh == {
         "review_index": (project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"),
@@ -8245,6 +8336,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "consumer_contract": (project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"),
         "export_contract": (project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"),
         "consumer_contract_reference": (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8"),
+        "export_contract_reference": (project_root / ".dce" / "export_contract_reference.md").read_text(encoding="utf-8"),
     }
 
 
@@ -8694,6 +8786,7 @@ def test_cross_artifact_section_summaries_converge_across_mixed_section_states(m
     _assert_consumer_contract_aligns_with_manifest(project_root)
     _assert_export_contract_aligns(project_root)
     _assert_reference_aligns_with_contract(project_root)
+    _assert_export_reference_aligns(project_root)
     _assert_exportable_contract_is_deterministic(project_root)
     _assert_consumer_contract_has_no_cross_section_leakage(project_root, "alpha-section", "mission-board")
 

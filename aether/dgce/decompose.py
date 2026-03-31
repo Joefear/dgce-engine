@@ -4715,6 +4715,42 @@ def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str
     return "\n".join(lines)
 
 
+def _build_export_contract_reference(export_contract: dict[str, Any]) -> str:
+    lines = [
+        "# DGCE Export Contract Reference",
+        "",
+        "## Metadata",
+        f"- schema_version: {export_contract['schema_version']}",
+        f"- generated_by: {export_contract['generated_by']}",
+        f"- artifact_type: {export_contract['artifact_type']}",
+        "",
+        "## Supported Artifacts",
+        "",
+    ]
+    for artifact in export_contract.get("supported_artifacts", []):
+        lines.extend(
+            [
+                f"### {artifact['artifact_type']}",
+                f"- artifact_path: {artifact['artifact_path']}",
+                f"- schema_version: {artifact['schema_version']}",
+                f"- contract_stability: {artifact['contract_stability']}",
+                f"- export_scope: {artifact['export_scope']}",
+            ]
+        )
+        consumer_scopes = artifact.get("consumer_scopes")
+        if consumer_scopes:
+            lines.append(f"- consumer_scopes: {', '.join(str(scope) for scope in consumer_scopes)}")
+        lines.extend(
+            [
+                "",
+                "#### Exported Fields",
+            ]
+        )
+        lines.extend(f"- {field_name}" for field_name in artifact.get("export_fields", []))
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _assert_reference_aligns_with_contract(consumer_contract: dict[str, Any], consumer_contract_reference: str) -> None:
     lines = consumer_contract_reference.split("\n")
     expected_lines = [
@@ -4752,6 +4788,45 @@ def _assert_reference_aligns_with_contract(consumer_contract: dict[str, Any], co
         raise ValueError("consumer_contract_reference.md must not include extra content")
 
 
+def _assert_export_reference_matches_export_contract(export_contract: dict[str, Any], export_contract_reference: str) -> None:
+    lines = export_contract_reference.split("\n")
+    expected_lines = [
+        "# DGCE Export Contract Reference",
+        "",
+        "## Metadata",
+        f"- schema_version: {export_contract['schema_version']}",
+        f"- generated_by: {export_contract['generated_by']}",
+        f"- artifact_type: {export_contract['artifact_type']}",
+        "",
+        "## Supported Artifacts",
+        "",
+    ]
+    line_index = 0
+    for expected_line in expected_lines:
+        if line_index >= len(lines) or lines[line_index] != expected_line:
+            raise ValueError("export_contract_reference.md metadata must match export_contract.json")
+        line_index += 1
+    for artifact in export_contract.get("supported_artifacts", []):
+        artifact_lines = [
+            f"### {artifact['artifact_type']}",
+            f"- artifact_path: {artifact['artifact_path']}",
+            f"- schema_version: {artifact['schema_version']}",
+            f"- contract_stability: {artifact['contract_stability']}",
+            f"- export_scope: {artifact['export_scope']}",
+        ]
+        if artifact.get("consumer_scopes"):
+            artifact_lines.append(f"- consumer_scopes: {', '.join(str(scope) for scope in artifact['consumer_scopes'])}")
+        artifact_lines.extend(["", "#### Exported Fields"])
+        artifact_lines.extend(f"- {field_name}" for field_name in artifact.get("export_fields", []))
+        artifact_lines.append("")
+        for expected_line in artifact_lines:
+            if line_index >= len(lines) or lines[line_index] != expected_line:
+                raise ValueError("export_contract_reference.md entries must match export_contract.json in order")
+            line_index += 1
+    if line_index != len(lines):
+        raise ValueError("export_contract_reference.md must not include extra content")
+
+
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
     review_index = _build_review_index(workspace["root"], section_ids)
@@ -4771,8 +4846,10 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     _assert_contract_aligns_with_manifest(artifact_manifest, consumer_contract)
     export_contract = _build_export_contract(consumer_contract)
     consumer_contract_reference = _build_consumer_contract_reference(consumer_contract)
+    export_contract_reference = _build_export_contract_reference(export_contract)
     _assert_export_contract_fully_converged(artifact_manifest, consumer_contract, consumer_contract_reference, export_contract)
     _assert_reference_aligns_with_contract(consumer_contract, consumer_contract_reference)
+    _assert_export_reference_matches_export_contract(export_contract, export_contract_reference)
     _write_json(workspace["reviews"] / "index.json", review_index)
     _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)
     _write_json(workspace["root"] / "lifecycle_trace.json", lifecycle_trace)
@@ -4782,6 +4859,7 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     _write_json(workspace["root"] / "consumer_contract.json", consumer_contract)
     _write_json(workspace["root"] / "export_contract.json", export_contract)
     (workspace["root"] / "consumer_contract_reference.md").write_text(consumer_contract_reference, encoding="utf-8")
+    (workspace["root"] / "export_contract_reference.md").write_text(export_contract_reference, encoding="utf-8")
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:

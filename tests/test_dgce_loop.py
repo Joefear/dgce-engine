@@ -4034,6 +4034,36 @@ def test_dgce_consumer_contract_reference_single_section_success(monkeypatch):
             assert f"- {field_name}\n" in reference
 
 
+def test_dgce_export_contract_reference_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_export_contract_reference_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    export_contract = json.loads((project_root / ".dce" / "export_contract.json").read_text(encoding="utf-8"))
+    reference = (project_root / ".dce" / "export_contract_reference.md").read_text(encoding="utf-8")
+
+    assert reference.startswith("# DGCE Export Contract Reference\n\n## Metadata\n")
+    assert "- schema_version: 1.0\n" in reference
+    assert "- generated_by: DGCE\n" in reference
+    assert "- artifact_type: export_contract\n" in reference
+    assert "- export_scope: internal\n" not in reference
+    for entry in export_contract["supported_artifacts"]:
+        assert f"### {entry['artifact_type']}\n" in reference
+        assert f"- artifact_path: {entry['artifact_path']}\n" in reference
+        assert f"- schema_version: {entry['schema_version']}\n" in reference
+        assert f"- contract_stability: {entry['contract_stability']}\n" in reference
+        assert "- export_scope: external\n" in reference
+        if entry.get("consumer_scopes"):
+            assert f"- consumer_scopes: {', '.join(entry['consumer_scopes'])}\n" in reference
+        for field_name in entry["export_fields"]:
+            assert f"- {field_name}\n" in reference
+
+
 def test_dgce_workspace_summary_is_sorted_when_multiple_outputs_exist(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _scaffold_dir("dgce_workspace_summary_sorted")
