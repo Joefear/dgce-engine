@@ -4432,6 +4432,40 @@ def _build_consumer_contract(
     return _with_artifact_metadata("consumer_contract", {"supported_artifacts": supported_artifacts})
 
 
+def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str:
+    lines = [
+        "# DGCE Consumer Contract Reference",
+        "",
+        "## Metadata",
+        f"- schema_version: {consumer_contract['schema_version']}",
+        f"- generated_by: {consumer_contract['generated_by']}",
+        "",
+        "## Supported Artifacts",
+        "",
+    ]
+    for artifact in consumer_contract.get("supported_artifacts", []):
+        lines.extend(
+            [
+                f"### {artifact['artifact_type']}",
+                f"- path: {artifact['artifact_path']}",
+                f"- schema_version: {artifact['schema_version']}",
+                f"- contract_stability: {artifact['contract_stability']}",
+            ]
+        )
+        consumer_scopes = artifact.get("consumer_scopes")
+        if consumer_scopes:
+            lines.append(f"- consumer_scopes: {', '.join(str(scope) for scope in consumer_scopes)}")
+        lines.extend(
+            [
+                "",
+                "#### Supported Fields",
+            ]
+        )
+        lines.extend(f"- {field_name}" for field_name in artifact.get("supported_fields", []))
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
     review_index = _build_review_index(workspace["root"], section_ids)
@@ -4448,6 +4482,7 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
         dashboard,
         artifact_manifest,
     )
+    consumer_contract_reference = _build_consumer_contract_reference(consumer_contract)
     _write_json(workspace["reviews"] / "index.json", review_index)
     _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)
     _write_json(workspace["root"] / "lifecycle_trace.json", lifecycle_trace)
@@ -4455,6 +4490,7 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     _write_json(workspace["root"] / "dashboard.json", dashboard)
     _write_json(workspace["root"] / "artifact_manifest.json", artifact_manifest)
     _write_json(workspace["root"] / "consumer_contract.json", consumer_contract)
+    (workspace["root"] / "consumer_contract_reference.md").write_text(consumer_contract_reference, encoding="utf-8")
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:

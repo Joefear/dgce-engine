@@ -423,6 +423,43 @@ def _consumer_contract_payload(project_root: Path) -> dict:
     return json.loads((project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"))
 
 
+def _expected_consumer_contract_reference(payload: dict) -> str:
+    lines = [
+        "# DGCE Consumer Contract Reference",
+        "",
+        "## Metadata",
+        f"- schema_version: {payload['schema_version']}",
+        f"- generated_by: {payload['generated_by']}",
+        "",
+        "## Supported Artifacts",
+        "",
+    ]
+    for artifact in payload["supported_artifacts"]:
+        lines.extend(
+            [
+                f"### {artifact['artifact_type']}",
+                f"- path: {artifact['artifact_path']}",
+                f"- schema_version: {artifact['schema_version']}",
+                f"- contract_stability: {artifact['contract_stability']}",
+            ]
+        )
+        if artifact.get("consumer_scopes"):
+            lines.append(f"- consumer_scopes: {', '.join(artifact['consumer_scopes'])}")
+        lines.extend(
+            [
+                "",
+                "#### Supported Fields",
+            ]
+        )
+        lines.extend(f"- {field_name}" for field_name in artifact["supported_fields"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _consumer_contract_reference_text(project_root: Path) -> str:
+    return (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8")
+
+
 def _assert_dashboard_links_resolve_to_manifest(project_root: Path) -> None:
     manifest_by_path = _artifact_manifest_by_path(project_root)
     dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
@@ -7613,6 +7650,42 @@ def test_consumer_contract_is_deterministic_for_repeated_governed_runs(monkeypat
     }
 
 
+def test_consumer_contract_reference_is_deterministic_and_derived_from_consumer_contract(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_consumer_contract_reference_repeat_a")
+    second_root = _workspace_dir("dgce_consumer_contract_reference_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+            execution_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    first_contract = _consumer_contract_payload(first_root)
+    first_reference = _consumer_contract_reference_text(first_root)
+    second_reference = _consumer_contract_reference_text(second_root)
+
+    assert first_reference == _expected_consumer_contract_reference(first_contract)
+    assert first_reference == second_reference
+    assert _consumer_contract_reference_text(first_root) == (second_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8")
+
+
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_refresh_efficiency")
@@ -7647,6 +7720,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
         "artifact_manifest": (project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"),
         "consumer_contract": (project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"),
+        "consumer_contract_reference": (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8"),
     }
 
     call_counts = {
@@ -7656,6 +7730,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": 0,
         "artifact_manifest": 0,
         "consumer_contract": 0,
+        "consumer_contract_reference": 0,
     }
     original_build_review_index = dgce_decompose._build_review_index
     original_build_lifecycle_trace = dgce_decompose._build_lifecycle_trace
@@ -7663,6 +7738,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
     original_build_dashboard_view = dgce_decompose._build_dashboard_view
     original_build_artifact_manifest = dgce_decompose._build_artifact_manifest
     original_build_consumer_contract = dgce_decompose._build_consumer_contract
+    original_build_consumer_contract_reference = dgce_decompose._build_consumer_contract_reference
 
     def counting_build_review_index(*args, **kwargs):
         call_counts["review_index"] += 1
@@ -7688,12 +7764,17 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         call_counts["consumer_contract"] += 1
         return original_build_consumer_contract(*args, **kwargs)
 
+    def counting_build_consumer_contract_reference(*args, **kwargs):
+        call_counts["consumer_contract_reference"] += 1
+        return original_build_consumer_contract_reference(*args, **kwargs)
+
     monkeypatch.setattr(dgce_decompose, "_build_review_index", counting_build_review_index)
     monkeypatch.setattr(dgce_decompose, "_build_lifecycle_trace", counting_build_lifecycle_trace)
     monkeypatch.setattr(dgce_decompose, "_build_workspace_index", counting_build_workspace_index)
     monkeypatch.setattr(dgce_decompose, "_build_dashboard_view", counting_build_dashboard_view)
     monkeypatch.setattr(dgce_decompose, "_build_artifact_manifest", counting_build_artifact_manifest)
     monkeypatch.setattr(dgce_decompose, "_build_consumer_contract", counting_build_consumer_contract)
+    monkeypatch.setattr(dgce_decompose, "_build_consumer_contract_reference", counting_build_consumer_contract_reference)
 
     dgce_decompose._refresh_workspace_views(dgce_decompose._ensure_workspace(project_root))
 
@@ -7704,6 +7785,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": 1,
         "artifact_manifest": 1,
         "consumer_contract": 1,
+        "consumer_contract_reference": 1,
     }
     assert before_refresh == {
         "review_index": (project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"),
@@ -7713,6 +7795,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
         "artifact_manifest": (project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"),
         "consumer_contract": (project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"),
+        "consumer_contract_reference": (project_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8"),
     }
 
 
