@@ -3494,6 +3494,7 @@ def test_dgce_workspace_summary_single_section_success(monkeypatch):
     payload = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
 
     assert payload == {
+        **_expected_artifact_metadata("workspace_summary"),
         "total_sections_seen": 1,
         "sections": [
             {

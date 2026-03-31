@@ -1360,6 +1360,64 @@ def _validate_lifecycle_trace_schema(payload: Any) -> None:
                 _expect_optional_str(_expect_required_field(link_entry, "ref_path", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].linkage[{link_index}].ref_path")
 
 
+def _validate_workspace_summary_schema(payload: Any) -> None:
+    artifact_name = "workspace_summary.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "workspace_summary")
+    _expect_int(_expect_required_field(artifact, "total_sections_seen", artifact_name), artifact_name, "total_sections_seen")
+    sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
+    for index, section in enumerate(sections):
+        entry = _expect_dict(section, artifact_name, f"sections[{index}]")
+        _expect_str(_expect_required_field(entry, "section_id", artifact_name), artifact_name, f"sections[{index}].section_id")
+        for key in (
+            "latest_run_mode",
+            "latest_run_outcome_class",
+            "latest_status",
+            "latest_advisory_type",
+            "preview_path",
+            "review_path",
+            "preview_outcome_class",
+            "recommended_mode",
+            "approval_path",
+            "approval_status",
+            "selected_mode",
+            "preflight_path",
+            "preflight_status",
+            "stale_check_path",
+            "stale_status",
+            "execution_gate_path",
+            "gate_status",
+            "alignment_path",
+            "alignment_status",
+            "execution_path",
+            "execution_status",
+            "approval_status_after",
+            "decision_source",
+            "review_status",
+            "latest_decision",
+            "latest_decision_source",
+            "latest_stage",
+            "latest_stage_status",
+        ):
+            _expect_optional_str(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        for key in (
+            "latest_validation_ok",
+            "execution_permitted",
+            "stale_detected",
+            "execution_allowed",
+            "execution_blocked",
+            "alignment_blocked",
+            "approval_consumed",
+        ):
+            _expect_optional_bool(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        for key in ("latest_written_files_count", "latest_skipped_modify_count", "latest_skipped_ignore_count"):
+            _expect_int(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        advisory_explanation = _expect_required_field(entry, "latest_advisory_explanation", artifact_name)
+        if advisory_explanation is not None:
+            _expect_list(advisory_explanation, artifact_name, f"sections[{index}].latest_advisory_explanation")
+        _validate_section_summary_schema(_expect_required_field(entry, "section_summary", artifact_name), artifact_name, f"sections[{index}].section_summary")
+
+
 def _validate_workspace_index_schema(payload: Any) -> None:
     artifact_name = "workspace_index.json"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
@@ -1568,6 +1626,8 @@ def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
         _validate_review_index_schema(payload)
     elif _artifact_path_matches(path, (".dce", "lifecycle_trace.json")):
         _validate_lifecycle_trace_schema(payload)
+    elif _artifact_path_matches(path, (".dce", "workspace_summary.json")):
+        _validate_workspace_summary_schema(payload)
     elif _artifact_path_matches(path, (".dce", "workspace_index.json")):
         _validate_workspace_index_schema(payload)
     elif _artifact_path_matches(path, (".dce", "dashboard.json")):
@@ -3651,10 +3711,13 @@ def _build_workspace_summary(
         )
 
     sections = sorted(sections, key=lambda entry: str(entry["section_id"]))
-    return {
+    return _with_artifact_metadata(
+        "workspace_summary",
+        {
         "total_sections_seen": len(sections),
         "sections": sections,
-    }
+        },
+    )
 
 
 def _build_lifecycle_trace(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:

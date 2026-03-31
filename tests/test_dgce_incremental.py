@@ -1073,6 +1073,7 @@ def test_run_section_with_workspace_write_stage_only_writes_create_targets(monke
         "skipped_ignore_count": 0,
     }
     assert workspace_summary == {
+        **_expected_artifact_metadata("workspace_summary"),
         "total_sections_seen": 1,
         "sections": [
             {
@@ -1909,6 +1910,7 @@ def test_run_section_with_workspace_skips_ignore_paths_without_collision(monkeyp
     )
     assert result.write_transparency["write_summary"]["skipped_exists_fallback_count"] == 0
     assert workspace_summary == {
+        **_expected_artifact_metadata("workspace_summary"),
         "total_sections_seen": 1,
         "sections": [
                 {
@@ -2325,6 +2327,7 @@ def test_run_section_with_workspace_reports_success_when_repair_normalizes_valid
         "skipped_ignore_count": 0,
     }
     assert workspace_summary == {
+        **_expected_artifact_metadata("workspace_summary"),
         "total_sections_seen": 1,
         "sections": [
             {
@@ -4100,6 +4103,7 @@ def test_record_section_approval_writes_artifact_and_updates_linkage(monkeypatch
         {"link_role": "outputs", "path": None},
     ]
     assert workspace_summary == {
+        **_expected_artifact_metadata("workspace_summary"),
         "total_sections_seen": 1,
         "sections": [
             {
@@ -7280,6 +7284,7 @@ def test_locked_artifact_schemas_accept_current_dgce_artifacts(monkeypatch):
 
     for path in (
         project_root / ".dce" / "reviews" / "index.json",
+        project_root / ".dce" / "workspace_summary.json",
         project_root / ".dce" / "lifecycle_trace.json",
         project_root / ".dce" / "workspace_index.json",
         project_root / ".dce" / "dashboard.json",
@@ -7317,6 +7322,7 @@ def test_locked_artifact_schemas_reject_missing_required_fields(monkeypatch):
 
     artifact_cases = [
         (project_root / ".dce" / "reviews" / "index.json", ("sections", 0, "review_approval_summary")),
+        (project_root / ".dce" / "workspace_summary.json", ("sections", 0, "section_summary")),
         (project_root / ".dce" / "lifecycle_trace.json", ("sections", 0, "trace_summary")),
         (project_root / ".dce" / "workspace_index.json", ("sections", 0, "section_summary")),
         (project_root / ".dce" / "dashboard.json", ("sections", 0, "progress")),
@@ -7337,6 +7343,7 @@ def test_locked_artifact_schemas_reject_missing_required_fields(monkeypatch):
 def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_paths(monkeypatch):
     calls = {
         "review_index": 0,
+        "workspace_summary": 0,
         "lifecycle_trace": 0,
         "workspace_index": 0,
         "dashboard": 0,
@@ -7345,6 +7352,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
     }
 
     monkeypatch.setattr(dgce_decompose, "_validate_review_index_schema", lambda payload: calls.__setitem__("review_index", calls["review_index"] + 1))
+    monkeypatch.setattr(dgce_decompose, "_validate_workspace_summary_schema", lambda payload: calls.__setitem__("workspace_summary", calls["workspace_summary"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_lifecycle_trace_schema", lambda payload: calls.__setitem__("lifecycle_trace", calls["lifecycle_trace"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_workspace_index_schema", lambda payload: calls.__setitem__("workspace_index", calls["workspace_index"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_dashboard_schema", lambda payload: calls.__setitem__("dashboard", calls["dashboard"] + 1))
@@ -7354,6 +7362,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
     payload = {}
     valid_paths = [
         (Path("workspace/.dce/reviews/index.json"), "review_index"),
+        (Path("workspace/.dce/workspace_summary.json"), "workspace_summary"),
         (Path("workspace/.dce/lifecycle_trace.json"), "lifecycle_trace"),
         (Path("workspace/.dce/workspace_index.json"), "workspace_index"),
         (Path("workspace/.dce/dashboard.json"), "dashboard"),
