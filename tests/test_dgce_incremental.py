@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import aether.dgce.decompose as dgce_decompose
 from aether.dgce import DGCESection, FilePlan, SectionAlignmentInput, SectionApprovalInput, SectionExecutionGateInput, SectionExecutionStampInput, SectionPreflightInput, SectionStaleCheckInput, compute_artifact_fingerprint, compute_json_payload_fingerprint, record_section_alignment, record_section_approval, record_section_execution_gate, record_section_execution_stamp, record_section_preflight, record_section_stale_check, run_dgce_section, run_section_with_workspace
 from aether.dgce.decompose import ResponseEnvelope, _build_run_outcome_class, _validate_write_stage_structured_content, compute_preview_payload_fingerprint
 from aether.dgce.incremental import (
@@ -7150,6 +7151,89 @@ def test_dashboard_artifact_is_deterministic_for_repeated_governed_runs(monkeypa
             "stage_status_counts": [{"section_count": 1, "value": "success_create_only"}],
             "total_sections": 1,
         },
+    }
+
+
+def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_refresh_efficiency")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section_named("Mission Board"), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    run_section_with_workspace(
+        _section_named("Mission Board"),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    run_section_with_workspace(_section_named("Alpha Section"), project_root, incremental_mode="incremental_v2")
+
+    before_refresh = {
+        "review_index": (project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"),
+        "workspace_summary": (project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"),
+        "lifecycle_trace": (project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"),
+        "workspace_index": (project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"),
+        "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
+    }
+
+    call_counts = {
+        "review_index": 0,
+        "lifecycle_trace": 0,
+        "workspace_index": 0,
+        "dashboard": 0,
+    }
+    original_build_review_index = dgce_decompose._build_review_index
+    original_build_lifecycle_trace = dgce_decompose._build_lifecycle_trace
+    original_build_workspace_index = dgce_decompose._build_workspace_index
+    original_build_dashboard_view = dgce_decompose._build_dashboard_view
+
+    def counting_build_review_index(*args, **kwargs):
+        call_counts["review_index"] += 1
+        return original_build_review_index(*args, **kwargs)
+
+    def counting_build_lifecycle_trace(*args, **kwargs):
+        call_counts["lifecycle_trace"] += 1
+        return original_build_lifecycle_trace(*args, **kwargs)
+
+    def counting_build_workspace_index(*args, **kwargs):
+        call_counts["workspace_index"] += 1
+        return original_build_workspace_index(*args, **kwargs)
+
+    def counting_build_dashboard_view(*args, **kwargs):
+        call_counts["dashboard"] += 1
+        return original_build_dashboard_view(*args, **kwargs)
+
+    monkeypatch.setattr(dgce_decompose, "_build_review_index", counting_build_review_index)
+    monkeypatch.setattr(dgce_decompose, "_build_lifecycle_trace", counting_build_lifecycle_trace)
+    monkeypatch.setattr(dgce_decompose, "_build_workspace_index", counting_build_workspace_index)
+    monkeypatch.setattr(dgce_decompose, "_build_dashboard_view", counting_build_dashboard_view)
+
+    dgce_decompose._refresh_workspace_views(dgce_decompose._ensure_workspace(project_root))
+
+    assert call_counts == {
+        "review_index": 1,
+        "lifecycle_trace": 1,
+        "workspace_index": 1,
+        "dashboard": 1,
+    }
+    assert before_refresh == {
+        "review_index": (project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"),
+        "workspace_summary": (project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"),
+        "lifecycle_trace": (project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"),
+        "workspace_index": (project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"),
+        "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
     }
 
 

@@ -3160,9 +3160,14 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
     }
 
 
-def _build_workspace_summary(workspace_root: Path, section_ids: List[str]) -> dict:
+def _build_workspace_summary(
+    workspace_root: Path,
+    section_ids: List[str],
+    review_index: dict[str, Any] | None = None,
+) -> dict:
     """Build a deterministic workspace summary from persisted .dce artifacts."""
-    review_index = _build_review_index(workspace_root, section_ids)
+    if review_index is None:
+        review_index = _build_review_index(workspace_root, section_ids)
     review_sections = {
         str(entry.get("section_id")): dict(entry)
         for entry in review_index.get("sections", [])
@@ -3308,9 +3313,16 @@ def _build_section_lifecycle_trace_summary(section_summary: dict[str, Any], trac
     }
 
 
-def _build_workspace_index(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:
-    workspace_summary = _build_workspace_summary(workspace_root, section_ids)
-    lifecycle_trace = _build_lifecycle_trace(workspace_root, section_ids)
+def _build_workspace_index(
+    workspace_root: Path,
+    section_ids: List[str],
+    workspace_summary: dict[str, Any] | None = None,
+    lifecycle_trace: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if workspace_summary is None:
+        workspace_summary = _build_workspace_summary(workspace_root, section_ids)
+    if lifecycle_trace is None:
+        lifecycle_trace = _build_lifecycle_trace(workspace_root, section_ids)
     trace_sections = {
         str(entry.get("section_id")): dict(entry)
         for entry in lifecycle_trace.get("sections", [])
@@ -3420,10 +3432,19 @@ def _count_summary_values(
     return [{"section_count": counts[value], "value": value} for value in ordered_values]
 
 
-def _build_dashboard_view(workspace_root: Path, section_ids: List[str]) -> dict[str, Any]:
-    review_index = _build_review_index(workspace_root, section_ids)
-    lifecycle_trace = _build_lifecycle_trace(workspace_root, section_ids)
-    workspace_index = _build_workspace_index(workspace_root, section_ids)
+def _build_dashboard_view(
+    workspace_root: Path,
+    section_ids: List[str],
+    review_index: dict[str, Any] | None = None,
+    lifecycle_trace: dict[str, Any] | None = None,
+    workspace_index: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if review_index is None:
+        review_index = _build_review_index(workspace_root, section_ids)
+    if lifecycle_trace is None:
+        lifecycle_trace = _build_lifecycle_trace(workspace_root, section_ids)
+    if workspace_index is None:
+        workspace_index = _build_workspace_index(workspace_root, section_ids)
     review_sections = {
         str(entry.get("section_id")): dict(entry)
         for entry in review_index.get("sections", [])
@@ -3505,11 +3526,16 @@ def _build_dashboard_view(workspace_root: Path, section_ids: List[str]) -> dict[
 
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
-    _write_json(workspace["reviews"] / "index.json", _build_review_index(workspace["root"], section_ids))
-    _write_json(workspace["root"] / "workspace_summary.json", _build_workspace_summary(workspace["root"], section_ids))
-    _write_json(workspace["root"] / "lifecycle_trace.json", _build_lifecycle_trace(workspace["root"], section_ids))
-    _write_json(workspace["root"] / "workspace_index.json", _build_workspace_index(workspace["root"], section_ids))
-    _write_json(workspace["root"] / "dashboard.json", _build_dashboard_view(workspace["root"], section_ids))
+    review_index = _build_review_index(workspace["root"], section_ids)
+    workspace_summary = _build_workspace_summary(workspace["root"], section_ids, review_index)
+    lifecycle_trace = _build_lifecycle_trace(workspace["root"], section_ids)
+    workspace_index = _build_workspace_index(workspace["root"], section_ids, workspace_summary, lifecycle_trace)
+    dashboard = _build_dashboard_view(workspace["root"], section_ids, review_index, lifecycle_trace, workspace_index)
+    _write_json(workspace["reviews"] / "index.json", review_index)
+    _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)
+    _write_json(workspace["root"] / "lifecycle_trace.json", lifecycle_trace)
+    _write_json(workspace["root"] / "workspace_index.json", workspace_index)
+    _write_json(workspace["root"] / "dashboard.json", dashboard)
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:
