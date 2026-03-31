@@ -752,15 +752,15 @@ def run_section_with_workspace(
     ownership_index = _merge_ownership_index(existing_ownership_index, section_id, write_transparency)
     _write_json(
         outputs_path,
-        {
-            "section_id": section_id,
-            "run_mode": run_mode,
-            "run_outcome_class": run_outcome_class,
-            "file_plan": file_plan.model_dump(),
-            "execution_outcome": execution_outcome,
-            "advisory": advisory,
-            "write_transparency": write_transparency,
-        },
+        _build_output_artifact_payload(
+            section_id=section_id,
+            run_mode=run_mode,
+            run_outcome_class=run_outcome_class,
+            file_plan=file_plan,
+            execution_outcome=execution_outcome,
+            advisory=advisory,
+            write_transparency=write_transparency,
+        ),
     )
     _write_json(
         advisory_index_path,
@@ -1488,6 +1488,168 @@ def _build_advisory_index_entry(
         "skipped_modify_count": execution.get("skipped_modify_count", 0),
         "skipped_ignore_count": execution.get("skipped_ignore_count", 0),
     }
+
+
+def _build_output_artifact_payload(
+    *,
+    section_id: str,
+    run_mode: str,
+    run_outcome_class: str,
+    file_plan: FilePlan,
+    execution_outcome: dict,
+    advisory: Optional[dict],
+    write_transparency: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the persisted output artifact payload for one DGCE run."""
+    generated_artifacts = _build_generated_artifact_records(
+        section_id=section_id,
+        file_plan=file_plan,
+        write_transparency=write_transparency,
+    )
+    return {
+        "section_id": section_id,
+        "run_mode": run_mode,
+        "run_outcome_class": run_outcome_class,
+        "file_plan": file_plan.model_dump(),
+        "execution_outcome": execution_outcome,
+        "advisory": advisory,
+        "write_transparency": write_transparency,
+        "generated_artifacts": generated_artifacts,
+        "output_summary": _build_output_summary(
+            section_id=section_id,
+            run_outcome_class=run_outcome_class,
+            execution_outcome=execution_outcome,
+            generated_artifacts=generated_artifacts,
+        ),
+    }
+
+
+def _build_generated_artifact_records(
+    *,
+    section_id: str,
+    file_plan: FilePlan,
+    write_transparency: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build deterministic output-artifact records from the file plan plus finalized write decisions."""
+    decisions_by_path: dict[str, dict[str, Any]] = {}
+    for decision in write_transparency.get("write_decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        path = str(decision.get("path", "")).strip()
+        if not path:
+            continue
+        decisions_by_path[path] = dict(decision)
+
+    artifacts: list[dict[str, Any]] = []
+    for file_entry in file_plan.files:
+        normalized_path = Path(str(file_entry["path"])).as_posix()
+        decision = decisions_by_path.get(
+            normalized_path,
+            {"decision": "skipped", "reason": "unplanned"},
+        )
+        artifacts.append(
+            {
+                "artifact_id": f"{section_id}:{normalized_path}",
+                "artifact_kind": _output_artifact_kind(file_entry),
+                "bytes_written": int(decision.get("bytes_written", 0)),
+                "implementation_unit": _output_artifact_implementation_unit(file_entry),
+                "path": normalized_path,
+                "producer_ref": _output_artifact_producer_ref(file_entry),
+                "purpose": str(file_entry.get("purpose", "")),
+                "source": str(file_entry.get("source", "")),
+                "write_decision": str(decision.get("decision", "skipped")),
+                "write_reason": str(decision.get("reason", "unplanned")),
+            }
+        )
+
+    return sorted(
+        artifacts,
+        key=lambda item: (
+            str(item["path"]),
+            str(item["source"]),
+            str(item["implementation_unit"]),
+        ),
+    )
+
+
+def _build_output_summary(
+    *,
+    section_id: str,
+    run_outcome_class: str,
+    execution_outcome: dict[str, Any],
+    generated_artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the compact deterministic output summary for one DGCE run."""
+    written_artifacts = [artifact for artifact in generated_artifacts if artifact["write_decision"] == "written"]
+    return {
+        "artifact_count": len(generated_artifacts),
+        "execution_status": execution_outcome.get("status"),
+        "execution_summary": execution_outcome.get("execution_summary", {}),
+        "primary_artifact_path": (
+            str(written_artifacts[0]["path"])
+            if written_artifacts
+            else str(generated_artifacts[0]["path"])
+            if generated_artifacts
+            else None
+        ),
+        "run_outcome_class": run_outcome_class,
+        "section_id": section_id,
+        "sources": sorted({str(artifact["source"]) for artifact in generated_artifacts}),
+        "written_artifact_count": len(written_artifacts),
+    }
+
+
+def _output_artifact_kind(file_entry: dict[str, Any]) -> str:
+    """Return the deterministic artifact kind for one generated file."""
+    normalized_path = Path(str(file_entry.get("path", ""))).as_posix()
+    if normalized_path.endswith("/service.py"):
+        return "service"
+    if normalized_path.endswith("/models.py"):
+        return "models"
+    if normalized_path.startswith("api/"):
+        return "api"
+    if normalized_path.startswith("models/"):
+        return "data_model"
+    return "file"
+
+
+def _output_artifact_producer_ref(file_entry: dict[str, Any]) -> str:
+    """Return the stable producer reference for one generated artifact record."""
+    if isinstance(file_entry.get("module_contract"), dict):
+        return str(file_entry["module_contract"].get("name", ""))
+    if isinstance(file_entry.get("entity_schema"), dict):
+        return str(file_entry["entity_schema"].get("name", ""))
+    if isinstance(file_entry.get("interface_schema"), dict):
+        return str(file_entry["interface_schema"].get("name", ""))
+    path = Path(str(file_entry.get("path", "")))
+    if str(file_entry.get("source", "")) == "system_breakdown" and path.parent.as_posix() not in {"", "."}:
+        return path.parent.name
+    return path.stem
+
+
+def _output_artifact_implementation_unit(file_entry: dict[str, Any]) -> str:
+    """Return the stable implementation-unit reference for one generated artifact record."""
+    if isinstance(file_entry.get("file_group"), dict):
+        group_name = str(file_entry["file_group"].get("name", "")).strip()
+        if group_name:
+            return f"implement_{group_name}"
+    producer_ref = _output_artifact_token(_output_artifact_producer_ref(file_entry))
+    source = str(file_entry.get("source", "")).strip()
+    if source == "data_model":
+        return f"generate_{producer_ref}_model"
+    if source == "api_surface":
+        return f"generate_{producer_ref}_api"
+    if source == "expected_targets":
+        return f"materialize_{producer_ref}"
+    return f"implement_{producer_ref or 'artifact'}"
+
+
+def _output_artifact_token(value: str) -> str:
+    """Return the stable underscore-normalized token for output artifact metadata."""
+    cleaned = "".join(char.lower() if char.isalnum() else "_" for char in value)
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "artifact"
 
 
 def _execution_permitted(approval_status: str, selected_mode: str) -> bool:

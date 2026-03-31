@@ -2881,6 +2881,62 @@ def test_run_section_with_workspace_persists_file_plan_metadata(monkeypatch):
     )
 
 
+def test_run_section_with_workspace_persists_deterministic_output_artifact_records(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _scaffold_dir("dgce_workspace_output_artifact_records_first")
+    second_root = _scaffold_dir("dgce_workspace_output_artifact_records_second")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    first_result = run_section_with_workspace(_section(), first_root)
+    second_result = run_section_with_workspace(_section(), second_root)
+    section_id = preflight_section(_section())["section_id"]
+    first_payload = json.loads((first_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8"))
+    second_payload = json.loads((second_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8"))
+
+    assert first_result.execution_outcome == second_result.execution_outcome
+    assert first_payload == second_payload
+    assert [artifact["path"] for artifact in first_payload["generated_artifacts"]] == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+    assert [artifact["artifact_id"] for artifact in first_payload["generated_artifacts"]] == [
+        "mission-board:api/missionboardservice.py",
+        "mission-board:mission_board/models.py",
+        "mission-board:mission_board/service.py",
+        "mission-board:models/mission.py",
+    ]
+    assert [artifact["implementation_unit"] for artifact in first_payload["generated_artifacts"]] == [
+        "generate_missionboardservice_api",
+        "implement_mission_board",
+        "implement_mission_board",
+        "generate_mission_model",
+    ]
+    assert all(artifact["write_decision"] == "written" for artifact in first_payload["generated_artifacts"])
+    assert first_payload["output_summary"] == {
+        "artifact_count": 4,
+        "execution_status": "success",
+        "execution_summary": {
+            "skipped_exists_fallback_count": 0,
+            "skipped_identical_count": 0,
+            "skipped_ignore_count": 0,
+            "skipped_modify_count": 0,
+            "skipped_ownership_count": 0,
+            "written_files_count": 4,
+        },
+        "primary_artifact_path": "api/missionboardservice.py",
+        "run_outcome_class": "success_create_only",
+        "section_id": "mission-board",
+        "sources": ["api_surface", "data_model", "system_breakdown"],
+        "written_artifact_count": 4,
+    }
+
+
 def test_run_section_with_workspace_uses_expected_targets_when_file_plan_is_empty(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _scaffold_dir("dgce_workspace_expected_targets_fallback")
@@ -3141,12 +3197,24 @@ def test_dgce_outputs_artifact_contract_shape(monkeypatch):
         (project_root / ".dce" / "outputs" / f"{section_id}.json").read_text(encoding="utf-8")
     )
 
-    assert sorted(payload.keys()) == ["advisory", "execution_outcome", "file_plan", "run_mode", "run_outcome_class", "section_id", "write_transparency"]
+    assert sorted(payload.keys()) == [
+        "advisory",
+        "execution_outcome",
+        "file_plan",
+        "generated_artifacts",
+        "output_summary",
+        "run_mode",
+        "run_outcome_class",
+        "section_id",
+        "write_transparency",
+    ]
     assert payload["section_id"] == section_id
     assert payload["run_mode"] in {"create_only", "safe_modify"}
     assert isinstance(payload["run_outcome_class"], str)
     assert isinstance(payload["file_plan"], dict)
     assert isinstance(payload["execution_outcome"], dict)
+    assert isinstance(payload["generated_artifacts"], list)
+    assert isinstance(payload["output_summary"], dict)
     assert payload["advisory"] is None or isinstance(payload["advisory"], dict)
     assert isinstance(payload["write_transparency"], dict)
 
@@ -3198,6 +3266,52 @@ def test_dgce_outputs_artifact_contract_shape(monkeypatch):
         "written_files_count",
     ]
     assert all(isinstance(execution_summary[key], int) for key in execution_summary)
+
+    generated_artifacts = payload["generated_artifacts"]
+    if generated_artifacts:
+        first_artifact = generated_artifacts[0]
+        assert sorted(first_artifact.keys()) == [
+            "artifact_id",
+            "artifact_kind",
+            "bytes_written",
+            "implementation_unit",
+            "path",
+            "producer_ref",
+            "purpose",
+            "source",
+            "write_decision",
+            "write_reason",
+        ]
+        assert isinstance(first_artifact["artifact_id"], str)
+        assert isinstance(first_artifact["artifact_kind"], str)
+        assert isinstance(first_artifact["bytes_written"], int)
+        assert isinstance(first_artifact["implementation_unit"], str)
+        assert isinstance(first_artifact["path"], str)
+        assert isinstance(first_artifact["producer_ref"], str)
+        assert isinstance(first_artifact["purpose"], str)
+        assert isinstance(first_artifact["source"], str)
+        assert isinstance(first_artifact["write_decision"], str)
+        assert isinstance(first_artifact["write_reason"], str)
+
+    output_summary = payload["output_summary"]
+    assert sorted(output_summary.keys()) == [
+        "artifact_count",
+        "execution_status",
+        "execution_summary",
+        "primary_artifact_path",
+        "run_outcome_class",
+        "section_id",
+        "sources",
+        "written_artifact_count",
+    ]
+    assert isinstance(output_summary["artifact_count"], int)
+    assert isinstance(output_summary["execution_status"], str)
+    assert isinstance(output_summary["execution_summary"], dict)
+    assert output_summary["primary_artifact_path"] is None or isinstance(output_summary["primary_artifact_path"], str)
+    assert isinstance(output_summary["run_outcome_class"], str)
+    assert isinstance(output_summary["section_id"], str)
+    assert isinstance(output_summary["sources"], list)
+    assert isinstance(output_summary["written_artifact_count"], int)
 
     write_transparency = payload["write_transparency"]
     assert sorted(write_transparency.keys()) == ["write_decisions", "write_summary"]
