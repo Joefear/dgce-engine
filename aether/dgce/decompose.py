@@ -1747,13 +1747,56 @@ def _build_preflight_artifact(
         execution_allowed = True
         preflight_reason = "approved_and_linked"
 
+    checked_artifacts = [
+        {
+            "artifact_role": "approval",
+            "artifact_path": approval_path_str,
+            "present": approval_path.exists(),
+        },
+        {
+            "artifact_role": "preview",
+            "artifact_path": preview_path_str,
+            "present": preview_path.exists(),
+        },
+        {
+            "artifact_role": "review",
+            "artifact_path": review_path_str,
+            "present": review_path.exists(),
+        },
+    ]
+    checks = _build_preflight_checks(
+        approval_exists=approval_path.exists(),
+        preview_exists=preview_path.exists(),
+        review_exists=review_path.exists(),
+        approval_path=approval_path_str,
+        preview_path=preview_path_str,
+        review_path=review_path_str,
+        approval_payload=approval_payload,
+        approval_status=approval_status,
+        execution_permitted=execution_permitted,
+    )
+    findings = _build_preflight_findings(section_id, checks)
+    readiness_decision = "ready" if execution_allowed else "blocked"
+    readiness_summary = _build_preflight_readiness_summary(
+        checked_artifacts=checked_artifacts,
+        checks=checks,
+        findings=findings,
+        readiness_decision=readiness_decision,
+        readiness_reason=preflight_reason,
+    )
+
     return {
         "section_id": section_id,
         "preflight_status": preflight_status,
+        "readiness_decision": readiness_decision,
         "execution_allowed": execution_allowed,
         "approval_path": approval_path_str,
         "preview_path": preview_path_str,
         "review_path": review_path_str,
+        "checked_artifacts": checked_artifacts,
+        "checks": checks,
+        "findings": findings,
+        "readiness_summary": readiness_summary,
         "selected_mode": selected_mode,
         "approval_status": approval_status,
         "execution_permitted": execution_permitted,
@@ -1761,6 +1804,230 @@ def _build_preflight_artifact(
         "recommended_mode": recommended_mode,
         "preflight_reason": preflight_reason,
         "validation_timestamp": str(preflight_input.validation_timestamp),
+    }
+
+
+def _build_preflight_checks(
+    *,
+    approval_exists: bool,
+    preview_exists: bool,
+    review_exists: bool,
+    approval_path: str | None,
+    preview_path: str | None,
+    review_path: str | None,
+    approval_payload: dict[str, Any],
+    approval_status: Any,
+    execution_permitted: Any,
+) -> list[dict[str, Any]]:
+    approval_preview_matches = approval_exists and preview_exists and approval_payload.get("preview_path") == preview_path
+    approval_review_matches = approval_exists and review_exists and approval_payload.get("review_path") == review_path
+    approval_status_allows_execution = approval_status == "approved"
+    execution_permission_granted = approval_status_allows_execution and execution_permitted is True
+    return [
+        _preflight_check_entry(
+            check_id="approval_artifact_present",
+            category="approval",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result="passed" if approval_exists else "failed",
+            issue_code=None if approval_exists else "missing_approval",
+            detail="approval artifact present" if approval_exists else "approval artifact missing",
+        ),
+        _preflight_check_entry(
+            check_id="preview_artifact_present",
+            category="preview",
+            checked_artifact_role="preview",
+            checked_artifact_path=preview_path,
+            result="passed" if preview_exists else "failed",
+            issue_code=None if preview_exists else "missing_preview",
+            detail="preview artifact present" if preview_exists else "preview artifact missing",
+        ),
+        _preflight_check_entry(
+            check_id="review_artifact_present",
+            category="review",
+            checked_artifact_role="review",
+            checked_artifact_path=review_path,
+            result="passed" if review_exists else "failed",
+            issue_code=None if review_exists else "missing_review",
+            detail="review artifact present" if review_exists else "review artifact missing",
+        ),
+        _preflight_check_entry(
+            check_id="approval_status_allows_execution",
+            category="approval",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result=(
+                "not_evaluated"
+                if not approval_exists
+                else "passed"
+                if approval_status_allows_execution
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not approval_exists or approval_status_allows_execution
+                else "approval_rejected"
+                if approval_status == "rejected"
+                else "approval_superseded"
+                if approval_status == "superseded"
+                else "approval_not_permitted"
+            ),
+            detail=(
+                "approval unavailable for state validation"
+                if not approval_exists
+                else "approval status allows execution"
+                if approval_status_allows_execution
+                else f"approval status blocks execution: {approval_status}"
+            ),
+        ),
+        _preflight_check_entry(
+            check_id="approval_preview_linkage_valid",
+            category="linkage",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result=(
+                "not_evaluated"
+                if not approval_exists or not preview_exists
+                else "passed"
+                if approval_preview_matches
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not approval_exists or not preview_exists or approval_preview_matches
+                else "approval_preview_path_mismatch"
+            ),
+            detail=(
+                "approval or preview unavailable for linkage validation"
+                if not approval_exists or not preview_exists
+                else "approval preview linkage valid"
+                if approval_preview_matches
+                else "approval preview linkage mismatch"
+            ),
+        ),
+        _preflight_check_entry(
+            check_id="approval_review_linkage_valid",
+            category="linkage",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result=(
+                "not_evaluated"
+                if not approval_exists or not review_exists
+                else "passed"
+                if approval_review_matches
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not approval_exists or not review_exists or approval_review_matches
+                else "approval_review_path_mismatch"
+            ),
+            detail=(
+                "approval or review unavailable for linkage validation"
+                if not approval_exists or not review_exists
+                else "approval review linkage valid"
+                if approval_review_matches
+                else "approval review linkage mismatch"
+            ),
+        ),
+        _preflight_check_entry(
+            check_id="execution_permission_granted",
+            category="execution_permission",
+            checked_artifact_role="approval",
+            checked_artifact_path=approval_path,
+            result=(
+                "not_evaluated"
+                if not approval_exists or not approval_status_allows_execution
+                else "passed"
+                if execution_permission_granted
+                else "failed"
+            ),
+            issue_code=(
+                None
+                if not approval_exists or not approval_status_allows_execution or execution_permission_granted
+                else "approval_not_permitted"
+            ),
+            detail=(
+                "approval unavailable for execution permission validation"
+                if not approval_exists
+                else "execution permission blocked by approval status"
+                if not approval_status_allows_execution
+                else "execution permission granted"
+                if execution_permission_granted
+                else "execution permission denied"
+            ),
+        ),
+    ]
+
+
+def _preflight_check_entry(
+    *,
+    check_id: str,
+    category: str,
+    checked_artifact_role: str,
+    checked_artifact_path: str | None,
+    result: str,
+    issue_code: str | None,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "check_id": check_id,
+        "category": category,
+        "checked_artifact_path": checked_artifact_path,
+        "checked_artifact_role": checked_artifact_role,
+        "detail": detail,
+        "issue_code": issue_code,
+        "result": result,
+    }
+
+
+def _build_preflight_findings(section_id: str, checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for index, check in enumerate(checks, start=1):
+        if check["result"] != "failed":
+            continue
+        findings.append(
+            {
+                "finding_id": f"{index:02d}_{check['check_id']}",
+                "category": str(check["category"]),
+                "severity": _preflight_issue_severity(check.get("issue_code")),
+                "checked_artifact_path": check["checked_artifact_path"],
+                "checked_artifact_role": check["checked_artifact_role"],
+                "issue_code": check["issue_code"],
+                "message": check["detail"],
+                "section_id": section_id,
+            }
+        )
+    return findings
+
+
+def _preflight_issue_severity(issue_code: Any) -> str:
+    if issue_code in {"missing_approval", "missing_preview", "missing_review"}:
+        return "critical"
+    return "error"
+
+
+def _build_preflight_readiness_summary(
+    *,
+    checked_artifacts: list[dict[str, Any]],
+    checks: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+    readiness_decision: str,
+    readiness_reason: str,
+) -> dict[str, Any]:
+    passed_check_count = sum(1 for check in checks if check["result"] == "passed")
+    failed_check_count = sum(1 for check in checks if check["result"] == "failed")
+    not_evaluated_check_count = sum(1 for check in checks if check["result"] == "not_evaluated")
+    return {
+        "checked_artifact_count": len(checked_artifacts),
+        "failed_check_count": failed_check_count,
+        "blocking_finding_count": len(findings),
+        "not_evaluated_check_count": not_evaluated_check_count,
+        "passed_check_count": passed_check_count,
+        "readiness_decision": readiness_decision,
+        "readiness_reason": readiness_reason,
+        "ready_for_gate": readiness_decision == "ready",
+        "total_check_count": len(checks),
     }
 
 

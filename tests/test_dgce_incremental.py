@@ -4885,6 +4885,190 @@ def test_record_section_preflight_is_deterministic_with_fixed_inputs(monkeypatch
         second_root / ".dce" / "workspace_summary.json"
     ).read_text(encoding="utf-8")
 
+    first_gate = record_section_execution_gate(
+        first_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=fixed_preflight,
+    )
+    second_gate = record_section_execution_gate(
+        second_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=fixed_preflight,
+    )
+
+    assert first_gate == second_gate
+    assert (first_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_record_section_preflight_emits_deterministic_structured_contract(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_preflight_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="create_only",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    preflight = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert sorted(preflight.keys()) == [
+        "approval_path",
+        "approval_status",
+        "artifact_fingerprint",
+        "checked_artifacts",
+        "checks",
+        "execution_allowed",
+        "execution_permitted",
+        "findings",
+        "preflight_reason",
+        "preflight_status",
+        "preview_outcome_class",
+        "preview_path",
+        "readiness_decision",
+        "readiness_summary",
+        "recommended_mode",
+        "review_path",
+        "section_id",
+        "selected_mode",
+        "validation_timestamp",
+    ]
+    assert [entry["artifact_role"] for entry in preflight["checked_artifacts"]] == ["approval", "preview", "review"]
+    assert [entry["present"] for entry in preflight["checked_artifacts"]] == [True, True, True]
+    assert [check["check_id"] for check in preflight["checks"]] == [
+        "approval_artifact_present",
+        "preview_artifact_present",
+        "review_artifact_present",
+        "approval_status_allows_execution",
+        "approval_preview_linkage_valid",
+        "approval_review_linkage_valid",
+        "execution_permission_granted",
+    ]
+    assert [check["result"] for check in preflight["checks"]] == [
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+    ]
+    assert all(
+        sorted(check.keys()) == [
+            "category",
+            "check_id",
+            "checked_artifact_path",
+            "checked_artifact_role",
+            "detail",
+            "issue_code",
+            "result",
+        ]
+        for check in preflight["checks"]
+    )
+    assert preflight["findings"] == []
+    assert preflight["readiness_decision"] == "ready"
+    assert preflight["readiness_summary"] == {
+        "checked_artifact_count": 3,
+        "failed_check_count": 0,
+        "blocking_finding_count": 0,
+        "not_evaluated_check_count": 0,
+        "passed_check_count": 7,
+        "readiness_decision": "ready",
+        "readiness_reason": "approved_and_linked",
+        "ready_for_gate": True,
+        "total_check_count": 7,
+    }
+
+
+def test_record_section_preflight_normalizes_failed_findings_and_gate_handoff(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_preflight_failed_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="review_required",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    preflight = record_section_preflight(
+        project_root,
+        "mission-board",
+        SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    gate = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert preflight["preflight_status"] == "preflight_execution_not_permitted"
+    assert preflight["readiness_decision"] == "blocked"
+    assert [check["result"] for check in preflight["checks"]] == [
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "failed",
+    ]
+    assert preflight["findings"] == [
+        {
+            "finding_id": "07_execution_permission_granted",
+            "category": "execution_permission",
+            "severity": "error",
+            "checked_artifact_path": ".dce/approvals/mission-board.approval.json",
+            "checked_artifact_role": "approval",
+            "issue_code": "approval_not_permitted",
+            "message": "execution permission denied",
+            "section_id": "mission-board",
+        }
+    ]
+    assert preflight["readiness_summary"] == {
+        "checked_artifact_count": 3,
+        "failed_check_count": 1,
+        "blocking_finding_count": 1,
+        "not_evaluated_check_count": 0,
+        "passed_check_count": 6,
+        "readiness_decision": "blocked",
+        "readiness_reason": "approval_not_permitted",
+        "ready_for_gate": False,
+        "total_check_count": 7,
+    }
+    assert gate["preflight_status"] == "preflight_execution_not_permitted"
+    assert gate["gate_status"] == "gate_blocked_preflight_failed"
+    assert gate["execution_blocked"] is True
+
 
 def test_record_section_stale_check_truth_table_and_linkage(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
