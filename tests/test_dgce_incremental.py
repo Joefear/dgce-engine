@@ -115,6 +115,14 @@ def _expected_section_summary(
     }
 
 
+def _expected_artifact_metadata(artifact_type: str):
+    return {
+        "artifact_type": artifact_type,
+        "generated_by": "DGCE",
+        "schema_version": "1.0",
+    }
+
+
 def _changed_lines_estimate(before_bytes: bytes, after_bytes: bytes) -> int:
     before_lines = before_bytes.decode("utf-8", errors="replace").splitlines()
     after_lines = after_bytes.decode("utf-8", errors="replace").splitlines()
@@ -6454,6 +6462,7 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "approval_status_after",
         "approval_status_before",
         "artifact_results",
+        "artifact_type",
         "created_written_count",
         "effective_execution_mode",
         "executed_units",
@@ -6463,6 +6472,7 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "execution_status",
         "execution_timestamp",
         "failed_units",
+        "generated_by",
         "governed_execution",
         "linked_artifacts",
         "modify_written_count",
@@ -6470,12 +6480,16 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "preflight_path",
         "require_preflight_pass",
         "run_outcome_class",
+        "schema_version",
         "section_id",
         "selected_mode",
         "skipped_units",
         "unit_results",
         "written_file_count",
     ]
+    assert execution_payload["artifact_type"] == "execution_record"
+    assert execution_payload["generated_by"] == "DGCE"
+    assert execution_payload["schema_version"] == "1.0"
     assert [entry["artifact_role"] for entry in execution_payload["linked_artifacts"]] == [
         "approval",
         "preflight",
@@ -7096,6 +7110,7 @@ def test_dashboard_artifact_is_deterministic_for_repeated_governed_runs(monkeypa
         second_root / ".dce" / "dashboard.json"
     ).read_text(encoding="utf-8")
     assert first_dashboard == {
+        **_expected_artifact_metadata("dashboard"),
         "artifact_paths": {
             "lifecycle_trace_path": ".dce/lifecycle_trace.json",
             "review_index_path": ".dce/reviews/index.json",

@@ -108,6 +108,14 @@ def _expected_section_summary(
     }
 
 
+def _expected_artifact_metadata(artifact_type: str):
+    return {
+        "artifact_type": artifact_type,
+        "generated_by": "DGCE",
+        "schema_version": "1.0",
+    }
+
+
 def _api_surface_section() -> DGCESection:
     return DGCESection(
         section_type="system_component",
@@ -3234,15 +3242,21 @@ def test_dgce_outputs_artifact_contract_shape(monkeypatch):
 
     assert sorted(payload.keys()) == [
         "advisory",
+        "artifact_type",
         "execution_outcome",
         "file_plan",
         "generated_artifacts",
+        "generated_by",
         "output_summary",
         "run_mode",
         "run_outcome_class",
+        "schema_version",
         "section_id",
         "write_transparency",
     ]
+    assert payload["artifact_type"] == "output_record"
+    assert payload["generated_by"] == "DGCE"
+    assert payload["schema_version"] == "1.0"
     assert payload["section_id"] == section_id
     assert payload["run_mode"] in {"create_only", "safe_modify"}
     assert isinstance(payload["run_outcome_class"], str)
@@ -3546,6 +3560,7 @@ def test_dgce_review_index_single_section_success(monkeypatch):
     payload = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
 
     assert payload == {
+        **_expected_artifact_metadata("review_index"),
         "section_order": ["mission-board"],
         "sections": [
             {
@@ -3695,6 +3710,7 @@ def test_dgce_workspace_index_single_section_success(monkeypatch):
     payload = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
 
     assert payload == {
+        **_expected_artifact_metadata("workspace_index"),
         "artifact_paths": {
             "lifecycle_trace_path": ".dce/lifecycle_trace.json",
             "review_index_path": ".dce/reviews/index.json",
@@ -3780,6 +3796,7 @@ def test_dgce_dashboard_single_section_success(monkeypatch):
     payload = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
 
     assert payload == {
+        **_expected_artifact_metadata("dashboard"),
         "artifact_paths": {
             "lifecycle_trace_path": ".dce/lifecycle_trace.json",
             "review_index_path": ".dce/reviews/index.json",

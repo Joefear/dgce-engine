@@ -152,6 +152,9 @@ DGCE_LIFECYCLE_ORDER = [
     "outputs",
 ]
 
+DGCE_ARTIFACT_SCHEMA_VERSION = "1.0"
+DGCE_ARTIFACT_GENERATED_BY = "DGCE"
+
 
 def decompose_section(section: DGCESection) -> List[ClassificationRequest]:
     """Convert one DGCE section into a small deterministic set of Aether requests."""
@@ -1186,6 +1189,15 @@ def _schema_error(artifact_name: str, message: str) -> None:
     raise ValueError(f"{artifact_name} schema validation failed: {message}")
 
 
+def _with_artifact_metadata(artifact_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "artifact_type": artifact_type,
+        "generated_by": DGCE_ARTIFACT_GENERATED_BY,
+        "schema_version": DGCE_ARTIFACT_SCHEMA_VERSION,
+        **payload,
+    }
+
+
 def _expect_dict(value: Any, artifact_name: str, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         _schema_error(artifact_name, f"{field_name} must be a dict")
@@ -1255,9 +1267,22 @@ def _validate_section_summary_schema(summary: Any, artifact_name: str, field_nam
         _expect_optional_str(_expect_required_field(summary_sources, source_key, artifact_name), artifact_name, f"{field_name}.summary_sources.{source_key}")
 
 
+def _validate_artifact_metadata(payload: dict[str, Any], artifact_name: str, artifact_type: str) -> None:
+    _expect_str(_expect_required_field(payload, "artifact_type", artifact_name), artifact_name, "artifact_type")
+    _expect_str(_expect_required_field(payload, "generated_by", artifact_name), artifact_name, "generated_by")
+    _expect_str(_expect_required_field(payload, "schema_version", artifact_name), artifact_name, "schema_version")
+    if payload["artifact_type"] != artifact_type:
+        _schema_error(artifact_name, f"artifact_type must be {artifact_type}")
+    if payload["generated_by"] != DGCE_ARTIFACT_GENERATED_BY:
+        _schema_error(artifact_name, f"generated_by must be {DGCE_ARTIFACT_GENERATED_BY}")
+    if payload["schema_version"] != DGCE_ARTIFACT_SCHEMA_VERSION:
+        _schema_error(artifact_name, f"schema_version must be {DGCE_ARTIFACT_SCHEMA_VERSION}")
+
+
 def _validate_review_index_schema(payload: Any) -> None:
     artifact_name = "reviews/index.json"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "review_index")
     _expect_str_list(_expect_required_field(artifact, "section_order", artifact_name), artifact_name, "section_order")
     sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
     summary = _expect_dict(_expect_required_field(artifact, "summary", artifact_name), artifact_name, "summary")
@@ -1304,6 +1329,7 @@ def _validate_review_index_schema(payload: Any) -> None:
 def _validate_lifecycle_trace_schema(payload: Any) -> None:
     artifact_name = "lifecycle_trace.json"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "lifecycle_trace")
     _expect_str_list(_expect_required_field(artifact, "lifecycle_order", artifact_name), artifact_name, "lifecycle_order")
     _expect_int(_expect_required_field(artifact, "total_sections_seen", artifact_name), artifact_name, "total_sections_seen")
     sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
@@ -1337,6 +1363,7 @@ def _validate_lifecycle_trace_schema(payload: Any) -> None:
 def _validate_workspace_index_schema(payload: Any) -> None:
     artifact_name = "workspace_index.json"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "workspace_index")
     artifact_paths = _expect_dict(_expect_required_field(artifact, "artifact_paths", artifact_name), artifact_name, "artifact_paths")
     for key in ("lifecycle_trace_path", "review_index_path", "workspace_summary_path"):
         _expect_str(_expect_required_field(artifact_paths, key, artifact_name), artifact_name, f"artifact_paths.{key}")
@@ -1369,6 +1396,7 @@ def _validate_workspace_index_schema(payload: Any) -> None:
 def _validate_dashboard_schema(payload: Any) -> None:
     artifact_name = "dashboard.json"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "dashboard")
     artifact_paths = _expect_dict(_expect_required_field(artifact, "artifact_paths", artifact_name), artifact_name, "artifact_paths")
     for key in ("lifecycle_trace_path", "review_index_path", "workspace_index_path"):
         _expect_str(_expect_required_field(artifact_paths, key, artifact_name), artifact_name, f"artifact_paths.{key}")
@@ -1400,6 +1428,7 @@ def _validate_dashboard_schema(payload: Any) -> None:
 def _validate_execution_output_schema(payload: Any) -> None:
     artifact_name = "outputs"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "output_record")
     for key in ("section_id", "run_mode", "run_outcome_class"):
         _expect_str(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
     file_plan = _expect_dict(_expect_required_field(artifact, "file_plan", artifact_name), artifact_name, "file_plan")
@@ -1455,6 +1484,7 @@ def _validate_execution_output_schema(payload: Any) -> None:
 def _validate_execution_stamp_schema(payload: Any) -> None:
     artifact_name = "execution_stamp"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "execution_record")
     for key in (
         "section_id",
         "execution_status",
@@ -1960,7 +1990,9 @@ def _build_output_artifact_payload(
         file_plan=file_plan,
         write_transparency=write_transparency,
     )
-    return {
+    return _with_artifact_metadata(
+        "output_record",
+        {
         "section_id": section_id,
         "run_mode": run_mode,
         "run_outcome_class": run_outcome_class,
@@ -1975,7 +2007,8 @@ def _build_output_artifact_payload(
             execution_outcome=execution_outcome,
             generated_artifacts=generated_artifacts,
         ),
-    }
+        },
+    )
 
 
 def _build_generated_artifact_records(
@@ -3011,7 +3044,9 @@ def _build_execution_stamp_artifact(
         execution_blocked=execution_blocked,
     )
 
-    return {
+    return _with_artifact_metadata(
+        "execution_record",
+        {
         "section_id": section_id,
         "execution_status": execution_status,
         "governed_execution": governed_execution,
@@ -3039,7 +3074,8 @@ def _build_execution_stamp_artifact(
         "modify_written_count": modify_written_count,
         "created_written_count": created_written_count,
         "execution_timestamp": str(execution_input.execution_timestamp),
-    }
+        },
+    )
 
 
 def _build_execution_artifact_results(
@@ -3514,7 +3550,9 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
     for entry_order, entry in enumerate(sections, start=1):
         entry["entry_order"] = entry_order
 
-    return {
+    return _with_artifact_metadata(
+        "review_index",
+        {
         "section_order": [entry["section_id"] for entry in sections],
         "sections": sections,
         "summary": {
@@ -3524,7 +3562,8 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
             "sections_with_review": sum(1 for entry in sections if entry["review_path"] is not None),
             "total_sections_seen": len(sections),
         },
-    }
+        },
+    )
 
 
 def _build_workspace_summary(
@@ -3652,11 +3691,14 @@ def _build_lifecycle_trace(workspace_root: Path, section_ids: List[str]) -> dict
             }
         )
 
-    return {
+    return _with_artifact_metadata(
+        "lifecycle_trace",
+        {
         "lifecycle_order": DGCE_LIFECYCLE_ORDER,
         "total_sections_seen": len(sections),
         "sections": sections,
-    }
+        },
+    )
 
 
 def _build_section_lifecycle_trace_entries(workspace_root: Path, section_id: str) -> list[dict[str, Any]]:
@@ -3753,7 +3795,9 @@ def _build_workspace_index(
             }
         )
 
-    return {
+    return _with_artifact_metadata(
+        "workspace_index",
+        {
         "artifact_paths": {
             "lifecycle_trace_path": ".dce/lifecycle_trace.json",
             "review_index_path": ".dce/reviews/index.json",
@@ -3774,7 +3818,8 @@ def _build_workspace_index(
             "sections_with_outputs": sum(1 for entry in section_entries if entry["output_path"] is not None),
             "total_sections_seen": len(section_entries),
         },
-    }
+        },
+    )
 
 
 def _count_summary_values(
@@ -3869,7 +3914,9 @@ def _build_dashboard_view(
             }
         )
 
-    return {
+    return _with_artifact_metadata(
+        "dashboard",
+        {
         "artifact_paths": {
             "lifecycle_trace_path": ".dce/lifecycle_trace.json",
             "review_index_path": ".dce/reviews/index.json",
@@ -3888,7 +3935,8 @@ def _build_dashboard_view(
             "stage_status_counts": _count_summary_values(section_cards, "stage_status"),
             "total_sections": len(section_cards),
         },
-    }
+        },
+    )
 
 
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
