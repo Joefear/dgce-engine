@@ -3969,6 +3969,8 @@ def test_dgce_consumer_contract_single_section_success(monkeypatch):
     assert all(entry["schema_version"] == "1.0" for entry in payload["supported_artifacts"])
     assert all(entry["contract_stability"] == "supported" for entry in payload["supported_artifacts"])
     assert all(isinstance(entry["supported_fields"], list) and entry["supported_fields"] for entry in payload["supported_artifacts"])
+    assert all(entry["export_scope"] == "external" for entry in payload["supported_artifacts"])
+    assert all("export_fields" not in entry for entry in payload["supported_artifacts"])
 
 
 def test_dgce_consumer_contract_reference_single_section_success(monkeypatch):

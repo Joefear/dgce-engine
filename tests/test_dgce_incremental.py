@@ -198,6 +198,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["ui", "reporting"],
+            "export_scope": "external",
         },
         {
             "artifact_type": "workspace_index",
@@ -250,6 +251,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["sdk", "reporting"],
+            "export_scope": "external",
         },
         {
             "artifact_type": "review_index",
@@ -299,6 +301,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["audit", "reporting"],
+            "export_scope": "external",
         },
         {
             "artifact_type": "lifecycle_trace",
@@ -343,6 +346,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["audit", "reporting"],
+            "export_scope": "external",
         },
         {
             "artifact_type": "artifact_manifest",
@@ -357,6 +361,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["sdk", "reporting"],
+            "export_scope": "external",
         },
         {
             "artifact_type": "workspace_summary",
@@ -415,6 +420,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["reporting", "sdk"],
+            "export_scope": "external",
         },
     ]
 
@@ -489,6 +495,8 @@ def _assert_consumer_contract_aligns_with_manifest(project_root: Path) -> None:
         assert manifest_entry["schema_version"] == entry["schema_version"]
         assert manifest_entry["scope"] == "workspace"
         assert manifest_entry["section_id"] is None
+        assert entry["export_scope"] == "external"
+        assert entry.get("export_fields") is None or entry.get("export_fields") == entry["supported_fields"]
 
 
 def _assert_consumer_contract_has_no_cross_section_leakage(project_root: Path, *section_ids: str) -> None:
@@ -510,6 +518,22 @@ def _assert_reference_aligns_with_contract(project_root: Path) -> None:
     assert [line.removeprefix("- schema_version: ") for line in reference_text.splitlines() if line.startswith("- schema_version: ")][1:] == [
         entry["schema_version"] for entry in consumer_contract["supported_artifacts"]
     ]
+
+
+def _assert_exportable_contract_is_deterministic(project_root: Path) -> None:
+    consumer_contract = _consumer_contract_payload(project_root)
+    exportable_contract = dgce_decompose._get_exportable_contract(consumer_contract)
+    assert exportable_contract["artifact_type"] == consumer_contract["artifact_type"]
+    assert exportable_contract["generated_by"] == consumer_contract["generated_by"]
+    assert exportable_contract["schema_version"] == consumer_contract["schema_version"]
+    assert [entry["artifact_path"] for entry in exportable_contract["supported_artifacts"]] == [
+        entry["artifact_path"]
+        for entry in consumer_contract["supported_artifacts"]
+        if entry["export_scope"] == "external"
+    ]
+    for entry in exportable_contract["supported_artifacts"]:
+        assert entry["export_scope"] == "external"
+        assert entry["export_fields"] == entry.get("export_fields", entry["supported_fields"])
 
 
 def _assert_workspace_index_links_resolve_to_manifest(project_root: Path) -> None:
@@ -7663,6 +7687,8 @@ def test_consumer_contract_is_deterministic_for_repeated_governed_runs(monkeypat
         **_expected_artifact_metadata("consumer_contract"),
         "supported_artifacts": _expected_consumer_contract_supported_artifacts(),
     }
+    _assert_exportable_contract_is_deterministic(first_root)
+    _assert_exportable_contract_is_deterministic(second_root)
 
 
 def test_consumer_contract_reference_is_deterministic_and_derived_from_consumer_contract(monkeypatch):
@@ -7701,6 +7727,72 @@ def test_consumer_contract_reference_is_deterministic_and_derived_from_consumer_
     assert _consumer_contract_reference_text(first_root) == (second_root / ".dce" / "consumer_contract_reference.md").read_text(encoding="utf-8")
     _assert_reference_aligns_with_contract(first_root)
     _assert_reference_aligns_with_contract(second_root)
+
+
+def test_consumer_contract_schema_rejects_export_fields_outside_supported_fields():
+    payload = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["sections[].section_id"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError):
+        dgce_decompose._validate_consumer_contract_schema(payload)
+
+
+def test_get_exportable_contract_filters_to_external_entries_and_preserves_order():
+    payload = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order", "sections[].section_id"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            },
+            {
+                "artifact_type": "workspace_index",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/workspace_index.json",
+                "supported_fields": ["section_order"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["sdk"],
+                "export_scope": "internal",
+            },
+        ],
+    }
+
+    exportable = dgce_decompose._get_exportable_contract(payload)
+
+    assert exportable == {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order", "sections[].section_id"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            }
+        ],
+    }
 
 
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
@@ -8255,6 +8347,7 @@ def test_cross_artifact_section_summaries_converge_across_mixed_section_states(m
     _assert_review_and_trace_links_resolve_to_manifest(project_root)
     _assert_consumer_contract_aligns_with_manifest(project_root)
     _assert_reference_aligns_with_contract(project_root)
+    _assert_exportable_contract_is_deterministic(project_root)
     _assert_consumer_contract_has_no_cross_section_leakage(project_root, "alpha-section", "mission-board")
 
 

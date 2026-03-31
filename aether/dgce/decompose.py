@@ -1128,6 +1128,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
             "artifact_path": _normalized_workspace_artifact_path("dashboard.json"),
             "artifact_type": "dashboard",
             "consumer_scopes": ["ui", "reporting"],
+            "export_scope": "external",
             "supported_fields": [
                 "artifact_paths.lifecycle_trace_path",
                 "artifact_paths.review_index_path",
@@ -1168,6 +1169,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
             "artifact_path": _normalized_workspace_artifact_path("workspace_index.json"),
             "artifact_type": "workspace_index",
             "consumer_scopes": ["sdk", "reporting"],
+            "export_scope": "external",
             "supported_fields": [
                 "artifact_paths.lifecycle_trace_path",
                 "artifact_paths.review_index_path",
@@ -1218,6 +1220,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
             "artifact_path": _normalized_workspace_artifact_path("reviews/index.json"),
             "artifact_type": "review_index",
             "consumer_scopes": ["audit", "reporting"],
+            "export_scope": "external",
             "supported_fields": [
                 "section_order",
                 "sections[].entry_order",
@@ -1265,6 +1268,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
             "artifact_path": _normalized_workspace_artifact_path("lifecycle_trace.json"),
             "artifact_type": "lifecycle_trace",
             "consumer_scopes": ["audit", "reporting"],
+            "export_scope": "external",
             "supported_fields": [
                 "lifecycle_order",
                 "total_sections_seen",
@@ -1307,6 +1311,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
             "artifact_path": _normalized_workspace_artifact_path("artifact_manifest.json"),
             "artifact_type": "artifact_manifest",
             "consumer_scopes": ["sdk", "reporting"],
+            "export_scope": "external",
             "supported_fields": [
                 "artifacts[].artifact_path",
                 "artifacts[].artifact_type",
@@ -1319,6 +1324,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
             "artifact_path": _normalized_workspace_artifact_path("workspace_summary.json"),
             "artifact_type": "workspace_summary",
             "consumer_scopes": ["reporting", "sdk"],
+            "export_scope": "external",
             "supported_fields": [
                 "total_sections_seen",
                 "sections[].section_id",
@@ -1931,11 +1937,22 @@ def _validate_consumer_contract_schema(payload: Any) -> None:
         _expect_str(_expect_required_field(supported_entry, "schema_version", artifact_name), artifact_name, f"supported_artifacts[{index}].schema_version")
         _expect_str(_expect_required_field(supported_entry, "artifact_path", artifact_name), artifact_name, f"supported_artifacts[{index}].artifact_path")
         _expect_str(_expect_required_field(supported_entry, "contract_stability", artifact_name), artifact_name, f"supported_artifacts[{index}].contract_stability")
-        _expect_str_list(
-            _expect_required_field(supported_entry, "supported_fields", artifact_name),
-            artifact_name,
-            f"supported_artifacts[{index}].supported_fields",
-        )
+        supported_fields = _expect_required_field(supported_entry, "supported_fields", artifact_name)
+        _expect_str_list(supported_fields, artifact_name, f"supported_artifacts[{index}].supported_fields")
+        export_scope = _expect_required_field(supported_entry, "export_scope", artifact_name)
+        _expect_str(export_scope, artifact_name, f"supported_artifacts[{index}].export_scope")
+        if export_scope not in {"external", "internal"}:
+            _schema_error(artifact_name, f"supported_artifacts[{index}].export_scope must be external or internal")
+        export_fields = supported_entry.get("export_fields")
+        if export_fields is not None:
+            _expect_str_list(export_fields, artifact_name, f"supported_artifacts[{index}].export_fields")
+            supported_field_values = list(supported_fields)
+            for export_field_index, export_field in enumerate(export_fields):
+                if export_field not in supported_field_values:
+                    _schema_error(
+                        artifact_name,
+                        f"supported_artifacts[{index}].export_fields[{export_field_index}] must be present in supported_fields",
+                    )
         consumer_scopes = _expect_required_field(supported_entry, "consumer_scopes", artifact_name)
         if consumer_scopes is not None:
             _expect_str_list(consumer_scopes, artifact_name, f"supported_artifacts[{index}].consumer_scopes")
@@ -4427,6 +4444,7 @@ def _build_consumer_contract(
                 "supported_fields": list(spec["supported_fields"]),
                 "contract_stability": "supported",
                 "consumer_scopes": list(spec["consumer_scopes"]),
+                "export_scope": str(spec["export_scope"]),
             }
         )
     return _with_artifact_metadata("consumer_contract", {"supported_artifacts": supported_artifacts})
@@ -4437,6 +4455,23 @@ def _artifact_manifest_entries_by_path(artifact_manifest: dict[str, Any]) -> dic
         str(_normalize_artifact_path(entry.get("artifact_path"))): dict(entry)
         for entry in artifact_manifest.get("artifacts", [])
         if isinstance(entry, dict) and _normalize_artifact_path(entry.get("artifact_path")) is not None
+    }
+
+
+def _get_exportable_contract(consumer_contract: dict[str, Any]) -> dict[str, Any]:
+    exportable_artifacts: list[dict[str, Any]] = []
+    for entry in consumer_contract.get("supported_artifacts", []):
+        if not isinstance(entry, dict) or entry.get("export_scope") != "external":
+            continue
+        export_fields = entry.get("export_fields")
+        exportable_entry = dict(entry)
+        exportable_entry["export_fields"] = list(export_fields) if export_fields is not None else list(entry.get("supported_fields", []))
+        exportable_artifacts.append(exportable_entry)
+    return {
+        "artifact_type": str(consumer_contract.get("artifact_type")),
+        "generated_by": str(consumer_contract.get("generated_by")),
+        "schema_version": str(consumer_contract.get("schema_version")),
+        "supported_artifacts": exportable_artifacts,
     }
 
 
@@ -4454,6 +4489,25 @@ def _assert_contract_aligns_with_manifest(artifact_manifest: dict[str, Any], con
                 raise ValueError(
                     f"consumer_contract supported_artifacts[{index}].{key} must match artifact_manifest for {artifact_path}"
                 )
+        export_scope = str(contract_entry.get("export_scope"))
+        if export_scope not in {"external", "internal"}:
+            raise ValueError(f"consumer_contract supported_artifacts[{index}].export_scope must be external or internal")
+        supported_fields = [str(field_name) for field_name in contract_entry.get("supported_fields", [])]
+        export_fields = contract_entry.get("export_fields")
+        if export_fields is not None:
+            for export_field_index, export_field in enumerate(export_fields):
+                if str(export_field) not in supported_fields:
+                    raise ValueError(
+                        f"consumer_contract supported_artifacts[{index}].export_fields[{export_field_index}] must be present in supported_fields"
+                    )
+    exportable_contract = _get_exportable_contract(consumer_contract)
+    for index, exportable_entry in enumerate(exportable_contract.get("supported_artifacts", [])):
+        if str(exportable_entry.get("export_scope")) != "external":
+            raise ValueError(f"exportable contract supported_artifacts[{index}] must remain external only")
+        export_fields = [str(field_name) for field_name in exportable_entry.get("export_fields", [])]
+        supported_fields = [str(field_name) for field_name in exportable_entry.get("supported_fields", [])]
+        if any(field_name not in supported_fields for field_name in export_fields):
+            raise ValueError(f"exportable contract supported_artifacts[{index}].export_fields must be a subset of supported_fields")
 
 
 def _build_consumer_contract_reference(consumer_contract: dict[str, Any]) -> str:
