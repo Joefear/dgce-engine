@@ -1122,6 +1122,258 @@ def _build_section_navigation_links(artifact_paths: dict[str, str | None]) -> li
     ]
 
 
+def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
+    return [
+        {
+            "artifact_path": _normalized_workspace_artifact_path("dashboard.json"),
+            "artifact_type": "dashboard",
+            "consumer_scopes": ["ui", "reporting"],
+            "supported_fields": [
+                "artifact_paths.lifecycle_trace_path",
+                "artifact_paths.review_index_path",
+                "artifact_paths.workspace_index_path",
+                "section_order",
+                "sections[].section_id",
+                "sections[].approval_status",
+                "sections[].current_stage",
+                "sections[].decision_source",
+                "sections[].latest_decision",
+                "sections[].navigation_links.approval",
+                "sections[].navigation_links.execution",
+                "sections[].navigation_links.lifecycle_trace",
+                "sections[].navigation_links.outputs",
+                "sections[].navigation_links.review",
+                "sections[].progress.available_artifact_count",
+                "sections[].progress.completed_stage_count",
+                "sections[].progress.lifecycle_stage_count",
+                "sections[].progress.trace_entry_count",
+                "sections[].review_status",
+                "sections[].stage_status",
+                "sections[].section_summary.approval_status",
+                "sections[].section_summary.decision_source",
+                "sections[].section_summary.latest_decision",
+                "sections[].section_summary.latest_decision_source",
+                "sections[].section_summary.latest_stage",
+                "sections[].section_summary.latest_stage_status",
+                "sections[].section_summary.review_status",
+                "sections[].section_summary.section_id",
+                "summary.approval_status_counts",
+                "summary.current_stage_counts",
+                "summary.review_status_counts",
+                "summary.stage_status_counts",
+                "summary.total_sections",
+            ],
+        },
+        {
+            "artifact_path": _normalized_workspace_artifact_path("workspace_index.json"),
+            "artifact_type": "workspace_index",
+            "consumer_scopes": ["sdk", "reporting"],
+            "supported_fields": [
+                "artifact_paths.lifecycle_trace_path",
+                "artifact_paths.review_index_path",
+                "artifact_paths.workspace_summary_path",
+                "section_order",
+                "sections[].section_id",
+                "sections[].artifact_links",
+                "sections[].execution_path",
+                "sections[].execution_status",
+                "sections[].approval_status",
+                "sections[].decision_source",
+                "sections[].review_status",
+                "sections[].latest_decision",
+                "sections[].latest_decision_source",
+                "sections[].latest_run_outcome_class",
+                "sections[].latest_stage",
+                "sections[].latest_stage_status",
+                "sections[].lifecycle_trace_path",
+                "sections[].output_path",
+                "sections[].trace_entry_count",
+                "sections[].section_summary.approval_status",
+                "sections[].section_summary.decision_source",
+                "sections[].section_summary.latest_decision",
+                "sections[].section_summary.latest_decision_source",
+                "sections[].section_summary.latest_stage",
+                "sections[].section_summary.latest_stage_status",
+                "sections[].section_summary.review_status",
+                "sections[].section_summary.section_id",
+                "sections[].trace_summary.available_artifact_count",
+                "sections[].trace_summary.approval_status",
+                "sections[].trace_summary.completed_stage_count",
+                "sections[].trace_summary.decision_source",
+                "sections[].trace_summary.latest_decision",
+                "sections[].trace_summary.latest_decision_source",
+                "sections[].trace_summary.latest_stage",
+                "sections[].trace_summary.latest_stage_status",
+                "sections[].trace_summary.review_status",
+                "sections[].trace_summary.section_id",
+                "sections[].trace_summary.trace_entry_count",
+                "summary.latest_stage_counts",
+                "summary.sections_with_execution",
+                "summary.sections_with_lifecycle_trace",
+                "summary.sections_with_outputs",
+                "summary.total_sections_seen",
+            ],
+        },
+        {
+            "artifact_path": _normalized_workspace_artifact_path("reviews/index.json"),
+            "artifact_type": "review_index",
+            "consumer_scopes": ["audit", "reporting"],
+            "supported_fields": [
+                "section_order",
+                "sections[].entry_order",
+                "sections[].section_id",
+                "sections[].preview_path",
+                "sections[].review_path",
+                "sections[].approval_path",
+                "sections[].execution_path",
+                "sections[].output_path",
+                "sections[].lifecycle_trace_path",
+                "sections[].approval_status",
+                "sections[].selected_mode",
+                "sections[].preflight_status",
+                "sections[].stale_status",
+                "sections[].gate_status",
+                "sections[].alignment_status",
+                "sections[].execution_status",
+                "sections[].decision_source",
+                "sections[].review_status",
+                "sections[].latest_decision",
+                "sections[].latest_decision_source",
+                "sections[].approval_timestamp",
+                "sections[].review_approval_summary.approval_status",
+                "sections[].review_approval_summary.decision_source",
+                "sections[].review_approval_summary.latest_decision",
+                "sections[].review_approval_summary.latest_decision_source",
+                "sections[].review_approval_summary.review_status",
+                "sections[].section_summary.approval_status",
+                "sections[].section_summary.decision_source",
+                "sections[].section_summary.latest_decision",
+                "sections[].section_summary.latest_decision_source",
+                "sections[].section_summary.latest_stage",
+                "sections[].section_summary.latest_stage_status",
+                "sections[].section_summary.review_status",
+                "sections[].section_summary.section_id",
+                "sections[].navigation_links",
+                "summary.sections_with_approval",
+                "summary.sections_with_execution",
+                "summary.sections_with_outputs",
+                "summary.sections_with_review",
+                "summary.total_sections_seen",
+            ],
+        },
+        {
+            "artifact_path": _normalized_workspace_artifact_path("lifecycle_trace.json"),
+            "artifact_type": "lifecycle_trace",
+            "consumer_scopes": ["audit", "reporting"],
+            "supported_fields": [
+                "lifecycle_order",
+                "total_sections_seen",
+                "sections[].section_id",
+                "sections[].approval_status",
+                "sections[].decision_source",
+                "sections[].review_status",
+                "sections[].latest_decision",
+                "sections[].latest_decision_source",
+                "sections[].latest_stage",
+                "sections[].latest_stage_status",
+                "sections[].section_summary.approval_status",
+                "sections[].section_summary.decision_source",
+                "sections[].section_summary.latest_decision",
+                "sections[].section_summary.latest_decision_source",
+                "sections[].section_summary.latest_stage",
+                "sections[].section_summary.latest_stage_status",
+                "sections[].section_summary.review_status",
+                "sections[].section_summary.section_id",
+                "sections[].trace_summary.available_artifact_count",
+                "sections[].trace_summary.approval_status",
+                "sections[].trace_summary.completed_stage_count",
+                "sections[].trace_summary.decision_source",
+                "sections[].trace_summary.latest_decision",
+                "sections[].trace_summary.latest_decision_source",
+                "sections[].trace_summary.latest_stage",
+                "sections[].trace_summary.latest_stage_status",
+                "sections[].trace_summary.review_status",
+                "sections[].trace_summary.section_id",
+                "sections[].trace_summary.trace_entry_count",
+                "sections[].trace_entries[].artifact_path",
+                "sections[].trace_entries[].artifact_present",
+                "sections[].trace_entries[].stage",
+                "sections[].trace_entries[].stage_order",
+                "sections[].trace_entries[].stage_status",
+                "sections[].trace_entries[].linkage",
+            ],
+        },
+        {
+            "artifact_path": _normalized_workspace_artifact_path("artifact_manifest.json"),
+            "artifact_type": "artifact_manifest",
+            "consumer_scopes": ["sdk", "reporting"],
+            "supported_fields": [
+                "artifacts[].artifact_path",
+                "artifacts[].artifact_type",
+                "artifacts[].schema_version",
+                "artifacts[].scope",
+                "artifacts[].section_id",
+            ],
+        },
+        {
+            "artifact_path": _normalized_workspace_artifact_path("workspace_summary.json"),
+            "artifact_type": "workspace_summary",
+            "consumer_scopes": ["reporting", "sdk"],
+            "supported_fields": [
+                "total_sections_seen",
+                "sections[].section_id",
+                "sections[].latest_run_mode",
+                "sections[].latest_run_outcome_class",
+                "sections[].latest_status",
+                "sections[].latest_validation_ok",
+                "sections[].latest_advisory_type",
+                "sections[].latest_advisory_explanation",
+                "sections[].latest_written_files_count",
+                "sections[].latest_skipped_modify_count",
+                "sections[].latest_skipped_ignore_count",
+                "sections[].preview_path",
+                "sections[].review_path",
+                "sections[].preview_outcome_class",
+                "sections[].recommended_mode",
+                "sections[].approval_path",
+                "sections[].approval_status",
+                "sections[].selected_mode",
+                "sections[].execution_permitted",
+                "sections[].preflight_path",
+                "sections[].preflight_status",
+                "sections[].stale_check_path",
+                "sections[].stale_status",
+                "sections[].stale_detected",
+                "sections[].execution_allowed",
+                "sections[].execution_gate_path",
+                "sections[].gate_status",
+                "sections[].execution_blocked",
+                "sections[].alignment_path",
+                "sections[].alignment_status",
+                "sections[].alignment_blocked",
+                "sections[].execution_path",
+                "sections[].execution_status",
+                "sections[].approval_consumed",
+                "sections[].approval_status_after",
+                "sections[].decision_source",
+                "sections[].review_status",
+                "sections[].latest_decision",
+                "sections[].latest_decision_source",
+                "sections[].latest_stage",
+                "sections[].latest_stage_status",
+                "sections[].section_summary.approval_status",
+                "sections[].section_summary.decision_source",
+                "sections[].section_summary.latest_decision",
+                "sections[].section_summary.latest_decision_source",
+                "sections[].section_summary.latest_stage",
+                "sections[].section_summary.latest_stage_status",
+                "sections[].section_summary.review_status",
+                "sections[].section_summary.section_id",
+            ],
+        },
+    ]
+
+
 def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dict[str, Any]) -> list[dict[str, Any]]:
     artifact_paths = section_artifacts["artifact_paths"]
     payloads = section_artifacts["payloads"]
@@ -1664,6 +1916,31 @@ def _validate_artifact_manifest_schema(payload: Any) -> None:
             _schema_error(artifact_name, f"artifacts[{index}].scope must be workspace or section")
 
 
+def _validate_consumer_contract_schema(payload: Any) -> None:
+    artifact_name = "consumer_contract.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "consumer_contract")
+    supported_artifacts = _expect_list(
+        _expect_required_field(artifact, "supported_artifacts", artifact_name),
+        artifact_name,
+        "supported_artifacts",
+    )
+    for index, entry in enumerate(supported_artifacts):
+        supported_entry = _expect_dict(entry, artifact_name, f"supported_artifacts[{index}]")
+        _expect_str(_expect_required_field(supported_entry, "artifact_type", artifact_name), artifact_name, f"supported_artifacts[{index}].artifact_type")
+        _expect_str(_expect_required_field(supported_entry, "schema_version", artifact_name), artifact_name, f"supported_artifacts[{index}].schema_version")
+        _expect_str(_expect_required_field(supported_entry, "artifact_path", artifact_name), artifact_name, f"supported_artifacts[{index}].artifact_path")
+        _expect_str(_expect_required_field(supported_entry, "contract_stability", artifact_name), artifact_name, f"supported_artifacts[{index}].contract_stability")
+        _expect_str_list(
+            _expect_required_field(supported_entry, "supported_fields", artifact_name),
+            artifact_name,
+            f"supported_artifacts[{index}].supported_fields",
+        )
+        consumer_scopes = _expect_required_field(supported_entry, "consumer_scopes", artifact_name)
+        if consumer_scopes is not None:
+            _expect_str_list(consumer_scopes, artifact_name, f"supported_artifacts[{index}].consumer_scopes")
+
+
 def _normalized_path_parts(path: Path) -> tuple[str, ...]:
     normalized = os.path.normpath(str(path))
     return tuple(Path(normalized).parts)
@@ -1702,6 +1979,8 @@ def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
         _validate_dashboard_schema(payload)
     elif _artifact_path_matches(path, (".dce", "artifact_manifest.json")):
         _validate_artifact_manifest_schema(payload)
+    elif _artifact_path_matches(path, (".dce", "consumer_contract.json")):
+        _validate_consumer_contract_schema(payload)
     elif _artifact_path_matches_outputs_json(path):
         _validate_execution_output_schema(payload)
     elif _artifact_path_matches_execution_json(path):
@@ -4063,6 +4342,8 @@ def _build_artifact_manifest(
         (_normalized_workspace_artifact_path("lifecycle_trace.json"), lifecycle_trace),
         (_normalized_workspace_artifact_path("workspace_index.json"), workspace_index),
         (_normalized_workspace_artifact_path("dashboard.json"), dashboard),
+        (_normalized_workspace_artifact_path("artifact_manifest.json"), _with_artifact_metadata("artifact_manifest", {})),
+        (_normalized_workspace_artifact_path("consumer_contract.json"), _with_artifact_metadata("consumer_contract", {})),
     ]
     artifacts = [
         {
@@ -4118,6 +4399,39 @@ def _build_artifact_manifest(
     return _with_artifact_metadata("artifact_manifest", {"artifacts": artifacts})
 
 
+def _build_consumer_contract(
+    review_index: dict[str, Any],
+    workspace_summary: dict[str, Any],
+    lifecycle_trace: dict[str, Any],
+    workspace_index: dict[str, Any],
+    dashboard: dict[str, Any],
+    artifact_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    artifacts_by_path = {
+        _normalized_workspace_artifact_path("reviews/index.json"): review_index,
+        _normalized_workspace_artifact_path("workspace_summary.json"): workspace_summary,
+        _normalized_workspace_artifact_path("lifecycle_trace.json"): lifecycle_trace,
+        _normalized_workspace_artifact_path("workspace_index.json"): workspace_index,
+        _normalized_workspace_artifact_path("dashboard.json"): dashboard,
+        _normalized_workspace_artifact_path("artifact_manifest.json"): artifact_manifest,
+    }
+    supported_artifacts = []
+    for spec in _supported_consumer_artifact_specs():
+        artifact_path = str(spec["artifact_path"])
+        artifact_payload = artifacts_by_path[artifact_path]
+        supported_artifacts.append(
+            {
+                "artifact_type": str(artifact_payload.get("artifact_type")),
+                "schema_version": str(artifact_payload.get("schema_version")),
+                "artifact_path": artifact_path,
+                "supported_fields": list(spec["supported_fields"]),
+                "contract_stability": "supported",
+                "consumer_scopes": list(spec["consumer_scopes"]),
+            }
+        )
+    return _with_artifact_metadata("consumer_contract", {"supported_artifacts": supported_artifacts})
+
+
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
     review_index = _build_review_index(workspace["root"], section_ids)
@@ -4126,12 +4440,21 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     workspace_index = _build_workspace_index(workspace["root"], section_ids, workspace_summary, lifecycle_trace)
     dashboard = _build_dashboard_view(workspace["root"], section_ids, review_index, lifecycle_trace, workspace_index)
     artifact_manifest = _build_artifact_manifest(review_index, workspace_summary, lifecycle_trace, workspace_index, dashboard)
+    consumer_contract = _build_consumer_contract(
+        review_index,
+        workspace_summary,
+        lifecycle_trace,
+        workspace_index,
+        dashboard,
+        artifact_manifest,
+    )
     _write_json(workspace["reviews"] / "index.json", review_index)
     _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)
     _write_json(workspace["root"] / "lifecycle_trace.json", lifecycle_trace)
     _write_json(workspace["root"] / "workspace_index.json", workspace_index)
     _write_json(workspace["root"] / "dashboard.json", dashboard)
     _write_json(workspace["root"] / "artifact_manifest.json", artifact_manifest)
+    _write_json(workspace["root"] / "consumer_contract.json", consumer_contract)
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:

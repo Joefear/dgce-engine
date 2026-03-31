@@ -3904,6 +3904,20 @@ def test_dgce_artifact_manifest_single_section_success(monkeypatch):
                 "section_id": None,
             },
             {
+                "artifact_path": ".dce/artifact_manifest.json",
+                "artifact_type": "artifact_manifest",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/consumer_contract.json",
+                "artifact_type": "consumer_contract",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
                 "artifact_path": ".dce/execution/mission-board.execution.json",
                 "artifact_type": "execution_record",
                 "schema_version": "1.0",
@@ -3919,6 +3933,42 @@ def test_dgce_artifact_manifest_single_section_success(monkeypatch):
             },
         ],
     }
+
+
+def test_dgce_consumer_contract_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_consumer_contract_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "consumer_contract.json").read_text(encoding="utf-8"))
+
+    assert payload["artifact_type"] == "consumer_contract"
+    assert payload["generated_by"] == "DGCE"
+    assert payload["schema_version"] == "1.0"
+    assert [entry["artifact_path"] for entry in payload["supported_artifacts"]] == [
+        ".dce/dashboard.json",
+        ".dce/workspace_index.json",
+        ".dce/reviews/index.json",
+        ".dce/lifecycle_trace.json",
+        ".dce/artifact_manifest.json",
+        ".dce/workspace_summary.json",
+    ]
+    assert [entry["artifact_type"] for entry in payload["supported_artifacts"]] == [
+        "dashboard",
+        "workspace_index",
+        "review_index",
+        "lifecycle_trace",
+        "artifact_manifest",
+        "workspace_summary",
+    ]
+    assert all(entry["schema_version"] == "1.0" for entry in payload["supported_artifacts"])
+    assert all(entry["contract_stability"] == "supported" for entry in payload["supported_artifacts"])
+    assert all(isinstance(entry["supported_fields"], list) and entry["supported_fields"] for entry in payload["supported_artifacts"])
 
 
 def test_dgce_workspace_summary_is_sorted_when_multiple_outputs_exist(monkeypatch):
