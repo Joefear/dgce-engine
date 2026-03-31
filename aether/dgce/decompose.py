@@ -2480,11 +2480,13 @@ def _build_execution_stamp_artifact(
     preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
     execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
     alignment_path = workspace_root / "preflight" / f"{section_id}.alignment.json"
+    outputs_path = workspace_root / "outputs" / f"{section_id}.json"
 
     approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
     preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else {}
     gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
     alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8")) if alignment_path.exists() else {}
+    outputs_payload = json.loads(outputs_path.read_text(encoding="utf-8")) if outputs_path.exists() else {}
 
     effective_execution_mode = _effective_execution_mode(write_transparency)
     if execution_blocked:
@@ -2510,16 +2512,68 @@ def _build_execution_stamp_artifact(
         or preflight_payload.get("selected_mode")
         or approval_payload.get("selected_mode")
     )
+    artifact_results = _build_execution_artifact_results(
+        outputs_payload,
+        write_transparency,
+        execution_blocked=execution_blocked,
+    )
+    unit_results = _build_execution_unit_results(artifact_results)
+    executed_units = [unit["unit_id"] for unit in unit_results if unit["unit_status"] == "executed"]
+    skipped_units = [unit["unit_id"] for unit in unit_results if unit["unit_status"] == "skipped"]
+    failed_units = [unit["unit_id"] for unit in unit_results if unit["unit_status"] == "failed"]
+    linked_artifacts = [
+        {
+            "artifact_role": "approval",
+            "artifact_path": approval_path.relative_to(workspace_root.parent).as_posix() if approval_path.exists() else None,
+            "present": approval_path.exists(),
+        },
+        {
+            "artifact_role": "preflight",
+            "artifact_path": preflight_path.relative_to(workspace_root.parent).as_posix() if preflight_path.exists() else None,
+            "present": preflight_path.exists(),
+        },
+        {
+            "artifact_role": "execution_gate",
+            "artifact_path": execution_gate_path.relative_to(workspace_root.parent).as_posix() if execution_gate_path.exists() else None,
+            "present": execution_gate_path.exists(),
+        },
+        {
+            "artifact_role": "alignment",
+            "artifact_path": alignment_path.relative_to(workspace_root.parent).as_posix() if alignment_path.exists() else None,
+            "present": alignment_path.exists(),
+        },
+        {
+            "artifact_role": "outputs",
+            "artifact_path": outputs_path.relative_to(workspace_root.parent).as_posix() if outputs_path.exists() else None,
+            "present": outputs_path.exists(),
+        },
+    ]
+    execution_record_summary = _build_execution_record_summary(
+        linked_artifacts=linked_artifacts,
+        artifact_results=artifact_results,
+        unit_results=unit_results,
+        execution_status=execution_status,
+        run_outcome_class=run_outcome_class,
+        execution_blocked=execution_blocked,
+    )
 
     return {
         "section_id": section_id,
         "execution_status": execution_status,
         "governed_execution": governed_execution,
         "require_preflight_pass": require_preflight_pass,
+        "linked_artifacts": linked_artifacts,
+        "artifact_results": artifact_results,
+        "unit_results": unit_results,
+        "executed_units": executed_units,
+        "skipped_units": skipped_units,
+        "failed_units": failed_units,
+        "execution_record_summary": execution_record_summary,
         "approval_path": approval_path.relative_to(workspace_root.parent).as_posix() if approval_path.exists() else None,
         "preflight_path": preflight_path.relative_to(workspace_root.parent).as_posix() if preflight_path.exists() else None,
         "execution_gate_path": execution_gate_path.relative_to(workspace_root.parent).as_posix() if execution_gate_path.exists() else None,
         "alignment_path": alignment_path.relative_to(workspace_root.parent).as_posix() if alignment_path.exists() else None,
+        "outputs_path": outputs_path.relative_to(workspace_root.parent).as_posix() if outputs_path.exists() else None,
         "selected_mode": selected_mode,
         "effective_execution_mode": effective_execution_mode,
         "approval_status_before": approval_status_before,
@@ -2531,6 +2585,120 @@ def _build_execution_stamp_artifact(
         "modify_written_count": modify_written_count,
         "created_written_count": created_written_count,
         "execution_timestamp": str(execution_input.execution_timestamp),
+    }
+
+
+def _build_execution_artifact_results(
+    outputs_payload: dict[str, Any],
+    write_transparency: dict[str, Any],
+    *,
+    execution_blocked: bool,
+) -> list[dict[str, Any]]:
+    if execution_blocked:
+        return []
+    generated_artifacts = outputs_payload.get("generated_artifacts", [])
+    if isinstance(generated_artifacts, list) and generated_artifacts:
+        return [
+            {
+                "artifact_id": str(artifact.get("artifact_id", "")),
+                "artifact_kind": str(artifact.get("artifact_kind", "")),
+                "bytes_written": int(artifact.get("bytes_written", 0)),
+                "implementation_unit": str(artifact.get("implementation_unit", "")),
+                "path": str(artifact.get("path", "")),
+                "producer_ref": str(artifact.get("producer_ref", "")),
+                "result_status": "written" if str(artifact.get("write_decision", "")) == "written" else "skipped",
+                "source": str(artifact.get("source", "")),
+                "write_decision": str(artifact.get("write_decision", "")),
+                "write_reason": str(artifact.get("write_reason", "")),
+            }
+            for artifact in generated_artifacts
+        ]
+
+    artifact_results: list[dict[str, Any]] = []
+    for decision in write_transparency.get("write_decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        normalized_path = Path(str(decision.get("path", ""))).as_posix()
+        if not normalized_path:
+            continue
+        artifact_results.append(
+            {
+                "artifact_id": normalized_path,
+                "artifact_kind": "file",
+                "bytes_written": int(decision.get("bytes_written", 0)),
+                "implementation_unit": Path(normalized_path).stem or normalized_path,
+                "path": normalized_path,
+                "producer_ref": "",
+                "result_status": "written" if str(decision.get("decision", "")) == "written" else "skipped",
+                "source": "",
+                "write_decision": str(decision.get("decision", "")),
+                "write_reason": str(decision.get("reason", "")),
+            }
+        )
+    return sorted(
+        artifact_results,
+        key=lambda item: (
+            str(item["path"]),
+            str(item["source"]),
+            str(item["implementation_unit"]),
+        ),
+    )
+
+
+def _build_execution_unit_results(artifact_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for artifact in artifact_results:
+        unit_id = str(artifact.get("implementation_unit", "")).strip() or str(artifact.get("path", "")).strip()
+        grouped.setdefault(unit_id, []).append(artifact)
+
+    unit_results: list[dict[str, Any]] = []
+    for unit_id in sorted(grouped):
+        unit_artifacts = sorted(
+            grouped[unit_id],
+            key=lambda item: (
+                str(item["path"]),
+                str(item["source"]),
+                str(item["artifact_kind"]),
+            ),
+        )
+        written_count = sum(1 for artifact in unit_artifacts if artifact["result_status"] == "written")
+        skipped_count = sum(1 for artifact in unit_artifacts if artifact["result_status"] == "skipped")
+        unit_results.append(
+            {
+                "artifact_count": len(unit_artifacts),
+                "paths": [str(artifact["path"]) for artifact in unit_artifacts],
+                "skipped_artifact_count": skipped_count,
+                "unit_id": unit_id,
+                "unit_status": "executed" if written_count > 0 else "skipped",
+                "written_artifact_count": written_count,
+            }
+        )
+    return unit_results
+
+
+def _build_execution_record_summary(
+    *,
+    linked_artifacts: list[dict[str, Any]],
+    artifact_results: list[dict[str, Any]],
+    unit_results: list[dict[str, Any]],
+    execution_status: str,
+    run_outcome_class: str | None,
+    execution_blocked: bool,
+) -> dict[str, Any]:
+    written_artifacts = [artifact for artifact in artifact_results if artifact["result_status"] == "written"]
+    skipped_artifacts = [artifact for artifact in artifact_results if artifact["result_status"] == "skipped"]
+    executed_units = [unit for unit in unit_results if unit["unit_status"] == "executed"]
+    skipped_units = [unit for unit in unit_results if unit["unit_status"] == "skipped"]
+    return {
+        "execution_blocked": execution_blocked,
+        "execution_status": execution_status,
+        "executed_unit_count": len(executed_units),
+        "linked_artifact_count": len(linked_artifacts),
+        "result_artifact_count": len(artifact_results),
+        "run_outcome_class": run_outcome_class,
+        "skipped_artifact_count": len(skipped_artifacts),
+        "skipped_unit_count": len(skipped_units),
+        "written_artifact_count": len(written_artifacts),
     }
 
 

@@ -6195,6 +6195,126 @@ def test_run_section_with_workspace_governed_execution_consumes_approval_and_upd
     assert workspace_summary["sections"][0]["approval_status"] == "superseded"
 
 
+def test_run_section_with_workspace_execution_stamp_emits_deterministic_structured_contract(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v3_0_execution_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+
+    assert sorted(execution_payload.keys()) == [
+        "alignment_path",
+        "approval_consumed",
+        "approval_path",
+        "approval_status_after",
+        "approval_status_before",
+        "artifact_results",
+        "created_written_count",
+        "effective_execution_mode",
+        "executed_units",
+        "execution_blocked",
+        "execution_gate_path",
+        "execution_record_summary",
+        "execution_status",
+        "execution_timestamp",
+        "failed_units",
+        "governed_execution",
+        "linked_artifacts",
+        "modify_written_count",
+        "outputs_path",
+        "preflight_path",
+        "require_preflight_pass",
+        "run_outcome_class",
+        "section_id",
+        "selected_mode",
+        "skipped_units",
+        "unit_results",
+        "written_file_count",
+    ]
+    assert [entry["artifact_role"] for entry in execution_payload["linked_artifacts"]] == [
+        "approval",
+        "preflight",
+        "execution_gate",
+        "alignment",
+        "outputs",
+    ]
+    assert all(entry["present"] is True for entry in execution_payload["linked_artifacts"])
+    assert [entry["path"] for entry in execution_payload["artifact_results"]] == [
+        "api/missionboardservice.py",
+        "mission_board/models.py",
+        "mission_board/service.py",
+        "models/mission.py",
+    ]
+    assert [entry["result_status"] for entry in execution_payload["artifact_results"]] == [
+        "written",
+        "written",
+        "written",
+        "written",
+    ]
+    assert all(
+        sorted(entry.keys()) == [
+            "artifact_id",
+            "artifact_kind",
+            "bytes_written",
+            "implementation_unit",
+            "path",
+            "producer_ref",
+            "result_status",
+            "source",
+            "write_decision",
+            "write_reason",
+        ]
+        for entry in execution_payload["artifact_results"]
+    )
+    assert [entry["unit_id"] for entry in execution_payload["unit_results"]] == [
+        "generate_mission_model",
+        "generate_missionboardservice_api",
+        "implement_mission_board",
+    ]
+    assert [entry["unit_status"] for entry in execution_payload["unit_results"]] == [
+        "executed",
+        "executed",
+        "executed",
+    ]
+    assert execution_payload["executed_units"] == [
+        "generate_mission_model",
+        "generate_missionboardservice_api",
+        "implement_mission_board",
+    ]
+    assert execution_payload["skipped_units"] == []
+    assert execution_payload["failed_units"] == []
+    assert execution_payload["execution_record_summary"] == {
+        "execution_blocked": False,
+        "execution_status": "execution_completed",
+        "executed_unit_count": 3,
+        "linked_artifact_count": 5,
+        "result_artifact_count": 4,
+        "run_outcome_class": "success_create_only",
+        "skipped_artifact_count": 0,
+        "skipped_unit_count": 0,
+        "written_artifact_count": 4,
+    }
+
+
 def test_run_section_with_workspace_governed_execution_completed_no_changes_consumes_approval(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_v2_8_governed_no_changes")
@@ -6582,6 +6702,30 @@ def test_record_section_execution_stamp_helper_derives_effective_mode_from_write
     assert stamp["written_file_count"] == 0
     assert stamp["modify_written_count"] == 0
     assert stamp["created_written_count"] == 0
+    assert [entry["artifact_role"] for entry in stamp["linked_artifacts"]] == [
+        "approval",
+        "preflight",
+        "execution_gate",
+        "alignment",
+        "outputs",
+    ]
+    assert [entry["present"] for entry in stamp["linked_artifacts"]] == [True, False, False, False, False]
+    assert stamp["artifact_results"] == []
+    assert stamp["unit_results"] == []
+    assert stamp["executed_units"] == []
+    assert stamp["skipped_units"] == []
+    assert stamp["failed_units"] == []
+    assert stamp["execution_record_summary"] == {
+        "execution_blocked": True,
+        "execution_status": "execution_blocked",
+        "executed_unit_count": 0,
+        "linked_artifact_count": 5,
+        "result_artifact_count": 0,
+        "run_outcome_class": "blocked_alignment",
+        "skipped_artifact_count": 0,
+        "skipped_unit_count": 0,
+        "written_artifact_count": 0,
+    }
 
 
 def test_build_run_outcome_class_treats_skipped_modify_zero_write_run_as_execution_no_changes():
