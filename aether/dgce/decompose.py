@@ -1070,6 +1070,58 @@ def _load_section_artifacts(workspace_root: Path, section_id: str) -> dict[str, 
     }
 
 
+def _normalize_artifact_path(path: str | Path | None) -> str | None:
+    """Normalize one DGCE artifact path to a stable repo-relative POSIX string."""
+    if path is None:
+        return None
+    normalized = Path(os.path.normpath(str(path))).as_posix()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized or None
+
+
+def _normalized_workspace_artifact_path(filename: str) -> str:
+    return _normalize_artifact_path(Path(".dce") / filename) or f".dce/{filename}"
+
+
+def _section_artifact_link_specs() -> list[tuple[str, str, str]]:
+    return [
+        ("preview", "preview_path", "preview_artifact"),
+        ("review", "review_path", "review_artifact"),
+        ("approval", "approval_path", "approval_artifact"),
+        ("preflight", "preflight_path", "preflight_record"),
+        ("stale_check", "stale_check_path", "stale_check_record"),
+        ("gate", "execution_gate_path", "execution_gate_record"),
+        ("alignment", "alignment_path", "alignment_record"),
+        ("execution", "execution_path", "execution_record"),
+        ("outputs", "output_path", "output_record"),
+    ]
+
+
+def _build_section_artifact_links(artifact_paths: dict[str, str | None]) -> list[dict[str, str]]:
+    return [
+        {
+            "artifact_role": artifact_role,
+            "path": normalized_path,
+        }
+        for artifact_role, artifact_key, _artifact_type in _section_artifact_link_specs()
+        for normalized_path in [_normalize_artifact_path(artifact_paths.get(artifact_key))]
+        if normalized_path is not None
+    ]
+
+
+def _build_section_navigation_links(artifact_paths: dict[str, str | None]) -> list[dict[str, str | None]]:
+    artifact_link_map = {entry["artifact_role"]: entry["path"] for entry in _build_section_artifact_links(artifact_paths)}
+    return [
+        {"link_role": "preview", "path": artifact_link_map.get("preview")},
+        {"link_role": "review", "path": artifact_link_map.get("review")},
+        {"link_role": "approval", "path": artifact_link_map.get("approval")},
+        {"link_role": "lifecycle_trace", "path": _normalized_workspace_artifact_path("lifecycle_trace.json")},
+        {"link_role": "execution", "path": artifact_link_map.get("execution")},
+        {"link_role": "outputs", "path": artifact_link_map.get("outputs")},
+    ]
+
+
 def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dict[str, Any]) -> list[dict[str, Any]]:
     artifact_paths = section_artifacts["artifact_paths"]
     payloads = section_artifacts["payloads"]
@@ -3603,8 +3655,8 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
                 "review_status": section_summary["review_status"],
                 "latest_decision": section_summary["latest_decision"],
                 "latest_decision_source": section_summary["latest_decision_source"],
-                "lifecycle_trace_path": ".dce/lifecycle_trace.json",
-                "output_path": artifact_paths.get("output_path"),
+                "lifecycle_trace_path": _normalized_workspace_artifact_path("lifecycle_trace.json"),
+                "output_path": _normalize_artifact_path(artifact_paths.get("output_path")),
                 "review_approval_summary": {
                     "approval_status": section_summary["approval_status"],
                     "decision_source": section_summary["decision_source"],
@@ -3613,14 +3665,7 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
                     "review_status": section_summary["review_status"],
                 },
                 "section_summary": section_summary,
-                "navigation_links": [
-                    {"link_role": "preview", "path": artifact_paths.get("preview_path")},
-                    {"link_role": "review", "path": artifact_paths.get("review_path")},
-                    {"link_role": "approval", "path": artifact_paths.get("approval_path")},
-                    {"link_role": "lifecycle_trace", "path": ".dce/lifecycle_trace.json"},
-                    {"link_role": "execution", "path": artifact_paths.get("execution_path")},
-                    {"link_role": "outputs", "path": artifact_paths.get("output_path")},
-                ],
+                "navigation_links": _build_section_navigation_links(artifact_paths),
             }
         )
 
@@ -3835,29 +3880,12 @@ def _build_workspace_index(
         if latest_stage in latest_stage_counts:
             latest_stage_counts[str(latest_stage)] += 1
         artifact_paths = _collect_orchestrator_artifact_paths(workspace_root.parent, section_id)
-        artifact_links = [
-            {
-                "artifact_role": artifact_role,
-                "path": artifact_path,
-            }
-            for artifact_role, artifact_path in (
-                ("preview", artifact_paths.get("preview_path")),
-                ("review", artifact_paths.get("review_path")),
-                ("approval", artifact_paths.get("approval_path")),
-                ("preflight", artifact_paths.get("preflight_path")),
-                ("stale_check", artifact_paths.get("stale_check_path")),
-                ("gate", artifact_paths.get("execution_gate_path")),
-                ("alignment", artifact_paths.get("alignment_path")),
-                ("execution", artifact_paths.get("execution_path")),
-                ("outputs", artifact_paths.get("output_path")),
-            )
-            if artifact_path is not None
-        ]
+        artifact_links = _build_section_artifact_links(artifact_paths)
         section_entries.append(
             {
                 "artifact_links": artifact_links,
                 "entry_order": entry_order,
-                "execution_path": artifact_paths.get("execution_path"),
+                "execution_path": _normalize_artifact_path(artifact_paths.get("execution_path")),
                 "execution_status": summary_entry.get("execution_status"),
                 "approval_status": section_summary.get("approval_status"),
                 "decision_source": section_summary.get("decision_source"),
@@ -3867,8 +3895,8 @@ def _build_workspace_index(
                 "latest_run_outcome_class": summary_entry.get("latest_run_outcome_class"),
                 "latest_stage": latest_stage,
                 "latest_stage_status": trace_summary.get("latest_stage_status"),
-                "lifecycle_trace_path": ".dce/lifecycle_trace.json",
-                "output_path": artifact_paths.get("output_path"),
+                "lifecycle_trace_path": _normalized_workspace_artifact_path("lifecycle_trace.json"),
+                "output_path": _normalize_artifact_path(artifact_paths.get("output_path")),
                 "section_id": section_id,
                 "section_summary": section_summary,
                 "trace_entry_count": trace_summary.get("trace_entry_count"),
@@ -3880,9 +3908,9 @@ def _build_workspace_index(
         "workspace_index",
         {
         "artifact_paths": {
-            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
-            "review_index_path": ".dce/reviews/index.json",
-            "workspace_summary_path": ".dce/workspace_summary.json",
+            "lifecycle_trace_path": _normalized_workspace_artifact_path("lifecycle_trace.json"),
+            "review_index_path": _normalized_workspace_artifact_path("reviews/index.json"),
+            "workspace_summary_path": _normalized_workspace_artifact_path("workspace_summary.json"),
         },
         "section_order": [entry["section_id"] for entry in section_entries],
         "sections": section_entries,
@@ -3964,9 +3992,9 @@ def _build_dashboard_view(
         )
         trace_summary = dict(trace_entry.get("trace_summary", {}))
         artifact_links = {
-            str(link.get("link_role")): link.get("path")
-            for link in review_entry.get("navigation_links", [])
-            if isinstance(link, dict) and link.get("link_role")
+            str(link.get("artifact_role")): link.get("path")
+            for link in index_entry.get("artifact_links", [])
+            if isinstance(link, dict) and link.get("artifact_role")
         }
         section_cards.append(
             {
@@ -3984,7 +4012,9 @@ def _build_dashboard_view(
                 "navigation_links": {
                     "approval": artifact_links.get("approval"),
                     "execution": artifact_links.get("execution"),
-                    "lifecycle_trace": review_entry.get("lifecycle_trace_path", ".dce/lifecycle_trace.json"),
+                    "lifecycle_trace": _normalize_artifact_path(
+                        index_entry.get("lifecycle_trace_path", _normalized_workspace_artifact_path("lifecycle_trace.json"))
+                    ),
                     "outputs": artifact_links.get("outputs"),
                     "review": artifact_links.get("review"),
                 },
@@ -3999,9 +4029,9 @@ def _build_dashboard_view(
         "dashboard",
         {
         "artifact_paths": {
-            "lifecycle_trace_path": ".dce/lifecycle_trace.json",
-            "review_index_path": ".dce/reviews/index.json",
-            "workspace_index_path": ".dce/workspace_index.json",
+            "lifecycle_trace_path": _normalized_workspace_artifact_path("lifecycle_trace.json"),
+            "review_index_path": _normalized_workspace_artifact_path("reviews/index.json"),
+            "workspace_index_path": _normalized_workspace_artifact_path("workspace_index.json"),
         },
         "section_order": [entry["section_id"] for entry in section_cards],
         "sections": section_cards,
@@ -4028,15 +4058,15 @@ def _build_artifact_manifest(
     dashboard: dict[str, Any],
 ) -> dict[str, Any]:
     workspace_artifacts = [
-        (".dce/reviews/index.json", review_index),
-        (".dce/workspace_summary.json", workspace_summary),
-        (".dce/lifecycle_trace.json", lifecycle_trace),
-        (".dce/workspace_index.json", workspace_index),
-        (".dce/dashboard.json", dashboard),
+        (_normalized_workspace_artifact_path("reviews/index.json"), review_index),
+        (_normalized_workspace_artifact_path("workspace_summary.json"), workspace_summary),
+        (_normalized_workspace_artifact_path("lifecycle_trace.json"), lifecycle_trace),
+        (_normalized_workspace_artifact_path("workspace_index.json"), workspace_index),
+        (_normalized_workspace_artifact_path("dashboard.json"), dashboard),
     ]
     artifacts = [
         {
-            "artifact_path": artifact_path,
+            "artifact_path": _normalize_artifact_path(artifact_path),
             "artifact_type": str(artifact_payload.get("artifact_type")),
             "schema_version": str(artifact_payload.get("schema_version")),
             "scope": "workspace",
@@ -4052,15 +4082,18 @@ def _build_artifact_manifest(
         section_id = section_entry.get("section_id")
         if not isinstance(section_id, str):
             continue
-        for artifact_type, artifact_path in (
-            ("output_record", section_entry.get("output_path")),
-            ("execution_record", section_entry.get("execution_path")),
-        ):
+        section_link_map = {
+            str(link.get("artifact_role")): _normalize_artifact_path(link.get("path"))
+            for link in section_entry.get("artifact_links", [])
+            if isinstance(link, dict) and link.get("artifact_role")
+        }
+        for artifact_role, _artifact_key, artifact_type in _section_artifact_link_specs():
+            artifact_path = section_link_map.get(artifact_role)
             if artifact_path is None:
                 continue
             section_artifacts.append(
                 {
-                    "artifact_path": str(artifact_path),
+                    "artifact_path": artifact_path,
                     "artifact_type": artifact_type,
                     "schema_version": DGCE_ARTIFACT_SCHEMA_VERSION,
                     "scope": "section",
@@ -4073,7 +4106,11 @@ def _build_artifact_manifest(
             section_artifacts,
             key=lambda entry: (
                 str(entry["section_id"]),
-                0 if entry["artifact_type"] == "output_record" else 1,
+                next(
+                    index
+                    for index, (_artifact_role, _artifact_key, artifact_type) in enumerate(_section_artifact_link_specs())
+                    if artifact_type == entry["artifact_type"]
+                ),
                 str(entry["artifact_path"]),
             ),
         )

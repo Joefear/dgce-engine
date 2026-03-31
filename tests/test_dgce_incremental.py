@@ -150,6 +150,64 @@ def _artifact_section_map(project_root: Path) -> dict[str, dict[str, dict]]:
     }
 
 
+def _artifact_manifest_by_path(project_root: Path) -> dict[str, dict]:
+    manifest = json.loads((project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"))
+    return {entry["artifact_path"]: entry for entry in manifest["artifacts"]}
+
+
+def _assert_dashboard_links_resolve_to_manifest(project_root: Path) -> None:
+    manifest_by_path = _artifact_manifest_by_path(project_root)
+    dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+    for section in dashboard["sections"]:
+        for artifact_path in section["navigation_links"].values():
+            if artifact_path is None:
+                continue
+            assert artifact_path in manifest_by_path
+
+
+def _assert_workspace_index_links_resolve_to_manifest(project_root: Path) -> None:
+    manifest_by_path = _artifact_manifest_by_path(project_root)
+    workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+    assert workspace_index["artifact_paths"]["lifecycle_trace_path"] in manifest_by_path
+    assert workspace_index["artifact_paths"]["review_index_path"] in manifest_by_path
+    assert workspace_index["artifact_paths"]["workspace_summary_path"] in manifest_by_path
+    for section in workspace_index["sections"]:
+        assert section["lifecycle_trace_path"] in manifest_by_path
+        for key in ("execution_path", "output_path"):
+            artifact_path = section[key]
+            if artifact_path is not None:
+                assert artifact_path in manifest_by_path
+        for link in section["artifact_links"]:
+            assert link["path"] in manifest_by_path
+
+
+def _assert_review_and_trace_links_resolve_to_manifest(project_root: Path) -> None:
+    manifest_by_path = _artifact_manifest_by_path(project_root)
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    lifecycle_trace = json.loads((project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"))
+    assert ".dce/reviews/index.json" in manifest_by_path
+    assert ".dce/lifecycle_trace.json" in manifest_by_path
+    for section in review_index["sections"]:
+        assert section["lifecycle_trace_path"] in manifest_by_path
+        for key in ("execution_path", "output_path"):
+            artifact_path = section[key]
+            if artifact_path is not None:
+                assert artifact_path in manifest_by_path
+        for link in section["navigation_links"]:
+            artifact_path = link["path"]
+            if artifact_path is not None:
+                assert artifact_path in manifest_by_path
+    for section in lifecycle_trace["sections"]:
+        for trace_entry in section["trace_entries"]:
+            artifact_path = trace_entry["artifact_path"]
+            if artifact_path is not None:
+                assert artifact_path in manifest_by_path
+            for linkage in trace_entry["linkage"]:
+                ref_path = linkage["ref_path"]
+                if ref_path is not None and linkage["ref_name"] != "input_path":
+                    assert ref_path in manifest_by_path
+
+
 def _assert_cross_artifact_section_consistency(project_root: Path, section_id: str) -> None:
     artifacts = _artifact_section_map(project_root)
     review_entry = artifacts["review_index"][section_id]
@@ -181,6 +239,16 @@ def _assert_cross_artifact_section_consistency(project_root: Path, section_id: s
     assert dashboard_entry["decision_source"] == expected_summary["decision_source"]
     assert dashboard_entry["approval_status"] == expected_summary["approval_status"]
     assert dashboard_entry["review_status"] == expected_summary["review_status"]
+    manifest_by_path = _artifact_manifest_by_path(project_root)
+    assert dashboard_entry["navigation_links"]["lifecycle_trace"] == workspace_index_entry["lifecycle_trace_path"]
+    assert review_entry["lifecycle_trace_path"] == workspace_index_entry["lifecycle_trace_path"]
+    assert dashboard_entry["navigation_links"]["lifecycle_trace"] in manifest_by_path
+    for key, link_role in (("execution_path", "execution"), ("output_path", "outputs")):
+        expected_path = workspace_index_entry[key]
+        assert review_entry[key] == expected_path
+        assert dashboard_entry["navigation_links"][link_role] == expected_path
+        if expected_path is not None:
+            assert expected_path in manifest_by_path
 
 
 def _stub_executor_output(content: str) -> str:
@@ -7731,6 +7799,9 @@ def test_cross_artifact_section_summaries_converge_across_mixed_section_states(m
 
     _assert_cross_artifact_section_consistency(project_root, "alpha-section")
     _assert_cross_artifact_section_consistency(project_root, "mission-board")
+    _assert_dashboard_links_resolve_to_manifest(project_root)
+    _assert_workspace_index_links_resolve_to_manifest(project_root)
+    _assert_review_and_trace_links_resolve_to_manifest(project_root)
 
 
 def test_dashboard_artifact_has_stable_multi_section_ordering_and_summary_counts(monkeypatch):
@@ -7892,8 +7963,57 @@ def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries
                 "section_id": None,
             },
             {
-                "artifact_path": ".dce/outputs/mission-board.json",
-                "artifact_type": "output_record",
+                "artifact_path": ".dce/plans/alpha-section.preview.json",
+                "artifact_type": "preview_artifact",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "alpha-section",
+            },
+            {
+                "artifact_path": ".dce/plans/mission-board.preview.json",
+                "artifact_type": "preview_artifact",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/reviews/mission-board.review.md",
+                "artifact_type": "review_artifact",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/approvals/mission-board.approval.json",
+                "artifact_type": "approval_artifact",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/preflight/mission-board.preflight.json",
+                "artifact_type": "preflight_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/preflight/mission-board.stale_check.json",
+                "artifact_type": "stale_check_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/preflight/mission-board.execution_gate.json",
+                "artifact_type": "execution_gate_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/preflight/mission-board.alignment.json",
+                "artifact_type": "alignment_record",
                 "schema_version": "1.0",
                 "scope": "section",
                 "section_id": "mission-board",
@@ -7901,6 +8021,13 @@ def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries
             {
                 "artifact_path": ".dce/execution/mission-board.execution.json",
                 "artifact_type": "execution_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/outputs/mission-board.json",
+                "artifact_type": "output_record",
                 "schema_version": "1.0",
                 "scope": "section",
                 "section_id": "mission-board",
