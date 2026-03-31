@@ -7976,7 +7976,7 @@ def test_export_contract_full_convergence_rejects_missing_consumer_contract_entr
         }
     )
 
-    with pytest.raises(ValueError, match="must match _get_exportable_contract"):
+    with pytest.raises(ValueError, match="ordering must match consumer_contract.json export ordering exactly"):
         dgce_decompose._assert_export_contract_fully_converged(
             artifact_manifest,
             consumer_contract,
@@ -8065,6 +8065,64 @@ def test_export_contract_full_convergence_rejects_mismatched_export_fields():
             consumer_contract_reference,
             export_contract,
         )
+
+
+def test_export_contract_matches_manifest_rejects_missing_manifest_entry():
+    artifact_manifest = {
+        **_expected_artifact_metadata("artifact_manifest"),
+        "artifacts": [],
+    }
+    export_contract = {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "contract_stability": "supported",
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="must resolve to artifact_manifest"):
+        dgce_decompose._assert_export_contract_matches_manifest(artifact_manifest, export_contract)
+
+
+def test_export_contract_matches_consumer_contract_rejects_ordering_mismatch():
+    consumer_contract = {
+        **_expected_artifact_metadata("consumer_contract"),
+        "supported_artifacts": [
+            {
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/dashboard.json",
+                "supported_fields": ["section_order"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["ui"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            },
+            {
+                "artifact_type": "workspace_index",
+                "schema_version": "1.0",
+                "artifact_path": ".dce/workspace_index.json",
+                "supported_fields": ["section_order"],
+                "contract_stability": "supported",
+                "consumer_scopes": ["sdk"],
+                "export_scope": "external",
+                "export_fields": ["section_order"],
+            },
+        ],
+    }
+    export_contract = {
+        **_expected_artifact_metadata("export_contract"),
+        "supported_artifacts": list(reversed(dgce_decompose._get_exportable_contract(consumer_contract)["supported_artifacts"])),
+    }
+
+    with pytest.raises(ValueError, match="ordering must match consumer_contract.json export ordering exactly"):
+        dgce_decompose._assert_export_contract_matches_consumer_contract(consumer_contract, export_contract)
 
 
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
