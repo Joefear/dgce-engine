@@ -1182,8 +1182,351 @@ def _write_state(
     )
 
 
+def _schema_error(artifact_name: str, message: str) -> None:
+    raise ValueError(f"{artifact_name} schema validation failed: {message}")
+
+
+def _expect_dict(value: Any, artifact_name: str, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        _schema_error(artifact_name, f"{field_name} must be a dict")
+    return value
+
+
+def _expect_list(value: Any, artifact_name: str, field_name: str) -> list[Any]:
+    if not isinstance(value, list):
+        _schema_error(artifact_name, f"{field_name} must be a list")
+    return value
+
+
+def _expect_required_field(container: dict[str, Any], key: str, artifact_name: str) -> Any:
+    if key not in container:
+        _schema_error(artifact_name, f"missing required field: {key}")
+    return container[key]
+
+
+def _expect_optional_str(value: Any, artifact_name: str, field_name: str) -> None:
+    if value is not None and not isinstance(value, str):
+        _schema_error(artifact_name, f"{field_name} must be a str or null")
+
+
+def _expect_optional_bool(value: Any, artifact_name: str, field_name: str) -> None:
+    if value is not None and not isinstance(value, bool):
+        _schema_error(artifact_name, f"{field_name} must be a bool or null")
+
+
+def _expect_optional_int(value: Any, artifact_name: str, field_name: str) -> None:
+    if value is not None and not isinstance(value, int):
+        _schema_error(artifact_name, f"{field_name} must be an int or null")
+
+
+def _expect_str(value: Any, artifact_name: str, field_name: str) -> None:
+    if not isinstance(value, str):
+        _schema_error(artifact_name, f"{field_name} must be a str")
+
+
+def _expect_bool(value: Any, artifact_name: str, field_name: str) -> None:
+    if not isinstance(value, bool):
+        _schema_error(artifact_name, f"{field_name} must be a bool")
+
+
+def _expect_int(value: Any, artifact_name: str, field_name: str) -> None:
+    if not isinstance(value, int):
+        _schema_error(artifact_name, f"{field_name} must be an int")
+
+
+def _expect_str_list(value: Any, artifact_name: str, field_name: str) -> None:
+    items = _expect_list(value, artifact_name, field_name)
+    for index, item in enumerate(items):
+        _expect_str(item, artifact_name, f"{field_name}[{index}]")
+
+
+def _validate_section_summary_schema(summary: Any, artifact_name: str, field_name: str = "section_summary") -> None:
+    payload = _expect_dict(summary, artifact_name, field_name)
+    _expect_optional_str(_expect_required_field(payload, "approval_status", artifact_name), artifact_name, f"{field_name}.approval_status")
+    _expect_optional_str(_expect_required_field(payload, "decision_source", artifact_name), artifact_name, f"{field_name}.decision_source")
+    _expect_optional_str(_expect_required_field(payload, "latest_decision", artifact_name), artifact_name, f"{field_name}.latest_decision")
+    _expect_optional_str(_expect_required_field(payload, "latest_decision_source", artifact_name), artifact_name, f"{field_name}.latest_decision_source")
+    _expect_optional_str(_expect_required_field(payload, "latest_stage", artifact_name), artifact_name, f"{field_name}.latest_stage")
+    _expect_optional_str(_expect_required_field(payload, "latest_stage_status", artifact_name), artifact_name, f"{field_name}.latest_stage_status")
+    _expect_optional_str(_expect_required_field(payload, "review_status", artifact_name), artifact_name, f"{field_name}.review_status")
+    _expect_str(_expect_required_field(payload, "section_id", artifact_name), artifact_name, f"{field_name}.section_id")
+    summary_sources = _expect_dict(_expect_required_field(payload, "summary_sources", artifact_name), artifact_name, f"{field_name}.summary_sources")
+    for source_key in ("approval_status", "latest_decision", "latest_stage", "latest_stage_status", "review_status"):
+        _expect_optional_str(_expect_required_field(summary_sources, source_key, artifact_name), artifact_name, f"{field_name}.summary_sources.{source_key}")
+
+
+def _validate_review_index_schema(payload: Any) -> None:
+    artifact_name = "reviews/index.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _expect_str_list(_expect_required_field(artifact, "section_order", artifact_name), artifact_name, "section_order")
+    sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
+    summary = _expect_dict(_expect_required_field(artifact, "summary", artifact_name), artifact_name, "summary")
+    for key in ("sections_with_approval", "sections_with_execution", "sections_with_outputs", "sections_with_review", "total_sections_seen"):
+        _expect_int(_expect_required_field(summary, key, artifact_name), artifact_name, f"summary.{key}")
+    for index, section in enumerate(sections):
+        entry = _expect_dict(section, artifact_name, f"sections[{index}]")
+        _expect_int(_expect_required_field(entry, "entry_order", artifact_name), artifact_name, f"sections[{index}].entry_order")
+        _expect_str(_expect_required_field(entry, "section_id", artifact_name), artifact_name, f"sections[{index}].section_id")
+        for key in (
+            "preview_path",
+            "review_path",
+            "approval_path",
+            "execution_path",
+            "output_path",
+            "lifecycle_trace_path",
+            "approval_status",
+            "selected_mode",
+            "preflight_status",
+            "stale_status",
+            "gate_status",
+            "alignment_status",
+            "execution_status",
+            "decision_source",
+            "review_status",
+            "latest_decision",
+            "latest_decision_source",
+            "approval_timestamp",
+        ):
+            _expect_optional_str(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        for key in ("execution_permitted", "stale_detected", "execution_allowed", "execution_blocked", "alignment_blocked", "approval_consumed"):
+            _expect_optional_bool(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        review_approval_summary = _expect_dict(_expect_required_field(entry, "review_approval_summary", artifact_name), artifact_name, f"sections[{index}].review_approval_summary")
+        for key in ("approval_status", "decision_source", "latest_decision", "latest_decision_source", "review_status"):
+            _expect_optional_str(_expect_required_field(review_approval_summary, key, artifact_name), artifact_name, f"sections[{index}].review_approval_summary.{key}")
+        _validate_section_summary_schema(_expect_required_field(entry, "section_summary", artifact_name), artifact_name, f"sections[{index}].section_summary")
+        navigation_links = _expect_list(_expect_required_field(entry, "navigation_links", artifact_name), artifact_name, f"sections[{index}].navigation_links")
+        for link_index, link in enumerate(navigation_links):
+            link_entry = _expect_dict(link, artifact_name, f"sections[{index}].navigation_links[{link_index}]")
+            _expect_str(_expect_required_field(link_entry, "link_role", artifact_name), artifact_name, f"sections[{index}].navigation_links[{link_index}].link_role")
+            _expect_optional_str(_expect_required_field(link_entry, "path", artifact_name), artifact_name, f"sections[{index}].navigation_links[{link_index}].path")
+
+
+def _validate_lifecycle_trace_schema(payload: Any) -> None:
+    artifact_name = "lifecycle_trace.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _expect_str_list(_expect_required_field(artifact, "lifecycle_order", artifact_name), artifact_name, "lifecycle_order")
+    _expect_int(_expect_required_field(artifact, "total_sections_seen", artifact_name), artifact_name, "total_sections_seen")
+    sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
+    for index, section in enumerate(sections):
+        entry = _expect_dict(section, artifact_name, f"sections[{index}]")
+        for key in ("section_id", "approval_status", "decision_source", "review_status", "latest_decision", "latest_decision_source", "latest_stage", "latest_stage_status"):
+            validator = _expect_str if key == "section_id" else _expect_optional_str
+            validator(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        _validate_section_summary_schema(_expect_required_field(entry, "section_summary", artifact_name), artifact_name, f"sections[{index}].section_summary")
+        trace_summary = _expect_dict(_expect_required_field(entry, "trace_summary", artifact_name), artifact_name, f"sections[{index}].trace_summary")
+        for key in ("available_artifact_count", "completed_stage_count", "trace_entry_count"):
+            _expect_int(_expect_required_field(trace_summary, key, artifact_name), artifact_name, f"sections[{index}].trace_summary.{key}")
+        for key in ("approval_status", "decision_source", "latest_decision", "latest_decision_source", "latest_stage", "latest_stage_status", "review_status"):
+            _expect_optional_str(_expect_required_field(trace_summary, key, artifact_name), artifact_name, f"sections[{index}].trace_summary.{key}")
+        _expect_str(_expect_required_field(trace_summary, "section_id", artifact_name), artifact_name, f"sections[{index}].trace_summary.section_id")
+        trace_entries = _expect_list(_expect_required_field(entry, "trace_entries", artifact_name), artifact_name, f"sections[{index}].trace_entries")
+        for trace_index, trace_entry in enumerate(trace_entries):
+            trace_payload = _expect_dict(trace_entry, artifact_name, f"sections[{index}].trace_entries[{trace_index}]")
+            _expect_optional_str(_expect_required_field(trace_payload, "artifact_path", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].artifact_path")
+            _expect_bool(_expect_required_field(trace_payload, "artifact_present", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].artifact_present")
+            _expect_str(_expect_required_field(trace_payload, "stage", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].stage")
+            _expect_int(_expect_required_field(trace_payload, "stage_order", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].stage_order")
+            _expect_optional_str(_expect_required_field(trace_payload, "stage_status", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].stage_status")
+            linkage = _expect_list(_expect_required_field(trace_payload, "linkage", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].linkage")
+            for link_index, link in enumerate(linkage):
+                link_entry = _expect_dict(link, artifact_name, f"sections[{index}].trace_entries[{trace_index}].linkage[{link_index}]")
+                _expect_str(_expect_required_field(link_entry, "ref_name", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].linkage[{link_index}].ref_name")
+                _expect_optional_str(_expect_required_field(link_entry, "ref_path", artifact_name), artifact_name, f"sections[{index}].trace_entries[{trace_index}].linkage[{link_index}].ref_path")
+
+
+def _validate_workspace_index_schema(payload: Any) -> None:
+    artifact_name = "workspace_index.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    artifact_paths = _expect_dict(_expect_required_field(artifact, "artifact_paths", artifact_name), artifact_name, "artifact_paths")
+    for key in ("lifecycle_trace_path", "review_index_path", "workspace_summary_path"):
+        _expect_str(_expect_required_field(artifact_paths, key, artifact_name), artifact_name, f"artifact_paths.{key}")
+    _expect_str_list(_expect_required_field(artifact, "section_order", artifact_name), artifact_name, "section_order")
+    sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
+    summary = _expect_dict(_expect_required_field(artifact, "summary", artifact_name), artifact_name, "summary")
+    for key in ("sections_with_execution", "sections_with_lifecycle_trace", "sections_with_outputs", "total_sections_seen"):
+        _expect_int(_expect_required_field(summary, key, artifact_name), artifact_name, f"summary.{key}")
+    latest_stage_counts = _expect_list(_expect_required_field(summary, "latest_stage_counts", artifact_name), artifact_name, "summary.latest_stage_counts")
+    for count_index, count_entry in enumerate(latest_stage_counts):
+        count_payload = _expect_dict(count_entry, artifact_name, f"summary.latest_stage_counts[{count_index}]")
+        _expect_int(_expect_required_field(count_payload, "section_count", artifact_name), artifact_name, f"summary.latest_stage_counts[{count_index}].section_count")
+        _expect_str(_expect_required_field(count_payload, "stage", artifact_name), artifact_name, f"summary.latest_stage_counts[{count_index}].stage")
+    for index, section in enumerate(sections):
+        entry = _expect_dict(section, artifact_name, f"sections[{index}]")
+        _expect_int(_expect_required_field(entry, "entry_order", artifact_name), artifact_name, f"sections[{index}].entry_order")
+        _expect_optional_int(_expect_required_field(entry, "trace_entry_count", artifact_name), artifact_name, f"sections[{index}].trace_entry_count")
+        for key in ("section_id", "execution_status", "approval_status", "decision_source", "review_status", "latest_decision", "latest_decision_source", "latest_run_outcome_class", "latest_stage", "latest_stage_status", "lifecycle_trace_path", "execution_path", "output_path"):
+            validator = _expect_str if key in {"section_id", "lifecycle_trace_path"} else _expect_optional_str
+            validator(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        artifact_links = _expect_list(_expect_required_field(entry, "artifact_links", artifact_name), artifact_name, f"sections[{index}].artifact_links")
+        for link_index, link in enumerate(artifact_links):
+            link_entry = _expect_dict(link, artifact_name, f"sections[{index}].artifact_links[{link_index}]")
+            _expect_str(_expect_required_field(link_entry, "artifact_role", artifact_name), artifact_name, f"sections[{index}].artifact_links[{link_index}].artifact_role")
+            _expect_str(_expect_required_field(link_entry, "path", artifact_name), artifact_name, f"sections[{index}].artifact_links[{link_index}].path")
+        _validate_section_summary_schema(_expect_required_field(entry, "section_summary", artifact_name), artifact_name, f"sections[{index}].section_summary")
+        _expect_dict(_expect_required_field(entry, "trace_summary", artifact_name), artifact_name, f"sections[{index}].trace_summary")
+
+
+def _validate_dashboard_schema(payload: Any) -> None:
+    artifact_name = "dashboard.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    artifact_paths = _expect_dict(_expect_required_field(artifact, "artifact_paths", artifact_name), artifact_name, "artifact_paths")
+    for key in ("lifecycle_trace_path", "review_index_path", "workspace_index_path"):
+        _expect_str(_expect_required_field(artifact_paths, key, artifact_name), artifact_name, f"artifact_paths.{key}")
+    _expect_str_list(_expect_required_field(artifact, "section_order", artifact_name), artifact_name, "section_order")
+    sections = _expect_list(_expect_required_field(artifact, "sections", artifact_name), artifact_name, "sections")
+    summary = _expect_dict(_expect_required_field(artifact, "summary", artifact_name), artifact_name, "summary")
+    for key in ("approval_status_counts", "current_stage_counts", "review_status_counts", "stage_status_counts"):
+        count_entries = _expect_list(_expect_required_field(summary, key, artifact_name), artifact_name, f"summary.{key}")
+        for count_index, count_entry in enumerate(count_entries):
+            count_payload = _expect_dict(count_entry, artifact_name, f"summary.{key}[{count_index}]")
+            _expect_int(_expect_required_field(count_payload, "section_count", artifact_name), artifact_name, f"summary.{key}[{count_index}].section_count")
+            _expect_str(_expect_required_field(count_payload, "value", artifact_name), artifact_name, f"summary.{key}[{count_index}].value")
+    _expect_int(_expect_required_field(summary, "total_sections", artifact_name), artifact_name, "summary.total_sections")
+    for index, section in enumerate(sections):
+        entry = _expect_dict(section, artifact_name, f"sections[{index}]")
+        _expect_int(_expect_required_field(entry, "entry_order", artifact_name), artifact_name, f"sections[{index}].entry_order")
+        for key in ("section_id", "current_stage", "stage_status", "latest_decision", "decision_source", "approval_status", "review_status"):
+            validator = _expect_str if key == "section_id" else _expect_optional_str
+            validator(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
+        progress = _expect_dict(_expect_required_field(entry, "progress", artifact_name), artifact_name, f"sections[{index}].progress")
+        for key in ("available_artifact_count", "completed_stage_count", "lifecycle_stage_count", "trace_entry_count"):
+            _expect_int(_expect_required_field(progress, key, artifact_name), artifact_name, f"sections[{index}].progress.{key}")
+        navigation_links = _expect_dict(_expect_required_field(entry, "navigation_links", artifact_name), artifact_name, f"sections[{index}].navigation_links")
+        for key in ("approval", "execution", "lifecycle_trace", "outputs", "review"):
+            _expect_optional_str(_expect_required_field(navigation_links, key, artifact_name), artifact_name, f"sections[{index}].navigation_links.{key}")
+        _validate_section_summary_schema(_expect_required_field(entry, "section_summary", artifact_name), artifact_name, f"sections[{index}].section_summary")
+
+
+def _validate_execution_output_schema(payload: Any) -> None:
+    artifact_name = "outputs"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    for key in ("section_id", "run_mode", "run_outcome_class"):
+        _expect_str(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
+    file_plan = _expect_dict(_expect_required_field(artifact, "file_plan", artifact_name), artifact_name, "file_plan")
+    _expect_str(_expect_required_field(file_plan, "project_name", artifact_name), artifact_name, "file_plan.project_name")
+    files = _expect_list(_expect_required_field(file_plan, "files", artifact_name), artifact_name, "file_plan.files")
+    for index, file_entry in enumerate(files):
+        payload_entry = _expect_dict(file_entry, artifact_name, f"file_plan.files[{index}]")
+        for key in ("path", "purpose", "source"):
+            _expect_str(_expect_required_field(payload_entry, key, artifact_name), artifact_name, f"file_plan.files[{index}].{key}")
+    execution_outcome = _expect_dict(_expect_required_field(artifact, "execution_outcome", artifact_name), artifact_name, "execution_outcome")
+    for key in ("section_id", "stage", "status"):
+        _expect_str(_expect_required_field(execution_outcome, key, artifact_name), artifact_name, f"execution_outcome.{key}")
+    validation_summary = _expect_dict(_expect_required_field(execution_outcome, "validation_summary", artifact_name), artifact_name, "execution_outcome.validation_summary")
+    _expect_bool(_expect_required_field(validation_summary, "ok", artifact_name), artifact_name, "execution_outcome.validation_summary.ok")
+    if _expect_required_field(validation_summary, "error", artifact_name) is not None:
+        _expect_str(validation_summary["error"], artifact_name, "execution_outcome.validation_summary.error")
+    _expect_list(_expect_required_field(validation_summary, "missing_keys", artifact_name), artifact_name, "execution_outcome.validation_summary.missing_keys")
+    change_plan_summary = _expect_dict(_expect_required_field(execution_outcome, "change_plan_summary", artifact_name), artifact_name, "execution_outcome.change_plan_summary")
+    execution_summary = _expect_dict(_expect_required_field(execution_outcome, "execution_summary", artifact_name), artifact_name, "execution_outcome.execution_summary")
+    for key in ("create_count", "ignore_count", "modify_count"):
+        _expect_int(_expect_required_field(change_plan_summary, key, artifact_name), artifact_name, f"execution_outcome.change_plan_summary.{key}")
+    for key in (
+        "written_files_count",
+        "skipped_modify_count",
+        "skipped_ignore_count",
+        "skipped_identical_count",
+        "skipped_ownership_count",
+        "skipped_exists_fallback_count",
+    ):
+        _expect_int(_expect_required_field(execution_summary, key, artifact_name), artifact_name, f"execution_outcome.execution_summary.{key}")
+    advisory = _expect_required_field(artifact, "advisory", artifact_name)
+    if advisory is not None:
+        _expect_dict(advisory, artifact_name, "advisory")
+    generated_artifacts = _expect_list(_expect_required_field(artifact, "generated_artifacts", artifact_name), artifact_name, "generated_artifacts")
+    for index, artifact_entry in enumerate(generated_artifacts):
+        payload_entry = _expect_dict(artifact_entry, artifact_name, f"generated_artifacts[{index}]")
+        for key in ("artifact_id", "artifact_kind", "implementation_unit", "path", "producer_ref", "purpose", "source", "write_decision", "write_reason"):
+            _expect_str(_expect_required_field(payload_entry, key, artifact_name), artifact_name, f"generated_artifacts[{index}].{key}")
+        _expect_int(_expect_required_field(payload_entry, "bytes_written", artifact_name), artifact_name, f"generated_artifacts[{index}].bytes_written")
+    output_summary = _expect_dict(_expect_required_field(artifact, "output_summary", artifact_name), artifact_name, "output_summary")
+    for key in ("artifact_count", "written_artifact_count"):
+        _expect_int(_expect_required_field(output_summary, key, artifact_name), artifact_name, f"output_summary.{key}")
+    for key in ("execution_status", "run_outcome_class", "section_id"):
+        _expect_str(_expect_required_field(output_summary, key, artifact_name), artifact_name, f"output_summary.{key}")
+    _expect_optional_str(_expect_required_field(output_summary, "primary_artifact_path", artifact_name), artifact_name, "output_summary.primary_artifact_path")
+    _expect_dict(_expect_required_field(output_summary, "execution_summary", artifact_name), artifact_name, "output_summary.execution_summary")
+    _expect_str_list(_expect_required_field(output_summary, "sources", artifact_name), artifact_name, "output_summary.sources")
+    write_transparency = _expect_dict(_expect_required_field(artifact, "write_transparency", artifact_name), artifact_name, "write_transparency")
+    _expect_list(_expect_required_field(write_transparency, "write_decisions", artifact_name), artifact_name, "write_transparency.write_decisions")
+    _expect_dict(_expect_required_field(write_transparency, "write_summary", artifact_name), artifact_name, "write_transparency.write_summary")
+
+
+def _validate_execution_stamp_schema(payload: Any) -> None:
+    artifact_name = "execution_stamp"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    for key in (
+        "section_id",
+        "execution_status",
+        "approval_path",
+        "preflight_path",
+        "execution_gate_path",
+        "alignment_path",
+        "outputs_path",
+        "selected_mode",
+        "effective_execution_mode",
+        "approval_status_before",
+        "approval_status_after",
+        "run_outcome_class",
+        "execution_timestamp",
+    ):
+        validator = _expect_str if key in {"section_id", "execution_status", "effective_execution_mode", "execution_timestamp"} else _expect_optional_str
+        validator(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
+    for key in ("governed_execution", "require_preflight_pass", "approval_consumed", "execution_blocked"):
+        _expect_bool(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
+    for key in ("written_file_count", "modify_written_count", "created_written_count"):
+        _expect_int(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
+    linked_artifacts = _expect_list(_expect_required_field(artifact, "linked_artifacts", artifact_name), artifact_name, "linked_artifacts")
+    for index, link in enumerate(linked_artifacts):
+        payload_entry = _expect_dict(link, artifact_name, f"linked_artifacts[{index}]")
+        _expect_str(_expect_required_field(payload_entry, "artifact_role", artifact_name), artifact_name, f"linked_artifacts[{index}].artifact_role")
+        _expect_optional_str(_expect_required_field(payload_entry, "artifact_path", artifact_name), artifact_name, f"linked_artifacts[{index}].artifact_path")
+        _expect_bool(_expect_required_field(payload_entry, "present", artifact_name), artifact_name, f"linked_artifacts[{index}].present")
+    artifact_results = _expect_list(_expect_required_field(artifact, "artifact_results", artifact_name), artifact_name, "artifact_results")
+    for index, artifact_entry in enumerate(artifact_results):
+        payload_entry = _expect_dict(artifact_entry, artifact_name, f"artifact_results[{index}]")
+        for key in ("artifact_id", "artifact_kind", "implementation_unit", "path", "producer_ref", "result_status", "source", "write_decision", "write_reason"):
+            _expect_str(_expect_required_field(payload_entry, key, artifact_name), artifact_name, f"artifact_results[{index}].{key}")
+        _expect_int(_expect_required_field(payload_entry, "bytes_written", artifact_name), artifact_name, f"artifact_results[{index}].bytes_written")
+    unit_results = _expect_list(_expect_required_field(artifact, "unit_results", artifact_name), artifact_name, "unit_results")
+    for index, unit_entry in enumerate(unit_results):
+        payload_entry = _expect_dict(unit_entry, artifact_name, f"unit_results[{index}]")
+        for key in ("artifact_count", "skipped_artifact_count", "written_artifact_count"):
+            _expect_int(_expect_required_field(payload_entry, key, artifact_name), artifact_name, f"unit_results[{index}].{key}")
+        _expect_str(_expect_required_field(payload_entry, "unit_id", artifact_name), artifact_name, f"unit_results[{index}].unit_id")
+        _expect_str(_expect_required_field(payload_entry, "unit_status", artifact_name), artifact_name, f"unit_results[{index}].unit_status")
+        _expect_str_list(_expect_required_field(payload_entry, "paths", artifact_name), artifact_name, f"unit_results[{index}].paths")
+    for key in ("executed_units", "skipped_units", "failed_units"):
+        _expect_str_list(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
+    execution_record_summary = _expect_dict(_expect_required_field(artifact, "execution_record_summary", artifact_name), artifact_name, "execution_record_summary")
+    for key in ("execution_status",):
+        _expect_str(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
+    for key in ("run_outcome_class",):
+        _expect_optional_str(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
+    _expect_bool(_expect_required_field(execution_record_summary, "execution_blocked", artifact_name), artifact_name, "execution_record_summary.execution_blocked")
+    for key in ("executed_unit_count", "linked_artifact_count", "result_artifact_count", "skipped_artifact_count", "skipped_unit_count", "written_artifact_count"):
+        _expect_int(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
+
+
+def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
+    normalized_path = path.as_posix()
+    if normalized_path.endswith(".dce/reviews/index.json"):
+        _validate_review_index_schema(payload)
+    elif normalized_path.endswith(".dce/lifecycle_trace.json"):
+        _validate_lifecycle_trace_schema(payload)
+    elif normalized_path.endswith(".dce/workspace_index.json"):
+        _validate_workspace_index_schema(payload)
+    elif normalized_path.endswith(".dce/dashboard.json"):
+        _validate_dashboard_schema(payload)
+    elif "/.dce/outputs/" in normalized_path:
+        _validate_execution_output_schema(payload)
+    elif "/.dce/execution/" in normalized_path and normalized_path.endswith(".execution.json"):
+        _validate_execution_stamp_schema(payload)
+
+
 def _write_json(path: Path, payload: object) -> None:
     """Persist deterministic JSON with stable formatting."""
+    _validate_locked_artifact_schema(path, payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import aether.dgce.decompose as dgce_decompose
+import pytest
 from aether.dgce import DGCESection, FilePlan, SectionAlignmentInput, SectionApprovalInput, SectionExecutionGateInput, SectionExecutionStampInput, SectionPreflightInput, SectionStaleCheckInput, compute_artifact_fingerprint, compute_json_payload_fingerprint, record_section_alignment, record_section_approval, record_section_execution_gate, record_section_execution_stamp, record_section_preflight, record_section_stale_check, run_dgce_section, run_section_with_workspace
 from aether.dgce.decompose import ResponseEnvelope, _build_run_outcome_class, _validate_write_stage_structured_content, compute_preview_payload_fingerprint
 from aether.dgce.incremental import (
@@ -7235,6 +7236,87 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "workspace_index": (project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"),
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
     }
+
+
+def test_locked_artifact_schemas_accept_current_dgce_artifacts(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_schema_lock_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+
+    for path in (
+        project_root / ".dce" / "reviews" / "index.json",
+        project_root / ".dce" / "lifecycle_trace.json",
+        project_root / ".dce" / "workspace_index.json",
+        project_root / ".dce" / "dashboard.json",
+        project_root / ".dce" / "outputs" / "mission-board.json",
+        project_root / ".dce" / "execution" / "mission-board.execution.json",
+    ):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        dgce_decompose._validate_locked_artifact_schema(path, payload)
+
+
+def test_locked_artifact_schemas_reject_missing_required_fields(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_schema_lock_missing_field")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+
+    artifact_cases = [
+        (project_root / ".dce" / "reviews" / "index.json", ("sections", 0, "review_approval_summary")),
+        (project_root / ".dce" / "lifecycle_trace.json", ("sections", 0, "trace_summary")),
+        (project_root / ".dce" / "workspace_index.json", ("sections", 0, "section_summary")),
+        (project_root / ".dce" / "dashboard.json", ("sections", 0, "progress")),
+        (project_root / ".dce" / "outputs" / "mission-board.json", ("output_summary",)),
+        (project_root / ".dce" / "execution" / "mission-board.execution.json", ("execution_record_summary",)),
+    ]
+
+    for path, field_path in artifact_cases:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        target = payload
+        for segment in field_path[:-1]:
+            target = target[segment]
+        target.pop(field_path[-1])
+        with pytest.raises(ValueError):
+            dgce_decompose._validate_locked_artifact_schema(path, payload)
 
 
 def test_run_section_with_workspace_workspace_index_is_deterministic_and_governed(monkeypatch):
