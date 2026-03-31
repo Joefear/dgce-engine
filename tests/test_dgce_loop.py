@@ -3853,6 +3853,74 @@ def test_dgce_dashboard_single_section_success(monkeypatch):
     }
 
 
+def test_dgce_artifact_manifest_single_section_success(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _scaffold_dir("dgce_artifact_manifest_success")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section(), project_root)
+    payload = json.loads((project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"))
+
+    assert payload == {
+        **_expected_artifact_metadata("artifact_manifest"),
+        "artifacts": [
+            {
+                "artifact_path": ".dce/reviews/index.json",
+                "artifact_type": "review_index",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/workspace_summary.json",
+                "artifact_type": "workspace_summary",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/lifecycle_trace.json",
+                "artifact_type": "lifecycle_trace",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/workspace_index.json",
+                "artifact_type": "workspace_index",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/dashboard.json",
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/outputs/mission-board.json",
+                "artifact_type": "output_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/execution/mission-board.execution.json",
+                "artifact_type": "execution_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+        ],
+    }
+
+
 def test_dgce_workspace_summary_is_sorted_when_multiple_outputs_exist(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _scaffold_dir("dgce_workspace_summary_sorted")

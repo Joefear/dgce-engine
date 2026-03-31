@@ -7174,6 +7174,42 @@ def test_dashboard_artifact_is_deterministic_for_repeated_governed_runs(monkeypa
     }
 
 
+def test_artifact_manifest_is_deterministic_for_repeated_governed_runs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_artifact_manifest_repeat_a")
+    second_root = _workspace_dir("dgce_artifact_manifest_repeat_b")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    for root in (first_root, second_root):
+        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        run_section_with_workspace(
+            _section(),
+            root,
+            require_preflight_pass=True,
+            gate_timestamp="2026-03-26T00:00:00Z",
+            preflight_validation_timestamp="2026-03-26T00:00:00Z",
+            alignment_timestamp="2026-03-26T00:00:00Z",
+            execution_timestamp="2026-03-26T00:00:00Z",
+        )
+
+    first_manifest = json.loads((first_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"))
+    second_manifest = json.loads((second_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"))
+
+    assert first_manifest == second_manifest
+    assert (first_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "artifact_manifest.json"
+    ).read_text(encoding="utf-8")
+
+
 def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output_drift(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_refresh_efficiency")
@@ -7206,6 +7242,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "lifecycle_trace": (project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"),
         "workspace_index": (project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"),
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
+        "artifact_manifest": (project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"),
     }
 
     call_counts = {
@@ -7213,11 +7250,13 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "lifecycle_trace": 0,
         "workspace_index": 0,
         "dashboard": 0,
+        "artifact_manifest": 0,
     }
     original_build_review_index = dgce_decompose._build_review_index
     original_build_lifecycle_trace = dgce_decompose._build_lifecycle_trace
     original_build_workspace_index = dgce_decompose._build_workspace_index
     original_build_dashboard_view = dgce_decompose._build_dashboard_view
+    original_build_artifact_manifest = dgce_decompose._build_artifact_manifest
 
     def counting_build_review_index(*args, **kwargs):
         call_counts["review_index"] += 1
@@ -7235,10 +7274,15 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         call_counts["dashboard"] += 1
         return original_build_dashboard_view(*args, **kwargs)
 
+    def counting_build_artifact_manifest(*args, **kwargs):
+        call_counts["artifact_manifest"] += 1
+        return original_build_artifact_manifest(*args, **kwargs)
+
     monkeypatch.setattr(dgce_decompose, "_build_review_index", counting_build_review_index)
     monkeypatch.setattr(dgce_decompose, "_build_lifecycle_trace", counting_build_lifecycle_trace)
     monkeypatch.setattr(dgce_decompose, "_build_workspace_index", counting_build_workspace_index)
     monkeypatch.setattr(dgce_decompose, "_build_dashboard_view", counting_build_dashboard_view)
+    monkeypatch.setattr(dgce_decompose, "_build_artifact_manifest", counting_build_artifact_manifest)
 
     dgce_decompose._refresh_workspace_views(dgce_decompose._ensure_workspace(project_root))
 
@@ -7247,6 +7291,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "lifecycle_trace": 1,
         "workspace_index": 1,
         "dashboard": 1,
+        "artifact_manifest": 1,
     }
     assert before_refresh == {
         "review_index": (project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"),
@@ -7254,6 +7299,7 @@ def test_refresh_workspace_views_reuses_in_memory_builder_results_without_output
         "lifecycle_trace": (project_root / ".dce" / "lifecycle_trace.json").read_text(encoding="utf-8"),
         "workspace_index": (project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"),
         "dashboard": (project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"),
+        "artifact_manifest": (project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"),
     }
 
 
@@ -7288,6 +7334,7 @@ def test_locked_artifact_schemas_accept_current_dgce_artifacts(monkeypatch):
         project_root / ".dce" / "lifecycle_trace.json",
         project_root / ".dce" / "workspace_index.json",
         project_root / ".dce" / "dashboard.json",
+        project_root / ".dce" / "artifact_manifest.json",
         project_root / ".dce" / "outputs" / "mission-board.json",
         project_root / ".dce" / "execution" / "mission-board.execution.json",
     ):
@@ -7326,6 +7373,7 @@ def test_locked_artifact_schemas_reject_missing_required_fields(monkeypatch):
         (project_root / ".dce" / "lifecycle_trace.json", ("sections", 0, "trace_summary")),
         (project_root / ".dce" / "workspace_index.json", ("sections", 0, "section_summary")),
         (project_root / ".dce" / "dashboard.json", ("sections", 0, "progress")),
+        (project_root / ".dce" / "artifact_manifest.json", ("artifacts", 0, "artifact_type")),
         (project_root / ".dce" / "outputs" / "mission-board.json", ("output_summary",)),
         (project_root / ".dce" / "execution" / "mission-board.execution.json", ("execution_record_summary",)),
     ]
@@ -7347,6 +7395,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
         "lifecycle_trace": 0,
         "workspace_index": 0,
         "dashboard": 0,
+        "artifact_manifest": 0,
         "outputs": 0,
         "execution": 0,
     }
@@ -7356,6 +7405,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
     monkeypatch.setattr(dgce_decompose, "_validate_lifecycle_trace_schema", lambda payload: calls.__setitem__("lifecycle_trace", calls["lifecycle_trace"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_workspace_index_schema", lambda payload: calls.__setitem__("workspace_index", calls["workspace_index"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_dashboard_schema", lambda payload: calls.__setitem__("dashboard", calls["dashboard"] + 1))
+    monkeypatch.setattr(dgce_decompose, "_validate_artifact_manifest_schema", lambda payload: calls.__setitem__("artifact_manifest", calls["artifact_manifest"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_execution_output_schema", lambda payload: calls.__setitem__("outputs", calls["outputs"] + 1))
     monkeypatch.setattr(dgce_decompose, "_validate_execution_stamp_schema", lambda payload: calls.__setitem__("execution", calls["execution"] + 1))
 
@@ -7366,6 +7416,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
         (Path("workspace/.dce/lifecycle_trace.json"), "lifecycle_trace"),
         (Path("workspace/.dce/workspace_index.json"), "workspace_index"),
         (Path("workspace/.dce/dashboard.json"), "dashboard"),
+        (Path("workspace/.dce/artifact_manifest.json"), "artifact_manifest"),
         (Path("workspace/.dce/outputs/mission-board.json"), "outputs"),
         (Path("workspace/.dce/execution/mission-board.execution.json"), "execution"),
         (Path("workspace\\nested\\.dce\\outputs\\mission-board.json"), "outputs"),
@@ -7386,6 +7437,7 @@ def test_locked_artifact_schema_dispatch_validates_only_exact_dgce_artifact_path
         Path("workspace/.dce/execution_nested/mission-board.execution.json"),
         Path("workspace/.dce/reviews/index.json.bak"),
         Path("workspace/.dce/dashboard.json.tmp"),
+        Path("workspace/.dce/artifact_manifest.json.bak"),
         Path("workspace/.dce/outputs/mission-board.execution.json"),
         Path("workspace/.dce/execution/mission-board.json"),
         Path("workspace/similar/.dcex/outputs/mission-board.json"),
@@ -7771,6 +7823,90 @@ def test_dashboard_artifact_has_stable_multi_section_ordering_and_summary_counts
         latest_stage_status="success_create_only",
         review_status="review_available",
     )
+
+
+def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_artifact_manifest_multi_section")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    run_section_with_workspace(_section_named("Mission Board"), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    run_section_with_workspace(
+        _section_named("Mission Board"),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    run_section_with_workspace(_section_named("Alpha Section"), project_root, incremental_mode="incremental_v2")
+
+    payload = json.loads((project_root / ".dce" / "artifact_manifest.json").read_text(encoding="utf-8"))
+
+    assert payload == {
+        **_expected_artifact_metadata("artifact_manifest"),
+        "artifacts": [
+            {
+                "artifact_path": ".dce/reviews/index.json",
+                "artifact_type": "review_index",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/workspace_summary.json",
+                "artifact_type": "workspace_summary",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/lifecycle_trace.json",
+                "artifact_type": "lifecycle_trace",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/workspace_index.json",
+                "artifact_type": "workspace_index",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/dashboard.json",
+                "artifact_type": "dashboard",
+                "schema_version": "1.0",
+                "scope": "workspace",
+                "section_id": None,
+            },
+            {
+                "artifact_path": ".dce/outputs/mission-board.json",
+                "artifact_type": "output_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/execution/mission-board.execution.json",
+                "artifact_type": "execution_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+        ],
+    }
 
 
 def test_build_run_outcome_class_treats_skipped_modify_zero_write_run_as_execution_no_changes():

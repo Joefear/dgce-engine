@@ -1596,6 +1596,22 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         _expect_int(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
 
 
+def _validate_artifact_manifest_schema(payload: Any) -> None:
+    artifact_name = "artifact_manifest.json"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "artifact_manifest")
+    artifacts = _expect_list(_expect_required_field(artifact, "artifacts", artifact_name), artifact_name, "artifacts")
+    for index, entry in enumerate(artifacts):
+        manifest_entry = _expect_dict(entry, artifact_name, f"artifacts[{index}]")
+        _expect_str(_expect_required_field(manifest_entry, "artifact_path", artifact_name), artifact_name, f"artifacts[{index}].artifact_path")
+        _expect_str(_expect_required_field(manifest_entry, "artifact_type", artifact_name), artifact_name, f"artifacts[{index}].artifact_type")
+        _expect_str(_expect_required_field(manifest_entry, "schema_version", artifact_name), artifact_name, f"artifacts[{index}].schema_version")
+        _expect_str(_expect_required_field(manifest_entry, "scope", artifact_name), artifact_name, f"artifacts[{index}].scope")
+        _expect_optional_str(_expect_required_field(manifest_entry, "section_id", artifact_name), artifact_name, f"artifacts[{index}].section_id")
+        if manifest_entry["scope"] not in {"workspace", "section"}:
+            _schema_error(artifact_name, f"artifacts[{index}].scope must be workspace or section")
+
+
 def _normalized_path_parts(path: Path) -> tuple[str, ...]:
     normalized = os.path.normpath(str(path))
     return tuple(Path(normalized).parts)
@@ -1632,6 +1648,8 @@ def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
         _validate_workspace_index_schema(payload)
     elif _artifact_path_matches(path, (".dce", "dashboard.json")):
         _validate_dashboard_schema(payload)
+    elif _artifact_path_matches(path, (".dce", "artifact_manifest.json")):
+        _validate_artifact_manifest_schema(payload)
     elif _artifact_path_matches_outputs_json(path):
         _validate_execution_output_schema(payload)
     elif _artifact_path_matches_execution_json(path):
@@ -4002,6 +4020,67 @@ def _build_dashboard_view(
     )
 
 
+def _build_artifact_manifest(
+    review_index: dict[str, Any],
+    workspace_summary: dict[str, Any],
+    lifecycle_trace: dict[str, Any],
+    workspace_index: dict[str, Any],
+    dashboard: dict[str, Any],
+) -> dict[str, Any]:
+    workspace_artifacts = [
+        (".dce/reviews/index.json", review_index),
+        (".dce/workspace_summary.json", workspace_summary),
+        (".dce/lifecycle_trace.json", lifecycle_trace),
+        (".dce/workspace_index.json", workspace_index),
+        (".dce/dashboard.json", dashboard),
+    ]
+    artifacts = [
+        {
+            "artifact_path": artifact_path,
+            "artifact_type": str(artifact_payload.get("artifact_type")),
+            "schema_version": str(artifact_payload.get("schema_version")),
+            "scope": "workspace",
+            "section_id": None,
+        }
+        for artifact_path, artifact_payload in workspace_artifacts
+    ]
+
+    section_artifacts: list[dict[str, Any]] = []
+    for section_entry in workspace_index.get("sections", []):
+        if not isinstance(section_entry, dict):
+            continue
+        section_id = section_entry.get("section_id")
+        if not isinstance(section_id, str):
+            continue
+        for artifact_type, artifact_path in (
+            ("output_record", section_entry.get("output_path")),
+            ("execution_record", section_entry.get("execution_path")),
+        ):
+            if artifact_path is None:
+                continue
+            section_artifacts.append(
+                {
+                    "artifact_path": str(artifact_path),
+                    "artifact_type": artifact_type,
+                    "schema_version": DGCE_ARTIFACT_SCHEMA_VERSION,
+                    "scope": "section",
+                    "section_id": section_id,
+                }
+            )
+
+    artifacts.extend(
+        sorted(
+            section_artifacts,
+            key=lambda entry: (
+                str(entry["section_id"]),
+                0 if entry["artifact_type"] == "output_record" else 1,
+                str(entry["artifact_path"]),
+            ),
+        )
+    )
+    return _with_artifact_metadata("artifact_manifest", {"artifacts": artifacts})
+
+
 def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     section_ids = _read_workspace_index(workspace["index"])
     review_index = _build_review_index(workspace["root"], section_ids)
@@ -4009,11 +4088,13 @@ def _refresh_workspace_views(workspace: dict[str, Path]) -> None:
     lifecycle_trace = _build_lifecycle_trace(workspace["root"], section_ids)
     workspace_index = _build_workspace_index(workspace["root"], section_ids, workspace_summary, lifecycle_trace)
     dashboard = _build_dashboard_view(workspace["root"], section_ids, review_index, lifecycle_trace, workspace_index)
+    artifact_manifest = _build_artifact_manifest(review_index, workspace_summary, lifecycle_trace, workspace_index, dashboard)
     _write_json(workspace["reviews"] / "index.json", review_index)
     _write_json(workspace["root"] / "workspace_summary.json", workspace_summary)
     _write_json(workspace["root"] / "lifecycle_trace.json", lifecycle_trace)
     _write_json(workspace["root"] / "workspace_index.json", workspace_index)
     _write_json(workspace["root"] / "dashboard.json", dashboard)
+    _write_json(workspace["root"] / "artifact_manifest.json", artifact_manifest)
 
 
 def _run_mode_from_allow_safe_modify(allow_safe_modify: bool) -> str:
