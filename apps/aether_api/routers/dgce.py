@@ -1,6 +1,6 @@
 """DGCE section orchestration endpoint for the local Aether API."""
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from aether.dgce import DGCESection, run_section
@@ -29,9 +29,9 @@ def run_dgce_section(section: DGCESection, request: Request) -> dict:
 
 
 @router.post("/dgce/refresh")
-def refresh_dgce_workspace(workspace_path: str = Query(...)) -> dict[str, str | bool]:
+def refresh_dgce_workspace(payload: WorkspacePathRequest) -> dict[str, str | bool]:
     try:
-        project_root = refresh_workspace_artifacts(workspace_path)
+        project_root = refresh_workspace_artifacts(payload.workspace_path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

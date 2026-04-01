@@ -90,7 +90,7 @@ class TestDGCERefreshAPI:
         project_root = _build_workspace(monkeypatch, "dgce_refresh_api_success")
         client = TestClient(create_app())
 
-        response = client.post("/v1/dgce/refresh", params={"workspace_path": str(project_root)})
+        response = client.post("/v1/dgce/refresh", json={"workspace_path": str(project_root)})
 
         assert response.status_code == 200
         assert response.json() == {
@@ -103,9 +103,9 @@ class TestDGCERefreshAPI:
         project_root = _build_workspace(monkeypatch, "dgce_refresh_api_repeat")
         client = TestClient(create_app())
 
-        first_response = client.post("/v1/dgce/refresh", params={"workspace_path": str(project_root)})
+        first_response = client.post("/v1/dgce/refresh", json={"workspace_path": str(project_root)})
         first_dce = _workspace_level_dce_bytes(project_root)
-        second_response = client.post("/v1/dgce/refresh", params={"workspace_path": str(project_root)})
+        second_response = client.post("/v1/dgce/refresh", json={"workspace_path": str(project_root)})
         second_dce = _workspace_level_dce_bytes(project_root)
 
         assert first_response.status_code == 200
@@ -120,7 +120,7 @@ class TestDGCERefreshAPI:
         before_non_dce = _non_dce_bytes(project_root)
         client = TestClient(create_app())
 
-        response = client.post("/v1/dgce/refresh", params={"workspace_path": str(project_root)})
+        response = client.post("/v1/dgce/refresh", json={"workspace_path": str(project_root)})
 
         assert response.status_code == 200
         assert _non_dce_bytes(project_root) == before_non_dce
@@ -128,7 +128,15 @@ class TestDGCERefreshAPI:
     def test_refresh_endpoint_uses_existing_workspace_path_validation(self):
         client = TestClient(create_app())
 
-        response = client.post("/v1/dgce/refresh", params={"workspace_path": ".."})
+        response = client.post("/v1/dgce/refresh", json={"workspace_path": ".."})
 
         assert response.status_code == 400
         assert response.json() == {"detail": response.json()["detail"]}
+
+    def test_refresh_endpoint_no_longer_accepts_query_param_only_input(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_refresh_api_query_only_rejected")
+        client = TestClient(create_app())
+
+        response = client.post("/v1/dgce/refresh", params={"workspace_path": str(project_root)})
+
+        assert response.status_code == 422
