@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from aether.dgce.file_plan import FilePlan, build_file_plan
+from aether.dgce.file_plan import FilePlan, _system_breakdown_files, build_file_plan
 from aether.dgce.incremental import (
     build_change_plan,
     build_incremental_change_plan,
@@ -5099,12 +5099,124 @@ def _governed_owned_target_file_plan(
     require_preflight_pass: bool,
     incremental_mode: Optional[str],
 ) -> FilePlan:
-    """Return the smallest explicit owned-file materialization set for previewed or governed runs."""
-    if not section.expected_targets:
-        return file_plan
+    """Return the explicit owned-file materialization set for previewed or governed runs."""
     if not require_preflight_pass and incremental_mode not in {"incremental_v2", "incremental_v2_1", "incremental_v2_2"}:
         return file_plan
-    return _fallback_expected_target_file_plan(section, responses)
+
+    explicit_owned_bundle = _explicit_owned_bundle_file_plan(file_plan, responses)
+    if explicit_owned_bundle.files and section.expected_targets:
+        return _merge_governed_file_plans(explicit_owned_bundle, _fallback_expected_target_file_plan(section, responses))
+    if explicit_owned_bundle.files:
+        return explicit_owned_bundle
+    if section.expected_targets:
+        return _fallback_expected_target_file_plan(section, responses)
+    return file_plan
+
+
+def _explicit_owned_bundle_file_plan(
+    file_plan: FilePlan,
+    responses: List[ResponseEnvelope],
+) -> FilePlan:
+    """Return only planned files that are explicitly owned by the current section contract."""
+    owned_paths = _collect_explicit_owned_paths(responses)
+    if not owned_paths:
+        return FilePlan(project_name=file_plan.project_name, files=[])
+
+    candidate_files: list[dict[str, Any]] = [dict(file_entry) for file_entry in file_plan.files]
+    for response in responses:
+        payload = _structured_response_payload(response)
+        if not payload or response.task_type != "system_breakdown":
+            continue
+        candidate_files.extend(_system_breakdown_files(payload, payload))
+
+    files: list[dict[str, Any]] = []
+    for file_entry in candidate_files:
+        normalized_path = _normalize_governed_bundle_path(file_entry.get("path"))
+        if normalized_path is None or normalized_path not in owned_paths:
+            continue
+        normalized_entry = dict(file_entry)
+        normalized_entry["path"] = normalized_path
+        files.append(normalized_entry)
+
+    deduped = {
+        str(entry["path"]): entry
+        for entry in sorted(files, key=lambda entry: str(entry["path"]))
+    }
+    return FilePlan(project_name=file_plan.project_name, files=list(deduped.values()))
+
+
+def _collect_explicit_owned_paths(responses: List[ResponseEnvelope]) -> set[str]:
+    """Collect exact owned file paths declared in structured module contracts for the section."""
+    owned_paths: set[str] = set()
+    for response in responses:
+        payload = _structured_response_payload(response)
+        if not payload:
+            continue
+        for module in payload.get("modules", []):
+            if not isinstance(module, dict):
+                continue
+            for owned_path in module.get("owned_paths", []):
+                normalized_path = _normalize_governed_bundle_path(owned_path)
+                if normalized_path is None:
+                    continue
+                owned_paths.add(normalized_path)
+    return owned_paths
+
+
+def _structured_response_payload(response: ResponseEnvelope) -> dict[str, Any] | None:
+    """Return the normalized structured payload for one response when available."""
+    payload = response.structured_content
+    if isinstance(payload, dict):
+        return payload
+    if not response.output.strip():
+        return None
+    try:
+        parsed = json.loads(response.output)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _normalize_governed_bundle_path(path_value: Any) -> str | None:
+    """Normalize one explicit owned file path, ignoring templates and non-file path shapes."""
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    if "{" in path_value or "}" in path_value:
+        return None
+    try:
+        normalized_path = Path(path_value).as_posix()
+        normalized = Path(normalized_path)
+        if normalized.is_absolute():
+            return None
+        normalized_parts = []
+        for part in normalized.parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                return None
+            normalized_parts.append(part)
+        if not normalized_parts:
+            return None
+        return Path(*normalized_parts).as_posix()
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_governed_file_plans(primary: FilePlan, secondary: FilePlan) -> FilePlan:
+    """Merge governed file plans by exact path while preserving primary entries."""
+    merged: dict[str, dict[str, Any]] = {}
+    for plan in (primary, secondary):
+        for file_entry in plan.files:
+            normalized_path = _normalize_governed_bundle_path(file_entry.get("path"))
+            if normalized_path is None or normalized_path in merged:
+                continue
+            normalized_entry = dict(file_entry)
+            normalized_entry["path"] = normalized_path
+            merged[normalized_path] = normalized_entry
+    return FilePlan(
+        project_name=primary.project_name or secondary.project_name,
+        files=[merged[path] for path in sorted(merged)],
+    )
 
 
 def _system_breakdown_expected_target_requirements(

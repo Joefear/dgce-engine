@@ -62,6 +62,30 @@ def _owned_materialization_section() -> DGCESection:
     return section
 
 
+def _owned_bundle_section() -> DGCESection:
+    return DGCESection(
+        section_id="owned-bundle",
+        section_type="system_breakdown",
+        title="Owned Bundle",
+        description="Materialize a small explicit owned bundle through the governed execute path.",
+        requirements=[
+            "Use explicit ownership sets for output files",
+            "Keep bundle generation deterministic",
+        ],
+        constraints=[
+            "Do not infer undeclared files",
+            "Do not write across section boundaries",
+        ],
+        expected_targets=[
+            {
+                "path": "src/api/ingest.py",
+                "purpose": "Observation ingest API",
+                "source": "expected_targets",
+            }
+        ],
+    )
+
+
 def _workspace_dir(name: str) -> Path:
     base = Path("tests/.tmp") / name
     if base.exists():
@@ -117,6 +141,132 @@ def _build_owned_workspace(monkeypatch, name: str) -> Path:
     return project_root
 
 
+def _build_owned_bundle_workspace(monkeypatch, name: str) -> Path:
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir(name)
+
+    def fake_run(self, executor_name, content):
+        lowered = content.lower()
+        metadata = _stub_executor_result(content).metadata
+        if "plan the system breakdown" in lowered:
+            return ExecutionResult(
+                output=json.dumps(
+                    {
+                        "modules": [
+                            {
+                                "name": "IngestModule",
+                                "layer": "application",
+                                "responsibility": "Handle observation ingest artifacts.",
+                                "inputs": [{"name": "request", "type": "ObservationRequest"}],
+                                "outputs": [{"name": "ingest_api", "type": "artifact"}],
+                                "dependencies": [],
+                                "governance_touchpoints": ["governed_execution"],
+                                "failure_modes": ["invalid_request"],
+                                "owned_paths": [
+                                    "src/api/ingest.py",
+                                    "src/models/rsobservation.py",
+                                ],
+                                "implementation_order": 1,
+                            },
+                            {
+                                "name": "ReviewModule",
+                                "layer": "application",
+                                "responsibility": "Handle anomaly review artifacts.",
+                                "inputs": [{"name": "request", "type": "ReviewRequest"}],
+                                "outputs": [{"name": "review_api", "type": "artifact"}],
+                                "dependencies": [{"name": "IngestModule", "kind": "module", "reference": "src/api/ingest.py"}],
+                                "governance_touchpoints": ["governed_execution"],
+                                "failure_modes": ["invalid_review"],
+                                "owned_paths": [
+                                    "src/api/review.py",
+                                    "src/models/anomaly_record.py",
+                                ],
+                                "implementation_order": 2,
+                            },
+                        ],
+                        "file_groups": [
+                            {
+                                "name": "ingest_bundle",
+                                "module": "IngestModule",
+                                "placement": "src",
+                                "files": [
+                                    {"path": "src/api/ingest.py", "purpose": "Observation ingest API", "kind": "api"},
+                                    {"path": "src/models/rsobservation.py", "purpose": "RS observation model", "kind": "model"},
+                                ],
+                            },
+                            {
+                                "name": "review_bundle",
+                                "module": "ReviewModule",
+                                "placement": "src",
+                                "files": [
+                                    {"path": "src/api/review.py", "purpose": "Anomaly review API", "kind": "api"},
+                                    {"path": "src/models/anomaly_record.py", "purpose": "Anomaly review model", "kind": "model"},
+                                ],
+                            },
+                            {
+                                "name": "rogue_bundle",
+                                "module": "RogueModule",
+                                "placement": "src",
+                                "files": [
+                                    {"path": "src/rogue/unowned.py", "purpose": "Unowned rogue file", "kind": "service"},
+                                ],
+                            },
+                        ],
+                        "implementation_units": [
+                            {"name": "implement_ingest_bundle", "module": "IngestModule", "order": 1},
+                            {"name": "implement_review_bundle", "module": "ReviewModule", "order": 2},
+                        ],
+                        "build_graph": {
+                            "edges": [["IngestModule", "ReviewModule"]],
+                        },
+                        "tests": [
+                            {"name": "owned_bundle_paths_are_explicit", "targets": ["IngestModule", "ReviewModule"]},
+                        ],
+                        "determinism_rules": ["Stable file ordering"],
+                        "acceptance_criteria": ["Only explicitly owned files may materialize"],
+                    }
+                ),
+                status=ArtifactStatus.EXPERIMENTAL,
+                executor=executor_name,
+                metadata=metadata,
+            )
+        if "implement a data model class" in lowered:
+            return ExecutionResult(
+                output=json.dumps(
+                    {
+                        "modules": [{"name": "OwnedBundleModels", "entities": ["RSObservation"], "relationships": [], "required": [], "identity_keys": []}],
+                        "entities": [{"name": "RSObservation", "fields": [{"name": "object_id", "type": "string"}]}],
+                        "fields": ["object_id"],
+                        "relationships": [],
+                        "validation_rules": ["object_id required"],
+                    }
+                ),
+                status=ArtifactStatus.EXPERIMENTAL,
+                executor=executor_name,
+                metadata=metadata,
+            )
+        if "implement an api surface" in lowered:
+            return ExecutionResult(
+                output=json.dumps(
+                    {
+                        "interfaces": ["OwnedBundleApi"],
+                        "methods": ["ingest", "review"],
+                        "inputs": ["payload"],
+                        "outputs": ["result"],
+                        "error_cases": ["invalid_payload"],
+                    }
+                ),
+                status=ArtifactStatus.EXPERIMENTAL,
+                executor=executor_name,
+                metadata=metadata,
+            )
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_owned_bundle_section(), project_root, incremental_mode="incremental_v2_2")
+    return project_root
+
+
 def _mark_section_ready(project_root: Path, *, selected_mode: str = "create_only") -> None:
     record_section_approval(
         project_root,
@@ -130,6 +280,25 @@ def _mark_section_ready(project_root: Path, *, selected_mode: str = "create_only
     record_section_execution_gate(
         project_root,
         "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+
+def _mark_owned_bundle_ready(project_root: Path, *, selected_mode: str = "create_only") -> None:
+    record_section_approval(
+        project_root,
+        "owned-bundle",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode=selected_mode,
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_execution_gate(
+        project_root,
+        "owned-bundle",
         require_preflight_pass=True,
         gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
         preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
@@ -661,6 +830,162 @@ class TestDGCEExecuteAPI:
         assert (first_root / ".dce" / "outputs" / "mission-board.json").read_bytes() == (
             second_root / ".dce" / "outputs" / "mission-board.json"
         ).read_bytes()
+
+    def test_execute_materializes_explicit_owned_bundle_only(self, monkeypatch):
+        project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_owned_bundle_ready(project_root)
+        client = TestClient(create_app())
+        notes_path = project_root / "notes.txt"
+        notes_path.write_text("leave me alone", encoding="utf-8")
+        notes_before = notes_path.read_bytes()
+
+        response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "section_id": "owned-bundle",
+            "executed": True,
+            "artifacts_updated": True,
+        }
+        expected_paths = [
+            "src/api/ingest.py",
+            "src/api/review.py",
+            "src/models/anomaly_record.py",
+            "src/models/rsobservation.py",
+        ]
+        assert all((project_root / relative_path).exists() for relative_path in expected_paths)
+        assert (project_root / "src" / "rogue" / "unowned.py").exists() is False
+        assert notes_path.read_bytes() == notes_before
+        assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+        outputs_payload = json.loads((project_root / ".dce" / "outputs" / "owned-bundle.json").read_text(encoding="utf-8"))
+        execution_payload = json.loads((project_root / ".dce" / "execution" / "owned-bundle.execution.json").read_text(encoding="utf-8"))
+        assert sorted(artifact["path"] for artifact in outputs_payload["generated_artifacts"]) == expected_paths
+        assert execution_payload["written_files"] == [
+            {
+                "path": relative_path,
+                "operation": "create",
+                "bytes_written": len((project_root / relative_path).read_bytes()),
+            }
+            for relative_path in expected_paths
+        ]
+        assert all(entry["path"] != "src/rogue/unowned.py" for entry in execution_payload["written_files"])
+
+    def test_owned_bundle_second_execution_without_rerun_returns_400(self, monkeypatch):
+        project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_missing_rerun")
+        _mark_owned_bundle_ready(project_root)
+        client = TestClient(create_app())
+
+        first_response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        before_files = _file_bytes(
+            project_root,
+            "src/api/ingest.py",
+            "src/api/review.py",
+            "src/models/anomaly_record.py",
+            "src/models/rsobservation.py",
+            ".dce/execution/owned-bundle.execution.json",
+            ".dce/outputs/owned-bundle.json",
+        )
+        second_response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert second_response.status_code == 400
+        assert second_response.json() == {
+            "detail": "Section has prior execution artifacts; rerun=true required: owned-bundle"
+        }
+        assert _file_bytes(
+            project_root,
+            "src/api/ingest.py",
+            "src/api/review.py",
+            "src/models/anomaly_record.py",
+            "src/models/rsobservation.py",
+            ".dce/execution/owned-bundle.execution.json",
+            ".dce/outputs/owned-bundle.json",
+        ) == before_files
+
+    def test_owned_bundle_rerun_safe_modify_is_still_enforced(self, monkeypatch):
+        project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_safe_modify_block")
+        _mark_owned_bundle_ready(project_root, selected_mode="create_only")
+        client = TestClient(create_app())
+
+        assert client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+
+        target_path = project_root / "src" / "api" / "ingest.py"
+        target_path.write_text("operator modified file\n", encoding="utf-8")
+        _mark_owned_bundle_ready(project_root, selected_mode="create_only")
+        before_files = _file_bytes(
+            project_root,
+            "src/api/ingest.py",
+            "src/api/review.py",
+            "src/models/anomaly_record.py",
+            "src/models/rsobservation.py",
+            ".dce/execution/owned-bundle.execution.json",
+            ".dce/outputs/owned-bundle.json",
+        )
+
+        rerun_response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(project_root), "rerun": True},
+        )
+
+        assert rerun_response.status_code == 400
+        assert rerun_response.json() == {
+            "detail": "Section rerun requires safe_modify approval: owned-bundle"
+        }
+        assert _file_bytes(
+            project_root,
+            "src/api/ingest.py",
+            "src/api/review.py",
+            "src/models/anomaly_record.py",
+            "src/models/rsobservation.py",
+            ".dce/execution/owned-bundle.execution.json",
+            ".dce/outputs/owned-bundle.json",
+        ) == before_files
+
+    def test_owned_bundle_execute_is_deterministic_across_identical_prepared_workspaces(self, monkeypatch):
+        first_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_repeat_one")
+        second_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_repeat_two")
+        client = TestClient(create_app())
+
+        for project_root in (first_root, second_root):
+            _mark_owned_bundle_ready(project_root)
+
+        first_response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(first_root)},
+        )
+        second_response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
+            json={"workspace_path": str(second_root)},
+        )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.json() == second_response.json()
+        assert first_response.content == second_response.content
+        for relative_path in (
+            "src/api/ingest.py",
+            "src/api/review.py",
+            "src/models/anomaly_record.py",
+            "src/models/rsobservation.py",
+            ".dce/execution/owned-bundle.execution.json",
+            ".dce/outputs/owned-bundle.json",
+        ):
+            assert (first_root / relative_path).read_bytes() == (second_root / relative_path).read_bytes()
 
     def test_rerun_is_deterministic_across_identical_prepared_workspaces(self, monkeypatch):
         first_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_repeat_one")
