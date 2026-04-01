@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from aether.dgce import read_api
+from aether.dgce.config import get_config
 
 
 def _require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
-    expected_key = os.getenv("DGCE_API_KEY")
+    expected_key = get_config()["api_key"]
     if expected_key is None:
         return
     if x_api_key != expected_key:
