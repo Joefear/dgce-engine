@@ -509,6 +509,63 @@ class TestDGCEExecuteAPI:
         assert response.status_code == 400
         assert response.json() == {"detail": "Prepared file plan artifact section mismatch: mission-board"}
 
+    def test_execute_rejects_prepared_plan_when_selected_mode_changes_after_prepare(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_binding_selected_mode")
+        _mark_section_ready(project_root, selected_mode="create_only")
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        _mark_section_ready(project_root, selected_mode="safe_modify")
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_approval_basis_changes_after_prepare(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_binding_review_change")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        review_path = project_root / ".dce" / "reviews" / "mission-board.review.md"
+        review_path.write_text(review_path.read_text(encoding="utf-8") + "\nBinding drift.\n", encoding="utf-8")
+        _mark_section_ready(project_root)
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_section_input_changes_after_prepare(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_binding_input_change")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        input_path = project_root / ".dce" / "input" / "mission-board.json"
+        input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+        input_payload["constraints"].append("input drift after prepare")
+        input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _mark_section_ready(project_root)
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
     def test_second_execution_without_rerun_returns_400_and_does_not_write(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_rerun")
         _mark_section_ready(project_root)

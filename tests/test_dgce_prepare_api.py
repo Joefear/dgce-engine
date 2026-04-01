@@ -336,6 +336,57 @@ class TestDGCEPrepareAPI:
             if path != prepared_plan_relative_path
         } == before_files
 
+    def test_prepare_persists_deterministic_binding_metadata_with_prepared_plan(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_prepare_api_binding_metadata")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 200
+        prepared_plan_payload = json.loads(
+            (project_root / ".dce" / "plans" / "mission-board.prepared_plan.json").read_text(encoding="utf-8")
+        )
+        assert prepared_plan_payload["binding"] == {
+            "artifact_paths": {
+                "approval_path": ".dce/approvals/mission-board.approval.json",
+                "execution_gate_path": ".dce/preflight/mission-board.execution_gate.json",
+                "input_path": ".dce/input/mission-board.json",
+                "preflight_path": ".dce/preflight/mission-board.preflight.json",
+                "preview_path": ".dce/plans/mission-board.preview.json",
+                "review_path": ".dce/reviews/mission-board.review.md",
+                "stale_check_path": ".dce/preflight/mission-board.stale_check.json",
+            },
+            "execution_permitted": True,
+            "fingerprints": {
+                "approval": dgce_decompose.compute_json_file_fingerprint(
+                    project_root / ".dce" / "approvals" / "mission-board.approval.json"
+                ),
+                "execution_gate": dgce_decompose.compute_json_file_fingerprint(
+                    project_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+                ),
+                "input": dgce_decompose.compute_json_file_fingerprint(project_root / ".dce" / "input" / "mission-board.json"),
+                "preflight": dgce_decompose.compute_json_file_fingerprint(
+                    project_root / ".dce" / "preflight" / "mission-board.preflight.json"
+                ),
+                "preview": dgce_decompose.compute_json_file_fingerprint(project_root / ".dce" / "plans" / "mission-board.preview.json"),
+                "review": dgce_decompose.compute_review_artifact_fingerprint(
+                    (project_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+                ),
+                "stale_check": dgce_decompose.compute_json_file_fingerprint(
+                    project_root / ".dce" / "preflight" / "mission-board.stale_check.json"
+                ),
+            },
+            "section_id": "mission-board",
+            "selected_mode": "create_only",
+        }
+        assert prepared_plan_payload["binding_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            prepared_plan_payload["binding"]
+        )
+
     def test_prepare_recomputes_stale_and_gate_from_current_approval_state(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_recompute_current_approval")
         current_preview_fingerprint = _create_stale_gate_drift(project_root)

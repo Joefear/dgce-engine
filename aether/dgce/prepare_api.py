@@ -11,6 +11,9 @@ from aether.dgce.decompose import (
     SectionPreflightInput,
     SectionStaleCheckInput,
     compute_governed_execution_file_plan,
+    compute_json_file_fingerprint,
+    compute_json_payload_fingerprint,
+    compute_review_artifact_fingerprint,
     _load_section_from_workspace_input,
     _write_json,
     _artifact_manifest_entries_by_path,
@@ -67,17 +70,59 @@ def _prepared_plan_file_path(project_root: Path, section_id: str) -> Path:
     return _artifact_file_path(project_root, _prepared_plan_relative_path(section_id))
 
 
-def _prepared_plan_payload(section_id: str, file_plan: dict[str, Any]) -> dict[str, Any]:
+def _prepared_plan_artifact_relative_paths(section_id: str) -> dict[str, str]:
     return {
-        "artifact_type": "prepared_execution_plan",
-        "generated_by": "DGCE",
-        "schema_version": "1.0",
-        "section_id": section_id,
-        "file_plan": file_plan,
+        "approval_path": _artifact_relative_path(section_id, ".dce/approvals/{section_id}.approval.json"),
+        "execution_gate_path": _artifact_relative_path(section_id, ".dce/preflight/{section_id}.execution_gate.json"),
+        "input_path": _artifact_relative_path(section_id, ".dce/input/{section_id}.json"),
+        "preflight_path": _artifact_relative_path(section_id, ".dce/preflight/{section_id}.preflight.json"),
+        "preview_path": _artifact_relative_path(section_id, ".dce/plans/{section_id}.preview.json"),
+        "review_path": _artifact_relative_path(section_id, ".dce/reviews/{section_id}.review.md"),
+        "stale_check_path": _artifact_relative_path(section_id, ".dce/preflight/{section_id}.stale_check.json"),
     }
 
 
-def load_prepared_section_file_plan(project_root: Path, section_id: str) -> FilePlan:
+def _compute_prepared_plan_binding(project_root: Path, section_id: str) -> dict[str, Any]:
+    relative_paths = _prepared_plan_artifact_relative_paths(section_id)
+    approval_path = _artifact_file_path(project_root, relative_paths["approval_path"])
+    input_path = _artifact_file_path(project_root, relative_paths["input_path"])
+    preflight_path = _artifact_file_path(project_root, relative_paths["preflight_path"])
+    preview_path = _artifact_file_path(project_root, relative_paths["preview_path"])
+    review_path = _artifact_file_path(project_root, relative_paths["review_path"])
+    stale_check_path = _artifact_file_path(project_root, relative_paths["stale_check_path"])
+    execution_gate_path = _artifact_file_path(project_root, relative_paths["execution_gate_path"])
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    return {
+        "artifact_paths": relative_paths,
+        "execution_permitted": approval_payload.get("execution_permitted"),
+        "fingerprints": {
+            "approval": compute_json_file_fingerprint(approval_path),
+            "execution_gate": compute_json_file_fingerprint(execution_gate_path),
+            "input": compute_json_file_fingerprint(input_path),
+            "preflight": compute_json_file_fingerprint(preflight_path),
+            "preview": compute_json_file_fingerprint(preview_path),
+            "review": compute_review_artifact_fingerprint(review_path.read_text(encoding="utf-8")),
+            "stale_check": compute_json_file_fingerprint(stale_check_path),
+        },
+        "section_id": section_id,
+        "selected_mode": approval_payload.get("selected_mode"),
+    }
+
+
+def _prepared_plan_payload(section_id: str, file_plan: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "artifact_type": "prepared_execution_plan",
+        "binding": binding,
+        "binding_fingerprint": compute_json_payload_fingerprint(binding),
+        "file_plan": file_plan,
+        "generated_by": "DGCE",
+        "schema_version": "1.0",
+        "section_id": section_id,
+    }
+
+
+def load_prepared_section_plan_artifact(project_root: Path, section_id: str) -> dict[str, Any]:
     artifact_path = _prepared_plan_file_path(project_root, section_id)
     if not artifact_path.exists():
         raise ValueError(f"Section requires prepared file plan artifact: {section_id}")
@@ -86,11 +131,51 @@ def load_prepared_section_file_plan(project_root: Path, section_id: str) -> File
         raise ValueError(f"Prepared file plan artifact must contain a JSON object: {section_id}")
     if str(payload.get("section_id")) != section_id:
         raise ValueError(f"Prepared file plan artifact section mismatch: {section_id}")
+    binding = payload.get("binding")
+    if not isinstance(binding, dict):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    artifact_paths = binding.get("artifact_paths")
+    if not isinstance(artifact_paths, dict):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    expected_paths = _prepared_plan_artifact_relative_paths(section_id)
+    if artifact_paths != expected_paths:
+        raise ValueError(f"Prepared file plan artifact binding is malformed: {section_id}")
+    fingerprints = binding.get("fingerprints")
+    if not isinstance(fingerprints, dict):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    required_fingerprints = (
+        "approval",
+        "execution_gate",
+        "input",
+        "preflight",
+        "preview",
+        "review",
+        "stale_check",
+    )
+    if any(not isinstance(fingerprints.get(key), str) for key in required_fingerprints):
+        raise ValueError(f"Prepared file plan artifact binding is malformed: {section_id}")
+    if binding.get("section_id") != section_id:
+        raise ValueError(f"Prepared file plan artifact section mismatch: {section_id}")
+    if not isinstance(binding.get("execution_permitted"), bool):
+        raise ValueError(f"Prepared file plan artifact binding is malformed: {section_id}")
+    selected_mode = binding.get("selected_mode")
+    if selected_mode is not None and not isinstance(selected_mode, str):
+        raise ValueError(f"Prepared file plan artifact binding is malformed: {section_id}")
+    binding_fingerprint = payload.get("binding_fingerprint")
+    if not isinstance(binding_fingerprint, str):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    if compute_json_payload_fingerprint(binding) != binding_fingerprint:
+        raise ValueError(f"Prepared file plan artifact binding is malformed: {section_id}")
     file_plan = payload.get("file_plan")
     if not isinstance(file_plan, dict):
         raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    return payload
+
+
+def load_prepared_section_file_plan(project_root: Path, section_id: str) -> FilePlan:
+    payload = load_prepared_section_plan_artifact(project_root, section_id)
     try:
-        return FilePlan.model_validate(file_plan)
+        return FilePlan.model_validate(payload["file_plan"])
     except Exception as exc:
         raise ValueError(f"Prepared file plan artifact is malformed: {section_id}") from exc
 
@@ -98,9 +183,10 @@ def load_prepared_section_file_plan(project_root: Path, section_id: str) -> File
 def _seal_prepared_section_file_plan(project_root: Path, section_id: str) -> None:
     section = _load_section_from_workspace_input(project_root, section_id)
     file_plan = compute_governed_execution_file_plan(section)
+    binding = _compute_prepared_plan_binding(project_root, section_id)
     _write_json(
         _prepared_plan_file_path(project_root, section_id),
-        _prepared_plan_payload(section_id, file_plan.model_dump()),
+        _prepared_plan_payload(section_id, file_plan.model_dump(), binding),
     )
 
 

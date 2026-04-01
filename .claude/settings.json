@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_dgce_incremental.py tests/test_dgce_loop.py -x -q)",
+      "Bash(python -m pytest tests/test_dgce_read_api.py -v)",
+      "Bash(python -m pytest tests/ -x -q)"
+    ]
+  }
+}
