@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from aether.dgce import read_api
 
 
-router = APIRouter(prefix="/v1/dgce")
+def _require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    expected_key = os.getenv("DGCE_API_KEY")
+    if expected_key is None:
+        return
+    if x_api_key != expected_key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+router = APIRouter(prefix="/v1/dgce", dependencies=[Depends(_require_api_key)])
 
 
 def _read_artifact_over_http(

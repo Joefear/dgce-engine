@@ -38,6 +38,7 @@ class TestDGCESDK:
 
         def fake_urlopen(request, timeout):
             calls.append(request.full_url)
+            assert request.headers.get("X-api-key") is None
             return _MockResponse({"ok": True})
 
         monkeypatch.setattr("aether.dgce.sdk.urlopen", fake_urlopen)
@@ -72,6 +73,17 @@ class TestDGCESDK:
         monkeypatch.setattr("aether.dgce.sdk.urlopen", lambda request, timeout: _MockResponse(payload))
 
         assert client.get_dashboard("workspace-root") == payload
+
+    def test_sdk_sends_api_key_header_when_configured(self, monkeypatch):
+        client = DGCEClient("http://example.test", api_key="secret-key")
+
+        def fake_urlopen(request, timeout):
+            assert request.headers["X-api-key"] == "secret-key"
+            return _MockResponse({"ok": True})
+
+        monkeypatch.setattr("aether.dgce.sdk.urlopen", fake_urlopen)
+
+        assert client.get_dashboard("workspace-root") == {"ok": True}
 
     def test_sdk_repeated_calls_are_deterministic(self, monkeypatch):
         payload = {"artifact_type": "artifact_manifest", "artifacts": []}
@@ -116,3 +128,15 @@ class TestDGCESDK:
 
         with pytest.raises(RuntimeError, match="server error"):
             client.get_dashboard("workspace-root")
+
+    def test_sdk_works_with_auth_enabled_response_contract(self, monkeypatch):
+        payload = {"artifact_type": "dashboard"}
+        client = DGCEClient("http://example.test", api_key="secret-key")
+
+        def fake_urlopen(request, timeout):
+            assert request.headers["X-api-key"] == "secret-key"
+            return _MockResponse(payload)
+
+        monkeypatch.setattr("aether.dgce.sdk.urlopen", fake_urlopen)
+
+        assert client.get_dashboard("workspace-root") == payload

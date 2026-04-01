@@ -11,12 +11,14 @@ from urllib.request import Request, urlopen
 
 
 class DGCEClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, api_key: str | None = None):
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
 
     def _get(self, endpoint: str, workspace_path: str | Path) -> dict[str, Any]:
         query = urlencode({"workspace_path": str(workspace_path)})
-        request = Request(f"{self.base_url}{endpoint}?{query}", method="GET")
+        headers = {"X-API-Key": self.api_key} if self.api_key is not None else {}
+        request = Request(f"{self.base_url}{endpoint}?{query}", headers=headers, method="GET")
         try:
             with urlopen(request, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8"))

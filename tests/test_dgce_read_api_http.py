@@ -67,6 +67,7 @@ def _build_workspace(monkeypatch, name: str) -> Path:
 
 class TestDGCEReadAPIHTTP:
     def test_endpoints_map_directly_to_read_api_functions(self, monkeypatch):
+        monkeypatch.delenv("DGCE_API_KEY", raising=False)
         client = TestClient(create_app())
         calls: list[tuple[str, str]] = []
 
@@ -103,6 +104,7 @@ class TestDGCEReadAPIHTTP:
         assert calls == [(artifact_type, "workspace-root") for _, artifact_type in expected_routes]
 
     def test_http_returns_exact_read_api_payload_without_wrapper_fields(self, monkeypatch):
+        monkeypatch.delenv("DGCE_API_KEY", raising=False)
         client = TestClient(create_app())
         payload = {
             "artifact_type": "dashboard",
@@ -121,6 +123,7 @@ class TestDGCEReadAPIHTTP:
         assert "meta" not in response.json()
 
     def test_valid_workspace_returns_expected_payloads_and_is_repeatable(self, monkeypatch):
+        monkeypatch.delenv("DGCE_API_KEY", raising=False)
         project_root = _build_workspace(monkeypatch, "dgce_read_api_http_success")
         client = TestClient(create_app())
         expected_files = {
@@ -144,6 +147,7 @@ class TestDGCEReadAPIHTTP:
             assert first_response.content == second_response.content
 
     def test_invalid_artifact_returns_http_error(self, monkeypatch):
+        monkeypatch.delenv("DGCE_API_KEY", raising=False)
         project_root = _build_workspace(monkeypatch, "dgce_read_api_http_invalid")
         dashboard_path = project_root / ".dce" / "dashboard.json"
         invalid_payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
@@ -158,6 +162,7 @@ class TestDGCEReadAPIHTTP:
         assert "dashboard.json" in response.json()["detail"]
 
     def test_http_reads_have_no_write_side_effects(self, monkeypatch):
+        monkeypatch.delenv("DGCE_API_KEY", raising=False)
         project_root = _build_workspace(monkeypatch, "dgce_read_api_http_no_writes")
         client = TestClient(create_app())
         artifact_paths = [
@@ -204,6 +209,52 @@ class TestDGCEReadAPIHTTP:
         response = client.post("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
         assert response.status_code == 405
 
+    def test_auth_disabled_allows_requests_without_header(self, monkeypatch):
+        monkeypatch.delenv("DGCE_API_KEY", raising=False)
+        client = TestClient(create_app())
+        monkeypatch.setattr(dgce_read_api, "get_dashboard", lambda workspace_path: {"artifact_type": "dashboard"})
+
+        response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+
+        assert response.status_code == 200
+        assert response.json() == {"artifact_type": "dashboard"}
+
+    def test_auth_enabled_allows_matching_key(self, monkeypatch):
+        monkeypatch.setenv("DGCE_API_KEY", "secret-key")
+        client = TestClient(create_app())
+        monkeypatch.setattr(dgce_read_api, "get_dashboard", lambda workspace_path: {"artifact_type": "dashboard"})
+
+        response = client.get(
+            "/v1/dgce/dashboard",
+            params={"workspace_path": "workspace-root"},
+            headers={"X-API-Key": "secret-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"artifact_type": "dashboard"}
+
+    def test_auth_enabled_rejects_missing_key_with_401(self, monkeypatch):
+        monkeypatch.setenv("DGCE_API_KEY", "secret-key")
+        client = TestClient(create_app())
+
+        response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Unauthorized"}
+
+    def test_auth_enabled_rejects_wrong_key_with_401(self, monkeypatch):
+        monkeypatch.setenv("DGCE_API_KEY", "secret-key")
+        client = TestClient(create_app())
+
+        response = client.get(
+            "/v1/dgce/dashboard",
+            params={"workspace_path": "workspace-root"},
+            headers={"X-API-Key": "wrong-key"},
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Unauthorized"}
+
     def test_missing_artifact_returns_http_404(self):
         client = TestClient(create_app())
 
@@ -212,7 +263,22 @@ class TestDGCEReadAPIHTTP:
         assert response.status_code == 404
         assert response.json() == {"detail": response.json()["detail"]}
 
+    def test_missing_artifact_returns_http_404_with_auth(self, monkeypatch):
+        monkeypatch.setenv("DGCE_API_KEY", "secret-key")
+        client = TestClient(create_app())
+
+        response = client.get(
+            "/v1/dgce/dashboard",
+            params={"workspace_path": "tests/.tmp/does-not-exist"},
+            headers={"X-API-Key": "secret-key"},
+        )
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": response.json()["detail"]}
+
     def test_invalid_workspace_path_returns_http_400(self):
+        from pathlib import Path
+
         workspace_path = _workspace_dir("dgce_read_api_http_missing_dce")
         workspace_path.mkdir(parents=True, exist_ok=True)
         client = TestClient(create_app())
