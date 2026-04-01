@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import FastAPI
 from starlette.requests import Request
@@ -41,7 +42,14 @@ def create_app(
 
     @app.middleware("http")
     async def log_request_response(request: Request, call_next):
+        request_id = str(uuid4())
         response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "0"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Request-ID"] = request_id
         logger.info(
             "Aether API request complete",
             extra={
