@@ -9,7 +9,7 @@ import pytest
 from apps.aether_api.main import create_app
 from aether.dgce import DGCESection, run_section_with_workspace
 from aether.dgce import read_api as dgce_read_api
-from aether.dgce.read_api_http import router as dgce_read_router
+from aether.dgce.read_api_http import ROUTE_POLICIES, resolve_scope, router as dgce_read_router
 from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
 
@@ -84,6 +84,17 @@ def _assert_response_safety_headers(response) -> None:
 
 
 class TestDGCEReadAPIHTTP:
+    def test_route_policies_and_scope_resolution_are_locked(self):
+        assert ROUTE_POLICIES == {
+            "/health": "public",
+            "/version": "public",
+            "/v1/dgce/": "read",
+        }
+        assert resolve_scope("/health") == "public"
+        assert resolve_scope("/version") == "public"
+        assert resolve_scope("/v1/dgce/dashboard") == "read"
+        assert resolve_scope("/v1/unknown") == "read"
+
     def test_endpoints_map_directly_to_read_api_functions(self, monkeypatch):
         client = TestClient(create_app())
         calls: list[tuple[str, str]] = []
@@ -253,6 +264,24 @@ class TestDGCEReadAPIHTTP:
         assert response.status_code == 200
         assert response.json() == {"artifact_type": "dashboard"}
         _assert_response_safety_headers(response)
+
+    def test_public_routes_remain_accessible_without_key_when_auth_enabled(self, monkeypatch):
+        monkeypatch.setenv("DGCE_API_KEY", "test-key")
+        client = TestClient(create_app())
+
+        health_response = client.get("/health")
+        version_response = client.get("/version")
+
+        assert health_response.status_code == 200
+        assert health_response.json() == {"status": "ok"}
+        assert version_response.status_code == 200
+        assert version_response.json() == {
+            "service": "aether-api",
+            "dgce_version": "5.x",
+            "api_version": "v1",
+        }
+        _assert_response_safety_headers(health_response)
+        _assert_response_safety_headers(version_response)
 
     def test_auth_enabled_rejects_missing_key_with_401(self, monkeypatch):
         monkeypatch.setenv("DGCE_API_KEY", "test-key")

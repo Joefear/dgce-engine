@@ -5,17 +5,34 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from aether.dgce import read_api
 from aether.dgce.config import get_config
 
 
-def _require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+ROUTE_POLICIES = {
+    "/health": "public",
+    "/version": "public",
+    "/v1/dgce/": "read",
+}
+
+
+def resolve_scope(path: str) -> str:
+    if path in ROUTE_POLICIES:
+        return str(ROUTE_POLICIES[path])
+    for route_path, scope in ROUTE_POLICIES.items():
+        if path.startswith(route_path):
+            return str(scope)
+    return "read"
+
+
+def _require_api_key(request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
     expected_key = get_config()["api_key"]
     if expected_key is None:
         return
-    if x_api_key != expected_key:
+    scope = resolve_scope(request.url.path)
+    if scope == "read" and x_api_key != expected_key:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
