@@ -16,6 +16,8 @@ from aether.dgce.prepare_api import (
 from aether.dgce.read_api import get_artifact_manifest, get_workspace_index
 from aether.dgce.refresh_api import refresh_section_artifacts
 
+_ALLOWED_SELECTED_MODES = {"review_required", "safe_modify", "create_only", "no_changes"}
+
 
 def approve_section_execution(
     workspace_path: str | Path,
@@ -23,6 +25,7 @@ def approve_section_execution(
     *,
     approved_by: str = "operator",
     notes: str = "",
+    selected_mode: str | None = None,
 ) -> dict[str, str | bool]:
     project_root = resolve_workspace_path(workspace_path)
     artifact_manifest = get_artifact_manifest(project_root)
@@ -48,12 +51,19 @@ def approve_section_execution(
         raise ValueError(f"Section artifacts are invalid: {section_id}")
 
     preview_payload = json.loads(required_artifacts["preview"].read_text(encoding="utf-8"))
+    selected_mode_value = (
+        str(selected_mode)
+        if selected_mode is not None
+        else str(preview_payload.get("recommended_mode", "review_required"))
+    )
+    if selected_mode_value not in _ALLOWED_SELECTED_MODES:
+        raise ValueError(f"Invalid selected_mode: {selected_mode_value}")
     record_section_approval(
         project_root,
         section_id,
         SectionApprovalInput(
             approval_status="approved",
-            selected_mode=str(preview_payload.get("recommended_mode", "review_required")),
+            selected_mode=selected_mode_value,
             approval_source="operator",
             approved_by=approved_by,
             notes=notes,

@@ -84,7 +84,7 @@ def _alpha_section() -> DGCESection:
 
 
 class TestDGCEApproveAPI:
-    def test_approve_endpoint_writes_current_approval_artifact(self, monkeypatch):
+    def test_default_approve_uses_preview_recommended_mode(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_writes_current_state")
         client = TestClient(create_app())
         preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
@@ -127,13 +127,38 @@ class TestDGCEApproveAPI:
         assert json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))["stale_status"] == "stale_valid"
         assert json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))["gate_status"] == "gate_pass"
 
-    def test_prepare_becomes_eligible_after_approval_when_other_gates_are_satisfied(self, monkeypatch):
-        project_root = _build_workspace(monkeypatch, "dgce_approve_api_prepare_eligible_after_approval")
+    def test_override_selected_mode_changes_execution_permission_outcome(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_approve_api_override_review_required")
         client = TestClient(create_app())
 
         approve_response = client.post(
             "/v1/dgce/sections/mission-board/approve",
-            json={"workspace_path": str(project_root)},
+            json={"workspace_path": str(project_root), "selected_mode": "review_required"},
+        )
+        assert approve_response.status_code == 200
+
+        approval_payload = json.loads(
+            (project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8")
+        )
+        preflight_payload = json.loads(
+            (project_root / ".dce" / "preflight" / "mission-board.preflight.json").read_text(encoding="utf-8")
+        )
+        gate_payload = json.loads(
+            (project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8")
+        )
+
+        assert approval_payload["selected_mode"] == "review_required"
+        assert approval_payload["execution_permitted"] is False
+        assert preflight_payload["execution_allowed"] is False
+        assert gate_payload["execution_blocked"] is True
+
+    def test_safe_modify_override_allows_prepare_when_other_gates_pass(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_approve_api_safe_modify_override")
+        client = TestClient(create_app())
+
+        approve_response = client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root), "selected_mode": "safe_modify"},
         )
         assert approve_response.status_code == 200
 
@@ -155,6 +180,11 @@ class TestDGCEApproveAPI:
                 "gate_ready": True,
             },
         }
+        approval_payload = json.loads(
+            (project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8")
+        )
+        assert approval_payload["selected_mode"] == "safe_modify"
+        assert approval_payload["execution_permitted"] is True
 
     def test_approve_recomputes_only_target_section_and_does_not_execute(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_scoped_recompute")
@@ -194,4 +224,17 @@ class TestDGCEApproveAPI:
         assert response.json() == {
             "detail": "Section approval requires current artifacts: review"
         }
+        assert (project_root / ".dce" / "approvals" / "mission-board.approval.json").exists() is False
+
+    def test_approve_endpoint_rejects_invalid_selected_mode(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_approve_api_invalid_mode")
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root), "selected_mode": "launch_the_missiles"},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Invalid selected_mode: launch_the_missiles"}
         assert (project_root / ".dce" / "approvals" / "mission-board.approval.json").exists() is False

@@ -22,6 +22,7 @@ class SectionApprovalRequest(BaseModel):
     workspace_path: str
     approved_by: str = "operator"
     notes: str = ""
+    selected_mode: str | None = None
 
 
 @router.post("/dgce/section")
@@ -68,6 +69,7 @@ def approve_dgce_section(section_id: str, payload: SectionApprovalRequest) -> di
             section_id,
             approved_by=payload.approved_by,
             notes=payload.notes,
+            selected_mode=payload.selected_mode,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
