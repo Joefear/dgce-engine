@@ -7,6 +7,7 @@ import pytest
 from apps.aether_api.main import create_app
 from aether.dgce import DGCESection, run_section_with_workspace
 from aether.dgce import read_api as dgce_read_api
+from aether.dgce.read_api_http import router as dgce_read_router
 from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
 
@@ -96,8 +97,28 @@ class TestDGCEReadAPIHTTP:
             response = client.get(path, params={"workspace_path": "workspace-root"})
             assert response.status_code == 200
             assert response.json() == {"artifact_type": artifact_type}
+            assert response.json() == {"artifact_type": artifact_type}
+            assert set(response.json()) == {"artifact_type"}
 
         assert calls == [(artifact_type, "workspace-root") for _, artifact_type in expected_routes]
+
+    def test_http_returns_exact_read_api_payload_without_wrapper_fields(self, monkeypatch):
+        client = TestClient(create_app())
+        payload = {
+            "artifact_type": "dashboard",
+            "schema_version": "1.0",
+            "sections": [{"section_id": "alpha"}],
+        }
+
+        monkeypatch.setattr(dgce_read_api, "get_dashboard", lambda workspace_path: payload)
+
+        response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+
+        assert response.status_code == 200
+        assert response.json() == payload
+        assert set(response.json()) == set(payload)
+        assert "data" not in response.json()
+        assert "meta" not in response.json()
 
     def test_valid_workspace_returns_expected_payloads_and_is_repeatable(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_read_api_http_success")
@@ -133,6 +154,7 @@ class TestDGCEReadAPIHTTP:
         response = client.get("/v1/dgce/dashboard", params={"workspace_path": str(project_root)})
 
         assert response.status_code == 400
+        assert response.json() == {"detail": response.json()["detail"]}
         assert "dashboard.json" in response.json()["detail"]
 
     def test_http_reads_have_no_write_side_effects(self, monkeypatch):
@@ -161,22 +183,11 @@ class TestDGCEReadAPIHTTP:
 
         assert before == {path: path.read_bytes() for path in artifact_paths}
 
-    def test_no_non_read_routes_exist(self):
-        client = TestClient(create_app())
-        app = client.app
+    def test_read_router_inventory_is_locked_to_six_get_routes(self):
         dgce_read_routes = {
             route.path: route.methods
-            for route in app.routes
+            for route in dgce_read_router.routes
             if route.path.startswith("/v1/dgce/")
-            and route.path
-            in {
-                "/v1/dgce/dashboard",
-                "/v1/dgce/workspace-index",
-                "/v1/dgce/lifecycle-trace",
-                "/v1/dgce/consumer-contract",
-                "/v1/dgce/export-contract",
-                "/v1/dgce/artifact-manifest",
-            }
         }
 
         assert dgce_read_routes == {
@@ -188,6 +199,8 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/artifact-manifest": {"GET"},
         }
 
+    def test_app_exposes_no_non_get_methods_for_read_routes(self):
+        client = TestClient(create_app())
         response = client.post("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
         assert response.status_code == 405
 
@@ -197,6 +210,7 @@ class TestDGCEReadAPIHTTP:
         response = client.get("/v1/dgce/dashboard", params={"workspace_path": "tests/.tmp/does-not-exist"})
 
         assert response.status_code == 404
+        assert response.json() == {"detail": response.json()["detail"]}
 
     def test_invalid_workspace_path_returns_http_400(self):
         workspace_path = _workspace_dir("dgce_read_api_http_missing_dce")
@@ -206,6 +220,7 @@ class TestDGCEReadAPIHTTP:
         response = client.get("/v1/dgce/dashboard", params={"workspace_path": str(workspace_path)})
 
         assert response.status_code == 400
+        assert response.json() == {"detail": response.json()["detail"]}
         assert ".dce" in response.json()["detail"]
 
     def test_relative_escape_workspace_path_returns_http_400(self):
@@ -214,4 +229,5 @@ class TestDGCEReadAPIHTTP:
         response = client.get("/v1/dgce/dashboard", params={"workspace_path": ".."})
 
         assert response.status_code == 400
+        assert response.json() == {"detail": response.json()["detail"]}
         assert "current working directory" in response.json()["detail"]
