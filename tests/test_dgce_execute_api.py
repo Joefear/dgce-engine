@@ -15,6 +15,7 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 import aether.dgce.decompose as dgce_decompose
+import aether.dgce.execute_api as dgce_execute_api
 from aether.dgce.file_plan import FilePlan
 from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
@@ -306,6 +307,25 @@ def _mark_owned_bundle_ready(project_root: Path, *, selected_mode: str = "create
     )
 
 
+def _mark_alpha_ready(project_root: Path, *, selected_mode: str = "create_only") -> None:
+    record_section_approval(
+        project_root,
+        "alpha-section",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode=selected_mode,
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_execution_gate(
+        project_root,
+        "alpha-section",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+
 def _prepare_section(client: TestClient, project_root: Path, section_id: str = "mission-board") -> dict:
     response = client.post(
         f"/v1/dgce/sections/{section_id}/prepare",
@@ -314,6 +334,17 @@ def _prepare_section(client: TestClient, project_root: Path, section_id: str = "
     assert response.status_code == 200
     assert response.json()["eligible"] is True
     return response.json()
+
+
+def _execute_bundle(client: TestClient, project_root: Path, section_ids: list[str], *, rerun: bool = False):
+    return client.post(
+        "/v1/dgce/sections/execute-bundle",
+        json={
+            "workspace_path": str(project_root),
+            "section_ids": section_ids,
+            "rerun": rerun,
+        },
+    )
 
 
 def _realign_preview_fingerprint_after_stale_gate(project_root: Path) -> str:
@@ -355,6 +386,334 @@ def _file_bytes(project_root: Path, *relative_paths: str) -> dict[str, bytes]:
 
 
 class TestDGCEExecuteAPI:
+    def test_execute_bundle_runs_sections_in_exact_order_via_single_section_execute_path(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_order")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        original_execute_prepared_section = dgce_execute_api.execute_prepared_section
+        executed_sections: list[str] = []
+
+        def record_bundle_order(workspace_path, section_id, *, rerun=False):
+            executed_sections.append(section_id)
+            return original_execute_prepared_section(workspace_path, section_id, rerun=rerun)
+
+        monkeypatch.setattr("aether.dgce.execute_api.execute_prepared_section", record_bundle_order)
+        response = _execute_bundle(client, project_root, ["alpha-section", "mission-board"])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "section_results": [
+                {
+                    "status": "ok",
+                    "section_id": "alpha-section",
+                    "executed": True,
+                    "artifacts_updated": True,
+                },
+                {
+                    "status": "ok",
+                    "section_id": "mission-board",
+                    "executed": True,
+                    "artifacts_updated": True,
+                },
+            ],
+            "first_failing_section": None,
+            "stopped_early": False,
+        }
+        assert executed_sections == ["alpha-section", "mission-board"]
+
+    def test_execute_bundle_stops_immediately_on_first_failure(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_fail_fast")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        response = _execute_bundle(client, project_root, ["mission-board", "alpha-section"])
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [
+                {
+                    "section_id": "mission-board",
+                    "status": "failed",
+                    "detail": "Section has prior execution artifacts; rerun=true required: mission-board",
+                }
+            ],
+            "first_failing_section": "mission-board",
+            "stopped_early": True,
+        }
+        assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+
+    def test_execute_bundle_rejects_duplicate_section_ids(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_duplicates")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(client, project_root, ["mission-board", "mission-board"])
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle section_ids must be unique",
+        }
+
+    def test_execute_bundle_rejects_empty_section_list(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_empty")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(client, project_root, [])
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle requires at least one section_id",
+        }
+
+    def test_execute_bundle_rejects_unknown_section_id(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_unknown")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(client, project_root, ["not-a-section"])
+
+        assert response.status_code == 404
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [
+                {
+                    "section_id": "not-a-section",
+                    "status": "failed",
+                    "detail": "Section not found: not-a-section",
+                }
+            ],
+            "first_failing_section": "not-a-section",
+            "stopped_early": True,
+        }
+
+    def test_execute_bundle_preserves_per_section_written_files_and_isolation(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_bundle_written_files")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        client = TestClient(create_app())
+
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        _mark_alpha_ready(project_root)
+        _prepare_section(client, project_root, "mission-board")
+        _prepare_section(client, project_root, "alpha-section")
+
+        response = _execute_bundle(client, project_root, ["mission-board", "alpha-section"])
+
+        assert response.status_code == 200
+        mission_execution = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+        alpha_execution = json.loads((project_root / ".dce" / "execution" / "alpha-section.execution.json").read_text(encoding="utf-8"))
+        assert mission_execution["written_files"] == [
+            {
+                "path": "api/missionboardservice.py",
+                "operation": "create",
+                "bytes_written": len((project_root / "api" / "missionboardservice.py").read_bytes()),
+            },
+            {
+                "path": "models/mission.py",
+                "operation": "create",
+                "bytes_written": len((project_root / "models" / "mission.py").read_bytes()),
+            },
+        ]
+        assert alpha_execution["written_files"] == []
+        assert (project_root / ".dce" / "outputs" / "alpha-section.json").exists()
+        assert all(entry["path"] not in {"api/missionboardservice.py", "models/mission.py"} for entry in alpha_execution["written_files"])
+
+    def test_execute_bundle_preserves_safe_modify_enforcement_per_section(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_safe_modify")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+        _prepare_section(client, project_root, "alpha-section")
+
+        first_response = _execute_bundle(client, project_root, ["mission-board"])
+        assert first_response.status_code == 200
+
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["file_plan"] = {
+            "project_name": "DGCE",
+            "files": [
+                {
+                    "path": "docs/readme.md",
+                    "purpose": "rerun-safe-modify-check",
+                    "source": "expected_targets",
+                }
+            ],
+        }
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        ownership_index_path = project_root / ".dce" / "ownership_index.json"
+        ownership_index_path.write_text(
+            json.dumps({"files": [{"path": "docs/readme.md", "section_id": "mission-board"}]}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        readme_path = project_root / "docs" / "readme.md"
+        readme_path.parent.mkdir(parents=True, exist_ok=True)
+        readme_path.write_text("old docs\n", encoding="utf-8")
+        _mark_section_ready(project_root, selected_mode="create_only")
+        _mark_alpha_ready(project_root)
+
+        response = _execute_bundle(client, project_root, ["mission-board", "alpha-section"], rerun=True)
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [
+                {
+                    "section_id": "mission-board",
+                    "status": "failed",
+                    "detail": "Section rerun requires safe_modify approval: mission-board",
+                }
+            ],
+            "first_failing_section": "mission-board",
+            "stopped_early": True,
+        }
+        assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+
+    def test_execute_bundle_preserves_rerun_enforcement_per_section(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_rerun_enforcement")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+        _prepare_section(client, project_root, "alpha-section")
+
+        assert _execute_bundle(client, project_root, ["mission-board"]).status_code == 200
+
+        response = _execute_bundle(client, project_root, ["mission-board", "alpha-section"])
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [
+                {
+                    "section_id": "mission-board",
+                    "status": "failed",
+                    "detail": "Section has prior execution artifacts; rerun=true required: mission-board",
+                }
+            ],
+            "first_failing_section": "mission-board",
+            "stopped_early": True,
+        }
+        assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+
+    def test_execute_bundle_does_not_recompute_or_widen_prepared_file_sets(self, monkeypatch):
+        project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_bundle_no_widen")
+        _mark_owned_bundle_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "owned-bundle")
+        sealed_plan_before = json.loads(
+            (project_root / ".dce" / "plans" / "owned-bundle.prepared_plan.json").read_text(encoding="utf-8")
+        )
+
+        def wider_run(self, executor_name, content):
+            lowered = content.lower()
+            metadata = _stub_executor_result(content).metadata
+            if "plan the system breakdown" in lowered:
+                return ExecutionResult(
+                    output=json.dumps(
+                        {
+                            "modules": [
+                                {
+                                    "name": "IngestModule",
+                                    "layer": "application",
+                                    "responsibility": "Handle observation ingest artifacts.",
+                                    "inputs": [{"name": "request", "type": "ObservationRequest"}],
+                                    "outputs": [{"name": "ingest_api", "type": "artifact"}],
+                                    "dependencies": [],
+                                    "governance_touchpoints": ["governed_execution"],
+                                    "failure_modes": ["invalid_request"],
+                                    "owned_paths": [
+                                        "src/api/ingest.py",
+                                        "src/models/rsobservation.py",
+                                        "src/api/expanded.py",
+                                    ],
+                                    "implementation_order": 1,
+                                }
+                            ],
+                            "file_groups": [
+                                {
+                                    "name": "expanded_bundle",
+                                    "module": "IngestModule",
+                                    "placement": "src",
+                                    "files": [
+                                        {"path": "src/api/ingest.py", "purpose": "Observation ingest API", "kind": "api"},
+                                        {"path": "src/models/rsobservation.py", "purpose": "RS observation model", "kind": "model"},
+                                        {"path": "src/api/expanded.py", "purpose": "Expanded API", "kind": "api"},
+                                    ],
+                                }
+                            ],
+                            "implementation_units": [{"name": "implement_expanded_bundle", "module": "IngestModule", "order": 1}],
+                            "build_graph": {"edges": [["IngestModule", "IngestModule"]]},
+                            "tests": [{"name": "expanded_bundle_paths_are_explicit", "targets": ["IngestModule"]}],
+                            "determinism_rules": ["Stable file ordering"],
+                            "acceptance_criteria": ["Prepared plan remains authoritative"],
+                        }
+                    ),
+                    status=ArtifactStatus.EXPERIMENTAL,
+                    executor=executor_name,
+                    metadata=metadata,
+                )
+            return _stub_executor_result(content)
+
+        monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", wider_run)
+        response = _execute_bundle(client, project_root, ["owned-bundle"])
+
+        assert response.status_code == 200
+        assert json.loads((project_root / ".dce" / "plans" / "owned-bundle.prepared_plan.json").read_text(encoding="utf-8")) == sealed_plan_before
+        assert (project_root / "src" / "api" / "expanded.py").exists() is False
+
+    def test_execute_bundle_is_deterministic_for_identical_prepared_state(self, monkeypatch):
+        first_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_repeat_one")
+        second_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_repeat_two")
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            _mark_section_ready(project_root)
+            _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            _prepare_section(client, project_root, "alpha-section")
+            _prepare_section(client, project_root, "mission-board")
+
+        first_response = _execute_bundle(client, first_root, ["alpha-section", "mission-board"])
+        second_response = _execute_bundle(client, second_root, ["alpha-section", "mission-board"])
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.json() == second_response.json()
+        assert first_response.content == second_response.content
+        assert (first_root / ".dce" / "execution" / "alpha-section.execution.json").read_bytes() == (
+            second_root / ".dce" / "execution" / "alpha-section.execution.json"
+        ).read_bytes()
+        assert (first_root / ".dce" / "execution" / "mission-board.execution.json").read_bytes() == (
+            second_root / ".dce" / "execution" / "mission-board.execution.json"
+        ).read_bytes()
+
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")
         run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")

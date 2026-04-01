@@ -197,3 +197,94 @@ def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rer
         "executed": True,
         "artifacts_updated": True,
     }
+
+
+def execute_prepared_section_bundle(
+    workspace_path: str | Path,
+    section_ids: list[str],
+    *,
+    rerun: bool = False,
+) -> tuple[dict[str, Any], int]:
+    if not section_ids:
+        return (
+            {
+                "status": "failed",
+                "section_results": [],
+                "first_failing_section": None,
+                "stopped_early": True,
+                "detail": "Bundle requires at least one section_id",
+            },
+            400,
+        )
+    if any(not section_id.strip() for section_id in section_ids):
+        return (
+            {
+                "status": "failed",
+                "section_results": [],
+                "first_failing_section": None,
+                "stopped_early": True,
+                "detail": "Bundle section_ids must be non-empty strings",
+            },
+            400,
+        )
+    if len(section_ids) != len(set(section_ids)):
+        return (
+            {
+                "status": "failed",
+                "section_results": [],
+                "first_failing_section": None,
+                "stopped_early": True,
+                "detail": "Bundle section_ids must be unique",
+            },
+            400,
+        )
+
+    section_results: list[dict[str, Any]] = []
+    for section_id in section_ids:
+        try:
+            result = execute_prepared_section(workspace_path, section_id, rerun=rerun)
+        except FileNotFoundError as exc:
+            section_results.append(
+                {
+                    "section_id": section_id,
+                    "status": "failed",
+                    "detail": str(exc),
+                }
+            )
+            return (
+                {
+                    "status": "failed",
+                    "section_results": section_results,
+                    "first_failing_section": section_id,
+                    "stopped_early": True,
+                },
+                404,
+            )
+        except ValueError as exc:
+            section_results.append(
+                {
+                    "section_id": section_id,
+                    "status": "failed",
+                    "detail": str(exc),
+                }
+            )
+            return (
+                {
+                    "status": "failed",
+                    "section_results": section_results,
+                    "first_failing_section": section_id,
+                    "stopped_early": True,
+                },
+                400,
+            )
+        section_results.append(result)
+
+    return (
+        {
+            "status": "ok",
+            "section_results": section_results,
+            "first_failing_section": None,
+            "stopped_early": False,
+        },
+        200,
+    )

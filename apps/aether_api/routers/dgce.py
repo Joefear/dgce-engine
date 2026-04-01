@@ -1,11 +1,12 @@
 """DGCE section orchestration endpoint for the local Aether API."""
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from aether.dgce import DGCESection, run_section
 from aether.dgce.approve_api import approve_section_execution
-from aether.dgce.execute_api import execute_prepared_section
+from aether.dgce.execute_api import execute_prepared_section, execute_prepared_section_bundle
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.refresh_api import refresh_workspace_artifacts
 
@@ -23,6 +24,12 @@ class SectionApprovalRequest(BaseModel):
     approved_by: str = "operator"
     notes: str = ""
     selected_mode: str | None = None
+
+
+class SectionBundleExecutionRequest(BaseModel):
+    workspace_path: str
+    section_ids: list[str]
+    rerun: bool = False
 
 
 @router.post("/dgce/section")
@@ -85,3 +92,13 @@ def execute_dgce_section(section_id: str, payload: WorkspacePathRequest) -> dict
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/dgce/sections/execute-bundle")
+def execute_dgce_section_bundle(payload: SectionBundleExecutionRequest):
+    result, status_code = execute_prepared_section_bundle(
+        payload.workspace_path,
+        payload.section_ids,
+        rerun=payload.rerun,
+    )
+    return JSONResponse(status_code=status_code, content=result)
