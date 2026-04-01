@@ -17,6 +17,7 @@ from aether.dgce.incremental import (
 )
 from aether.dgce.path_utils import resolve_workspace_path
 from aether.dgce.prepare_api import (
+    _compute_prepared_plan_approval_lineage,
     _compute_prepared_plan_binding,
     load_prepared_section_file_plan,
     load_prepared_section_plan_artifact,
@@ -83,6 +84,13 @@ def _assert_prepared_plan_binding_matches(project_root: Path, section_id: str) -
         raise ValueError(f"Prepared file plan binding mismatch: {section_id}")
 
 
+def _assert_prepared_plan_approval_lineage_matches(project_root: Path, section_id: str) -> None:
+    prepared_plan = load_prepared_section_plan_artifact(project_root, section_id)
+    current_lineage = _compute_prepared_plan_approval_lineage(project_root, section_id)
+    if prepared_plan.get("approval_lineage") != current_lineage:
+        raise ValueError(f"Prepared file plan approval lineage mismatch: {section_id}")
+
+
 def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rerun: bool = False) -> dict[str, str | bool]:
     project_root = resolve_workspace_path(workspace_path)
     preparation = prepare_section_execution(project_root, section_id, persist_prepared_plan=False)
@@ -90,6 +98,7 @@ def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rer
         raise ValueError(f"Section has prior execution artifacts; rerun=true required: {section_id}")
     if preparation["eligible"] is not True:
         raise ValueError(f"Section is not eligible for execution: {section_id}")
+    _assert_prepared_plan_approval_lineage_matches(project_root, section_id)
     _assert_prepared_plan_binding_matches(project_root, section_id)
     prepared_file_plan = load_prepared_section_file_plan(project_root, section_id)
     if rerun is True and _has_prior_execution_artifacts(project_root, section_id):

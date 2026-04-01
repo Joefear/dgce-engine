@@ -110,9 +110,34 @@ def _compute_prepared_plan_binding(project_root: Path, section_id: str) -> dict[
     }
 
 
-def _prepared_plan_payload(section_id: str, file_plan: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
+def _compute_prepared_plan_approval_lineage(project_root: Path, section_id: str) -> dict[str, Any]:
+    approval_path = _artifact_relative_path(section_id, ".dce/approvals/{section_id}.approval.json")
+    approval_file = _artifact_file_path(project_root, approval_path)
+    approval_payload = _load_validated_json_artifact(project_root, approval_path)
+    approval_artifact_fingerprint = approval_payload.get("artifact_fingerprint")
+    if not isinstance(approval_artifact_fingerprint, str):
+        raise ValueError(f"Approval artifact is malformed: {section_id}")
+    return {
+        "approval_artifact_fingerprint": approval_artifact_fingerprint,
+        "approval_path": approval_path,
+        "approval_record_fingerprint": compute_json_file_fingerprint(approval_file),
+        "approval_status": approval_payload.get("approval_status"),
+        "execution_permitted": approval_payload.get("execution_permitted"),
+        "section_id": section_id,
+        "selected_mode": approval_payload.get("selected_mode"),
+    }
+
+
+def _prepared_plan_payload(
+    section_id: str,
+    file_plan: dict[str, Any],
+    binding: dict[str, Any],
+    approval_lineage: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "artifact_type": "prepared_execution_plan",
+        "approval_lineage": approval_lineage,
+        "approval_lineage_fingerprint": compute_json_payload_fingerprint(approval_lineage),
         "binding": binding,
         "binding_fingerprint": compute_json_payload_fingerprint(binding),
         "file_plan": file_plan,
@@ -131,6 +156,24 @@ def load_prepared_section_plan_artifact(project_root: Path, section_id: str) -> 
         raise ValueError(f"Prepared file plan artifact must contain a JSON object: {section_id}")
     if str(payload.get("section_id")) != section_id:
         raise ValueError(f"Prepared file plan artifact section mismatch: {section_id}")
+    approval_lineage = payload.get("approval_lineage")
+    if not isinstance(approval_lineage, dict):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    if approval_lineage.get("section_id") != section_id:
+        raise ValueError(f"Prepared file plan artifact section mismatch: {section_id}")
+    expected_approval_path = _artifact_relative_path(section_id, ".dce/approvals/{section_id}.approval.json")
+    if approval_lineage.get("approval_path") != expected_approval_path:
+        raise ValueError(f"Prepared file plan artifact approval lineage is malformed: {section_id}")
+    for key in ("approval_artifact_fingerprint", "approval_record_fingerprint", "approval_status", "selected_mode"):
+        if not isinstance(approval_lineage.get(key), str):
+            raise ValueError(f"Prepared file plan artifact approval lineage is malformed: {section_id}")
+    if not isinstance(approval_lineage.get("execution_permitted"), bool):
+        raise ValueError(f"Prepared file plan artifact approval lineage is malformed: {section_id}")
+    approval_lineage_fingerprint = payload.get("approval_lineage_fingerprint")
+    if not isinstance(approval_lineage_fingerprint, str):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    if compute_json_payload_fingerprint(approval_lineage) != approval_lineage_fingerprint:
+        raise ValueError(f"Prepared file plan artifact approval lineage is malformed: {section_id}")
     binding = payload.get("binding")
     if not isinstance(binding, dict):
         raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
@@ -184,9 +227,10 @@ def _seal_prepared_section_file_plan(project_root: Path, section_id: str) -> Non
     section = _load_section_from_workspace_input(project_root, section_id)
     file_plan = compute_governed_execution_file_plan(section)
     binding = _compute_prepared_plan_binding(project_root, section_id)
+    approval_lineage = _compute_prepared_plan_approval_lineage(project_root, section_id)
     _write_json(
         _prepared_plan_file_path(project_root, section_id),
-        _prepared_plan_payload(section_id, file_plan.model_dump(), binding),
+        _prepared_plan_payload(section_id, file_plan.model_dump(), binding, approval_lineage),
     )
 
 

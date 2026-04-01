@@ -350,6 +350,22 @@ class TestDGCEPrepareAPI:
         prepared_plan_payload = json.loads(
             (project_root / ".dce" / "plans" / "mission-board.prepared_plan.json").read_text(encoding="utf-8")
         )
+        assert prepared_plan_payload["approval_lineage"] == {
+            "approval_artifact_fingerprint": json.loads(
+                (project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8")
+            )["artifact_fingerprint"],
+            "approval_path": ".dce/approvals/mission-board.approval.json",
+            "approval_record_fingerprint": dgce_decompose.compute_json_file_fingerprint(
+                project_root / ".dce" / "approvals" / "mission-board.approval.json"
+            ),
+            "approval_status": "approved",
+            "execution_permitted": True,
+            "section_id": "mission-board",
+            "selected_mode": "create_only",
+        }
+        assert prepared_plan_payload["approval_lineage_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            prepared_plan_payload["approval_lineage"]
+        )
         assert prepared_plan_payload["binding"] == {
             "artifact_paths": {
                 "approval_path": ".dce/approvals/mission-board.approval.json",

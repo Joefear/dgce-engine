@@ -14,6 +14,7 @@ from aether.dgce import (
     record_section_execution_gate,
     run_section_with_workspace,
 )
+import aether.dgce.decompose as dgce_decompose
 from aether.dgce.file_plan import FilePlan
 from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
@@ -522,7 +523,7 @@ class TestDGCEExecuteAPI:
         )
 
         assert response.status_code == 400
-        assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
+        assert response.json() == {"detail": "Prepared file plan approval lineage mismatch: mission-board"}
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
@@ -541,7 +542,7 @@ class TestDGCEExecuteAPI:
         )
 
         assert response.status_code == 400
-        assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
+        assert response.json() == {"detail": "Prepared file plan approval lineage mismatch: mission-board"}
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
@@ -562,9 +563,70 @@ class TestDGCEExecuteAPI:
         )
 
         assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan approval lineage mismatch: mission-board"}
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_binding_payload_is_tampered(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_binding_tamper")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["binding"]["selected_mode"] = "safe_modify"
+        prepared_plan_payload["binding_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(
+            prepared_plan_payload["binding"]
+        )
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
         assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_approval_artifact_mutates_after_prepare(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_approval_lineage_mutation")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+        approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+        approval_payload["notes"] = "mutated after prepare"
+        approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan approval lineage mismatch: mission-board"}
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_approval_lineage_section_mismatches(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_approval_lineage_section_mismatch")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["approval_lineage"]["section_id"] = "other-section"
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan artifact section mismatch: mission-board"}
 
     def test_second_execution_without_rerun_returns_400_and_does_not_write(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_rerun")
