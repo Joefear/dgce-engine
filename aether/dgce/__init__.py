@@ -58,6 +58,7 @@ from aether.dgce.read_api import (
     get_workspace_index,
     list_available_artifacts,
 )
+from aether.dgce.sdk import DGCEClient
 
 __all__ = [
     "DGCESection",
@@ -100,6 +101,7 @@ __all__ = [
     "get_lifecycle_trace",
     "get_workspace_index",
     "list_available_artifacts",
+    "DGCEClient",
     "write_file_plan",
     "decompose_section",
     "preflight_section",
