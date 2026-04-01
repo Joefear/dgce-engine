@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from aether.dgce.decompose import _validate_locked_artifact_schema
+from aether.dgce.path_utils import resolve_workspace_path
 
 
 def _workspace_root_path(workspace_path: str | Path) -> Path:
-    return Path(workspace_path)
+    return resolve_workspace_path(workspace_path)
 
 
 def _artifact_file_path(workspace_path: str | Path, *parts: str) -> Path:

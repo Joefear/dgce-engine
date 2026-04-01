@@ -14,6 +14,7 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 from aether.dgce import read_api as dgce_read_api
+from aether.dgce.path_utils import resolve_workspace_path
 from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
 
@@ -132,3 +133,39 @@ def test_read_api_has_no_write_side_effects(monkeypatch):
     dgce_read_api.list_available_artifacts(project_root)
 
     assert before == {path: path.read_bytes() for path in artifact_paths}
+
+
+def test_resolve_workspace_path_accepts_safe_relative_path(monkeypatch):
+    project_root = _build_workspace(monkeypatch, "dgce_read_api_relative")
+    relative_path = project_root.resolve().relative_to(Path.cwd().resolve())
+
+    assert resolve_workspace_path(str(relative_path)) == project_root.resolve()
+    assert get_dashboard(str(relative_path)) == json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+
+
+def test_resolve_workspace_path_rejects_relative_escape():
+    with pytest.raises(ValueError, match="must remain within the current working directory"):
+        resolve_workspace_path("..")
+
+
+def test_read_api_raises_for_workspace_without_dce_directory():
+    workspace_path = _workspace_dir("dgce_read_api_missing_dce")
+    workspace_path.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ValueError, match="must contain a \\.dce directory"):
+        get_dashboard(workspace_path)
+
+
+def test_read_api_raises_for_workspace_path_that_is_a_file():
+    base = _workspace_dir("dgce_read_api_file_path")
+    base.mkdir(parents=True, exist_ok=True)
+    file_path = base / "workspace.txt"
+    file_path.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be a directory"):
+        get_dashboard(file_path)
+
+
+def test_read_api_raises_for_nonexistent_workspace_path():
+    with pytest.raises(FileNotFoundError, match="Workspace path does not exist"):
+        get_dashboard("tests/.tmp/does-not-exist")

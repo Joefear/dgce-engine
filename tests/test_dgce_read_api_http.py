@@ -197,3 +197,21 @@ class TestDGCEReadAPIHTTP:
         response = client.get("/v1/dgce/dashboard", params={"workspace_path": "tests/.tmp/does-not-exist"})
 
         assert response.status_code == 404
+
+    def test_invalid_workspace_path_returns_http_400(self):
+        workspace_path = _workspace_dir("dgce_read_api_http_missing_dce")
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        client = TestClient(create_app())
+
+        response = client.get("/v1/dgce/dashboard", params={"workspace_path": str(workspace_path)})
+
+        assert response.status_code == 400
+        assert ".dce" in response.json()["detail"]
+
+    def test_relative_escape_workspace_path_returns_http_400(self):
+        client = TestClient(create_app())
+
+        response = client.get("/v1/dgce/dashboard", params={"workspace_path": ".."})
+
+        assert response.status_code == 400
+        assert "current working directory" in response.json()["detail"]
