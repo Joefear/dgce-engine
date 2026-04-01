@@ -106,6 +106,28 @@ def _mark_section_ready(project_root: Path, *, selected_mode: str = "create_only
     )
 
 
+def _realign_preview_fingerprint_after_stale_gate(project_root: Path) -> str:
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    current_preview_fingerprint = json.loads(preview_path.read_text(encoding="utf-8"))["artifact_fingerprint"]
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["preview_fingerprint"] = "stale-preview-fingerprint"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["preview_fingerprint"] = current_preview_fingerprint
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return current_preview_fingerprint
+
+
 def _all_file_bytes(project_root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(project_root)): path.read_bytes()
@@ -245,6 +267,84 @@ class TestDGCEExecuteAPI:
             "executed": True,
             "artifacts_updated": True,
         }
+
+    def test_prepare_eligible_immediate_rerun_execute_succeeds_without_source_changes(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_prepare_execute_consistent")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        _mark_section_ready(project_root)
+        current_preview_fingerprint = _realign_preview_fingerprint_after_stale_gate(project_root)
+        prepare_response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert prepare_response.status_code == 200
+        assert prepare_response.json()["eligible"] is True
+        approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+        assert approval_payload["preview_fingerprint"] == current_preview_fingerprint
+
+        rerun_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root), "rerun": True},
+        )
+
+        assert rerun_response.status_code == 200
+        assert rerun_response.json() == {
+            "status": "ok",
+            "section_id": "mission-board",
+            "executed": True,
+            "artifacts_updated": True,
+        }
+
+    def test_execute_blocks_when_source_changes_after_prepare(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_prepare_execute_source_changed")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        _mark_section_ready(project_root)
+        prepare_response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+        assert prepare_response.status_code == 200
+        assert prepare_response.json()["eligible"] is True
+
+        input_path = project_root / ".dce" / "input" / "mission-board.json"
+        input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+        input_payload["constraints"].append("operator input changed after prepare")
+        input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        before_files = _file_bytes(
+            project_root,
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        )
+
+        rerun_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root), "rerun": True},
+        )
+
+        assert rerun_response.status_code == 400
+        assert rerun_response.json() == {"detail": "Section is not eligible for execution: mission-board"}
+        assert _file_bytes(
+            project_root,
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        ) == before_files
 
     def test_rerun_with_failed_safe_modify_returns_400_and_does_not_execute(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_safe_modify_block")

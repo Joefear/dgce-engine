@@ -845,8 +845,9 @@ def run_dgce_section(
             run_outcome_class=result.run_outcome_class,
         )
 
-    run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2")
     approval_path = _ensure_workspace(project_root)["approvals"] / f"{section_id}.approval.json"
+    if not approval_path.exists():
+        run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2")
     if not approval_path.exists():
         return DGCERunOrchestratorResult(
             section_id=section_id,
