@@ -132,6 +132,20 @@ def _build_prepared_plan_audit_manifest(
     }
 
 
+def _build_prepared_plan_cross_link(
+    *,
+    section_id: str,
+    prepared_plan: dict[str, Any],
+    prepared_plan_audit_fingerprint: str,
+) -> dict[str, Any]:
+    return {
+        "prepared_plan_audit_fingerprint": prepared_plan_audit_fingerprint,
+        "prepared_plan_fingerprint": compute_json_payload_fingerprint(prepared_plan),
+        "prepared_plan_path": _prepared_plan_relative_path(section_id),
+        "section_id": section_id,
+    }
+
+
 def _persist_prepared_plan_audit_manifest(
     project_root: Path,
     section_id: str,
@@ -148,6 +162,13 @@ def _persist_prepared_plan_audit_manifest(
     )
     execution_artifact["prepared_plan_audit_manifest"] = audit_manifest
     execution_artifact["prepared_plan_audit_fingerprint"] = compute_json_payload_fingerprint(audit_manifest)
+    prepared_plan_cross_link = _build_prepared_plan_cross_link(
+        section_id=section_id,
+        prepared_plan=prepared_plan,
+        prepared_plan_audit_fingerprint=execution_artifact["prepared_plan_audit_fingerprint"],
+    )
+    execution_artifact["prepared_plan_cross_link"] = prepared_plan_cross_link
+    execution_artifact["prepared_plan_cross_link_fingerprint"] = compute_json_payload_fingerprint(prepared_plan_cross_link)
     _write_json(execution_path, execution_artifact)
 
 

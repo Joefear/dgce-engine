@@ -466,6 +466,15 @@ class TestDGCEExecuteAPI:
         assert execution_payload["prepared_plan_audit_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
             execution_payload["prepared_plan_audit_manifest"]
         )
+        assert execution_payload["prepared_plan_cross_link"] == {
+            "prepared_plan_audit_fingerprint": execution_payload["prepared_plan_audit_fingerprint"],
+            "prepared_plan_fingerprint": dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload),
+            "prepared_plan_path": ".dce/plans/mission-board.prepared_plan.json",
+            "section_id": "mission-board",
+        }
+        assert execution_payload["prepared_plan_cross_link_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            execution_payload["prepared_plan_cross_link"]
+        )
 
     def test_execute_endpoint_returns_400_for_non_eligible_section_without_writes(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_non_eligible")
@@ -644,6 +653,47 @@ class TestDGCEExecuteAPI:
 
         assert response.status_code == 400
         assert response.json() == {"detail": "Prepared file plan artifact section mismatch: mission-board"}
+
+    def test_execution_artifact_cross_link_validation_rejects_inconsistent_metadata(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_cross_link_validation")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert response.status_code == 200
+
+        execution_path = project_root / ".dce" / "execution" / "mission-board.execution.json"
+        execution_payload = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution_payload["prepared_plan_cross_link"]["prepared_plan_path"] = ".dce/plans/other-section.prepared_plan.json"
+
+        with pytest.raises(ValueError, match="prepared_plan_cross_link.prepared_plan_path"):
+            dgce_decompose._validate_locked_artifact_schema(execution_path, execution_payload)
+
+    def test_execution_artifact_cross_link_validation_rejects_section_misuse(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_cross_link_section_misuse")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert response.status_code == 200
+
+        execution_path = project_root / ".dce" / "execution" / "mission-board.execution.json"
+        execution_payload = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution_payload["prepared_plan_cross_link"]["section_id"] = "other-section"
+        execution_payload["prepared_plan_cross_link_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(
+            execution_payload["prepared_plan_cross_link"]
+        )
+
+        with pytest.raises(ValueError, match="prepared_plan_cross_link.section_id"):
+            dgce_decompose._validate_locked_artifact_schema(execution_path, execution_payload)
 
     def test_second_execution_without_rerun_returns_400_and_does_not_write(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_rerun")
@@ -1152,6 +1202,15 @@ class TestDGCEExecuteAPI:
         assert execution_payload["prepared_plan_audit_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
             execution_payload["prepared_plan_audit_manifest"]
         )
+        assert execution_payload["prepared_plan_cross_link"] == {
+            "prepared_plan_audit_fingerprint": execution_payload["prepared_plan_audit_fingerprint"],
+            "prepared_plan_fingerprint": dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload),
+            "prepared_plan_path": ".dce/plans/owned-bundle.prepared_plan.json",
+            "section_id": "owned-bundle",
+        }
+        assert execution_payload["prepared_plan_cross_link_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            execution_payload["prepared_plan_cross_link"]
+        )
         assert all(entry["path"] != "src/rogue/unowned.py" for entry in execution_payload["written_files"])
         assert all(
             entry["path"] != "src/rogue/unowned.py"
@@ -1344,8 +1403,15 @@ class TestDGCEExecuteAPI:
                 (project_root / ".dce" / "execution" / "owned-bundle.execution.json").read_text(encoding="utf-8")
             )
             assert rerun_execution_payload["prepared_plan_audit_fingerprint"] != initial_audit_fingerprints[project_root]
+            assert rerun_execution_payload["prepared_plan_cross_link"]["prepared_plan_audit_fingerprint"] == (
+                rerun_execution_payload["prepared_plan_audit_fingerprint"]
+            )
             rerun_audit_payloads[project_root] = json.dumps(
-                rerun_execution_payload["prepared_plan_audit_manifest"],
+                {
+                    "prepared_plan_audit_manifest": rerun_execution_payload["prepared_plan_audit_manifest"],
+                    "prepared_plan_cross_link": rerun_execution_payload["prepared_plan_cross_link"],
+                    "prepared_plan_cross_link_fingerprint": rerun_execution_payload["prepared_plan_cross_link_fingerprint"],
+                },
                 indent=2,
                 sort_keys=True,
             ).encode("utf-8")

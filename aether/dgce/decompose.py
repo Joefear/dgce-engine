@@ -1950,6 +1950,49 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
     _expect_bool(_expect_required_field(execution_record_summary, "execution_blocked", artifact_name), artifact_name, "execution_record_summary.execution_blocked")
     for key in ("executed_unit_count", "linked_artifact_count", "result_artifact_count", "skipped_artifact_count", "skipped_unit_count", "written_artifact_count"):
         _expect_int(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
+    prepared_plan_audit_manifest = artifact.get("prepared_plan_audit_manifest")
+    prepared_plan_audit_fingerprint = artifact.get("prepared_plan_audit_fingerprint")
+    prepared_plan_cross_link = artifact.get("prepared_plan_cross_link")
+    prepared_plan_cross_link_fingerprint = artifact.get("prepared_plan_cross_link_fingerprint")
+    cross_link_fields_present = any(
+        value is not None
+        for value in (
+            prepared_plan_cross_link,
+            prepared_plan_cross_link_fingerprint,
+        )
+    )
+    if cross_link_fields_present:
+        audit_manifest = _expect_dict(
+            _expect_required_field(artifact, "prepared_plan_audit_manifest", artifact_name),
+            artifact_name,
+            "prepared_plan_audit_manifest",
+        )
+        audit_fingerprint = _expect_required_field(artifact, "prepared_plan_audit_fingerprint", artifact_name)
+        _expect_str(audit_fingerprint, artifact_name, "prepared_plan_audit_fingerprint")
+        audit_manifest_prepared_plan_path = _expect_required_field(audit_manifest, "prepared_plan_path", artifact_name)
+        _expect_str(audit_manifest_prepared_plan_path, artifact_name, "prepared_plan_audit_manifest.prepared_plan_path")
+        audit_manifest_prepared_plan_fingerprint = _expect_required_field(audit_manifest, "prepared_plan_fingerprint", artifact_name)
+        _expect_str(audit_manifest_prepared_plan_fingerprint, artifact_name, "prepared_plan_audit_manifest.prepared_plan_fingerprint")
+        audit_manifest_section_id = _expect_required_field(audit_manifest, "section_id", artifact_name)
+        _expect_str(audit_manifest_section_id, artifact_name, "prepared_plan_audit_manifest.section_id")
+        cross_link = _expect_dict(
+            _expect_required_field(artifact, "prepared_plan_cross_link", artifact_name),
+            artifact_name,
+            "prepared_plan_cross_link",
+        )
+        for key in ("prepared_plan_audit_fingerprint", "prepared_plan_fingerprint", "prepared_plan_path", "section_id"):
+            _expect_str(_expect_required_field(cross_link, key, artifact_name), artifact_name, f"prepared_plan_cross_link.{key}")
+        prepared_plan_cross_link_fingerprint = _expect_required_field(artifact, "prepared_plan_cross_link_fingerprint", artifact_name)
+        _expect_str(prepared_plan_cross_link_fingerprint, artifact_name, "prepared_plan_cross_link_fingerprint")
+        if cross_link["section_id"] != artifact["section_id"]:
+            _schema_error(artifact_name, "prepared_plan_cross_link.section_id must match section_id")
+        expected_plan_path = f".dce/plans/{artifact['section_id']}.prepared_plan.json"
+        if cross_link["prepared_plan_path"] != expected_plan_path:
+            _schema_error(artifact_name, "prepared_plan_cross_link.prepared_plan_path must match section prepared-plan path")
+        if audit_manifest_prepared_plan_path != cross_link["prepared_plan_path"]:
+            _schema_error(artifact_name, "prepared_plan_cross_link.prepared_plan_path must match prepared_plan_audit_manifest.prepared_plan_path")
+        if audit_manifest_prepared_plan_fingerprint != cross_link["prepared_plan_fingerprint"]:
+            _schema_error(artifact_name, "prepared_plan_cross_link.prepared_plan_fingerprint must match prepared_plan_audit_manifest.prepared_plan_fingerprint")
 
 
 def _validate_artifact_manifest_schema(payload: Any) -> None:
