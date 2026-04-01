@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from aether.dgce import run_dgce_section
-from aether.dgce.decompose import SectionAlignmentInput, _build_alignment_artifact
+from aether.dgce.decompose import (
+    SectionAlignmentInput,
+    _build_alignment_artifact,
+    _write_json,
+    compute_json_payload_fingerprint,
+)
 from aether.dgce.file_plan import FilePlan
 from aether.dgce.incremental import (
     build_incremental_change_plan,
@@ -91,6 +96,61 @@ def _assert_prepared_plan_approval_lineage_matches(project_root: Path, section_i
         raise ValueError(f"Prepared file plan approval lineage mismatch: {section_id}")
 
 
+def _prepared_plan_relative_path(section_id: str) -> str:
+    return f".dce/plans/{section_id}.prepared_plan.json"
+
+
+def _execution_artifact_path(project_root: Path, section_id: str) -> Path:
+    return project_root / ".dce" / "execution" / f"{section_id}.execution.json"
+
+
+def _build_prepared_plan_audit_manifest(
+    *,
+    section_id: str,
+    prepared_plan: dict[str, Any],
+    execution_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    written_files = execution_artifact.get("written_files")
+    if not isinstance(written_files, list):
+        raise ValueError(f"Execution audit manifest requires valid written_files: {section_id}")
+    selected_mode = execution_artifact.get("selected_mode")
+    if selected_mode is not None and not isinstance(selected_mode, str):
+        raise ValueError(f"Execution audit manifest requires valid selected_mode: {section_id}")
+    execution_status = execution_artifact.get("execution_status")
+    if not isinstance(execution_status, str):
+        raise ValueError(f"Execution audit manifest requires valid execution_status: {section_id}")
+    return {
+        "approval_lineage_fingerprint": prepared_plan["approval_lineage_fingerprint"],
+        "binding_fingerprint": prepared_plan["binding_fingerprint"],
+        "execution_permitted": bool(prepared_plan["binding"]["execution_permitted"]),
+        "execution_status": execution_status,
+        "prepared_plan_fingerprint": compute_json_payload_fingerprint(prepared_plan),
+        "prepared_plan_path": _prepared_plan_relative_path(section_id),
+        "section_id": section_id,
+        "selected_mode": selected_mode,
+        "written_files": written_files,
+    }
+
+
+def _persist_prepared_plan_audit_manifest(
+    project_root: Path,
+    section_id: str,
+    prepared_plan: dict[str, Any],
+) -> None:
+    execution_path = _execution_artifact_path(project_root, section_id)
+    execution_artifact = json.loads(execution_path.read_text(encoding="utf-8"))
+    if not isinstance(execution_artifact, dict):
+        raise ValueError(f"Execution audit manifest requires valid execution artifact: {section_id}")
+    audit_manifest = _build_prepared_plan_audit_manifest(
+        section_id=section_id,
+        prepared_plan=prepared_plan,
+        execution_artifact=execution_artifact,
+    )
+    execution_artifact["prepared_plan_audit_manifest"] = audit_manifest
+    execution_artifact["prepared_plan_audit_fingerprint"] = compute_json_payload_fingerprint(audit_manifest)
+    _write_json(execution_path, execution_artifact)
+
+
 def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rerun: bool = False) -> dict[str, str | bool]:
     project_root = resolve_workspace_path(workspace_path)
     preparation = prepare_section_execution(project_root, section_id, persist_prepared_plan=False)
@@ -98,6 +158,7 @@ def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rer
         raise ValueError(f"Section has prior execution artifacts; rerun=true required: {section_id}")
     if preparation["eligible"] is not True:
         raise ValueError(f"Section is not eligible for execution: {section_id}")
+    prepared_plan = load_prepared_section_plan_artifact(project_root, section_id)
     _assert_prepared_plan_approval_lineage_matches(project_root, section_id)
     _assert_prepared_plan_binding_matches(project_root, section_id)
     prepared_file_plan = load_prepared_section_file_plan(project_root, section_id)
@@ -107,6 +168,7 @@ def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rer
     result = run_dgce_section(section_id, project_root, governed=True, prepared_file_plan=prepared_file_plan)
     if str(result.status) != "success":
         raise ValueError(f"Section execution blocked: {result.reason}")
+    _persist_prepared_plan_audit_manifest(project_root, section_id, prepared_plan)
 
     return {
         "status": "ok",

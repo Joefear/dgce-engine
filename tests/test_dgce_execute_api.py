@@ -432,6 +432,9 @@ class TestDGCEExecuteAPI:
         _mark_section_ready(project_root)
         client = TestClient(create_app())
         _prepare_section(client, project_root)
+        prepared_plan_payload = json.loads(
+            (project_root / ".dce" / "plans" / "mission-board.prepared_plan.json").read_text(encoding="utf-8")
+        )
 
         response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -449,6 +452,20 @@ class TestDGCEExecuteAPI:
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists()
         execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
         assert execution_payload["written_files"] == []
+        assert execution_payload["prepared_plan_audit_manifest"] == {
+            "approval_lineage_fingerprint": prepared_plan_payload["approval_lineage_fingerprint"],
+            "binding_fingerprint": prepared_plan_payload["binding_fingerprint"],
+            "execution_permitted": True,
+            "execution_status": execution_payload["execution_status"],
+            "prepared_plan_fingerprint": dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload),
+            "prepared_plan_path": ".dce/plans/mission-board.prepared_plan.json",
+            "section_id": "mission-board",
+            "selected_mode": "create_only",
+            "written_files": [],
+        }
+        assert execution_payload["prepared_plan_audit_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            execution_payload["prepared_plan_audit_manifest"]
+        )
 
     def test_execute_endpoint_returns_400_for_non_eligible_section_without_writes(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_non_eligible")
@@ -1081,6 +1098,9 @@ class TestDGCEExecuteAPI:
         _mark_owned_bundle_ready(project_root)
         client = TestClient(create_app())
         _prepare_section(client, project_root, "owned-bundle")
+        prepared_plan_payload = json.loads(
+            (project_root / ".dce" / "plans" / "owned-bundle.prepared_plan.json").read_text(encoding="utf-8")
+        )
         notes_path = project_root / "notes.txt"
         notes_path.write_text("leave me alone", encoding="utf-8")
         notes_before = notes_path.read_bytes()
@@ -1118,7 +1138,25 @@ class TestDGCEExecuteAPI:
             }
             for relative_path in expected_paths
         ]
+        assert execution_payload["prepared_plan_audit_manifest"] == {
+            "approval_lineage_fingerprint": prepared_plan_payload["approval_lineage_fingerprint"],
+            "binding_fingerprint": prepared_plan_payload["binding_fingerprint"],
+            "execution_permitted": True,
+            "execution_status": execution_payload["execution_status"],
+            "prepared_plan_fingerprint": dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload),
+            "prepared_plan_path": ".dce/plans/owned-bundle.prepared_plan.json",
+            "section_id": "owned-bundle",
+            "selected_mode": "create_only",
+            "written_files": execution_payload["written_files"],
+        }
+        assert execution_payload["prepared_plan_audit_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            execution_payload["prepared_plan_audit_manifest"]
+        )
         assert all(entry["path"] != "src/rogue/unowned.py" for entry in execution_payload["written_files"])
+        assert all(
+            entry["path"] != "src/rogue/unowned.py"
+            for entry in execution_payload["prepared_plan_audit_manifest"]["written_files"]
+        )
 
     def test_owned_bundle_second_execution_without_rerun_returns_400(self, monkeypatch):
         project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_missing_rerun")
@@ -1271,3 +1309,45 @@ class TestDGCEExecuteAPI:
         assert (first_root / ".dce" / "outputs" / "mission-board.json").read_bytes() == (
             second_root / ".dce" / "outputs" / "mission-board.json"
         ).read_bytes()
+
+    def test_owned_bundle_rerun_audit_manifest_is_distinct_and_deterministic(self, monkeypatch):
+        first_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_audit_rerun_one")
+        second_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_audit_rerun_two")
+        client = TestClient(create_app())
+
+        initial_audit_fingerprints: dict[Path, str] = {}
+        rerun_audit_payloads: dict[Path, bytes] = {}
+
+        for project_root in (first_root, second_root):
+            _mark_owned_bundle_ready(project_root, selected_mode="create_only")
+            _prepare_section(client, project_root, "owned-bundle")
+            first_response = client.post(
+                "/v1/dgce/sections/owned-bundle/execute",
+                json={"workspace_path": str(project_root)},
+            )
+            assert first_response.status_code == 200
+            initial_execution_payload = json.loads(
+                (project_root / ".dce" / "execution" / "owned-bundle.execution.json").read_text(encoding="utf-8")
+            )
+            initial_audit_fingerprints[project_root] = initial_execution_payload["prepared_plan_audit_fingerprint"]
+
+            target_path = project_root / "src" / "api" / "ingest.py"
+            target_path.write_text("operator modified file\n", encoding="utf-8")
+            _mark_owned_bundle_ready(project_root, selected_mode="safe_modify")
+            _prepare_section(client, project_root, "owned-bundle")
+            rerun_response = client.post(
+                "/v1/dgce/sections/owned-bundle/execute",
+                json={"workspace_path": str(project_root), "rerun": True},
+            )
+            assert rerun_response.status_code == 200
+            rerun_execution_payload = json.loads(
+                (project_root / ".dce" / "execution" / "owned-bundle.execution.json").read_text(encoding="utf-8")
+            )
+            assert rerun_execution_payload["prepared_plan_audit_fingerprint"] != initial_audit_fingerprints[project_root]
+            rerun_audit_payloads[project_root] = json.dumps(
+                rerun_execution_payload["prepared_plan_audit_manifest"],
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8")
+
+        assert rerun_audit_payloads[first_root] == rerun_audit_payloads[second_root]
