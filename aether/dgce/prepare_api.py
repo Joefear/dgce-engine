@@ -228,10 +228,8 @@ def prepare_section_execution(workspace_path: str | Path, section_id: str) -> di
     recomputed_preflight = _build_preflight_artifact(dce_root, section_id, SectionPreflightInput())
     preflight_ready = (
         persisted_preflight is not None
-        and str(persisted_preflight.get("preflight_status")) == "preflight_pass"
-        and persisted_preflight.get("execution_allowed") is True
-        and persisted_preflight.get("preflight_status") == recomputed_preflight.get("preflight_status")
-        and persisted_preflight.get("execution_allowed") == recomputed_preflight.get("execution_allowed")
+        and str(recomputed_preflight.get("preflight_status")) == "preflight_pass"
+        and recomputed_preflight.get("execution_allowed") is True
     )
 
     recomputed_stale = _build_stale_check_artifact(dce_root, section_id, SectionStaleCheckInput())
@@ -246,14 +244,10 @@ def prepare_section_execution(workspace_path: str | Path, section_id: str) -> di
     gate_ready = (
         persisted_stale is not None
         and persisted_gate is not None
-        and str(persisted_stale.get("stale_status")) == "stale_valid"
-        and persisted_stale.get("stale_detected") is False
-        and persisted_stale.get("stale_status") == recomputed_stale.get("stale_status")
-        and persisted_stale.get("stale_detected") == recomputed_stale.get("stale_detected")
-        and str(persisted_gate.get("gate_status")) == "gate_pass"
-        and persisted_gate.get("execution_blocked") is False
-        and persisted_gate.get("gate_status") == recomputed_gate.get("gate_status")
-        and persisted_gate.get("execution_blocked") == recomputed_gate.get("execution_blocked")
+        and str(recomputed_stale.get("stale_status")) == "stale_valid"
+        and recomputed_stale.get("stale_detected") is False
+        and str(recomputed_gate.get("gate_status")) == "gate_pass"
+        and recomputed_gate.get("execution_blocked") is False
     )
 
     checks = {

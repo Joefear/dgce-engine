@@ -95,6 +95,29 @@ def _mark_section_ready(project_root: Path) -> None:
     )
 
 
+def _create_stale_gate_drift(project_root: Path) -> str:
+    _mark_section_ready(project_root)
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
+    current_preview_fingerprint = json.loads(preview_path.read_text(encoding="utf-8"))["artifact_fingerprint"]
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["preview_fingerprint"] = "stale-preview-fingerprint"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["preview_fingerprint"] = current_preview_fingerprint
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return current_preview_fingerprint
+
+
 def _all_file_bytes(project_root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(project_root)): path.read_bytes()
@@ -278,3 +301,36 @@ class TestDGCEPrepareAPI:
         assert first_response.json() == second_response.json()
         assert first_response.content == second_response.content
         assert _all_file_bytes(project_root) == before_files
+
+    def test_prepare_recomputes_stale_and_gate_from_current_approval_state(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_prepare_api_recompute_current_approval")
+        current_preview_fingerprint = _create_stale_gate_drift(project_root)
+        stale_path = project_root / ".dce" / "preflight" / "mission-board.stale_check.json"
+        gate_path = project_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+        stale_before = json.loads(stale_path.read_text(encoding="utf-8"))
+        gate_before = json.loads(gate_path.read_text(encoding="utf-8"))
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert stale_before["stale_status"] == "stale_invalidated"
+        assert stale_before["approval_preview_fingerprint"] == "stale-preview-fingerprint"
+        assert gate_before["gate_status"] == "gate_blocked_stale"
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "section_id": "mission-board",
+            "eligible": True,
+            "checks": {
+                "section_exists": True,
+                "artifacts_valid": True,
+                "approval_ready": True,
+                "preflight_ready": True,
+                "gate_ready": True,
+            },
+        }
+        approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+        assert approval_payload["preview_fingerprint"] == current_preview_fingerprint
