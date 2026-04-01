@@ -305,6 +305,16 @@ def _mark_owned_bundle_ready(project_root: Path, *, selected_mode: str = "create
     )
 
 
+def _prepare_section(client: TestClient, project_root: Path, section_id: str = "mission-board") -> dict:
+    response = client.post(
+        f"/v1/dgce/sections/{section_id}/prepare",
+        json={"workspace_path": str(project_root)},
+    )
+    assert response.status_code == 200
+    assert response.json()["eligible"] is True
+    return response.json()
+
+
 def _realign_preview_fingerprint_after_stale_gate(project_root: Path) -> str:
     approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
     preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
@@ -420,6 +430,7 @@ class TestDGCEExecuteAPI:
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_success")
         _mark_section_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root)
 
         response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -452,10 +463,57 @@ class TestDGCEExecuteAPI:
         assert response.json() == {"detail": "Section is not eligible for execution: mission-board"}
         assert _all_file_bytes(project_root) == before_files
 
+    def test_execute_requires_valid_prepared_plan_artifact(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_prepared_plan")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_path.unlink()
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Section requires prepared file plan artifact: mission-board"}
+
+    def test_execute_rejects_malformed_prepared_plan_artifact(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_malformed_prepared_plan")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_path.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "prepared_execution_plan",
+                    "generated_by": "DGCE",
+                    "schema_version": "1.0",
+                    "section_id": "other-section",
+                    "file_plan": {"project_name": "DGCE", "files": []},
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan artifact section mismatch: mission-board"}
+
     def test_second_execution_without_rerun_returns_400_and_does_not_write(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_rerun")
         _mark_section_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root)
 
         first_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -502,6 +560,7 @@ class TestDGCEExecuteAPI:
         notes_path.write_text("leave me alone", encoding="utf-8")
         notes_before = notes_path.read_bytes()
         client = TestClient(create_app())
+        _prepare_section(client, project_root)
 
         response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -520,6 +579,7 @@ class TestDGCEExecuteAPI:
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_success")
         _mark_section_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root)
 
         first_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -528,6 +588,7 @@ class TestDGCEExecuteAPI:
         assert first_response.status_code == 200
 
         _mark_section_ready(project_root)
+        _prepare_section(client, project_root)
         rerun_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
             json={"workspace_path": str(project_root), "rerun": True},
@@ -549,6 +610,7 @@ class TestDGCEExecuteAPI:
             "/v1/dgce/sections/mission-board/approve",
             json={"workspace_path": str(project_root)},
         ).status_code == 200
+        _prepare_section(client, project_root)
         assert client.post(
             "/v1/dgce/sections/mission-board/execute",
             json={"workspace_path": str(project_root)},
@@ -586,6 +648,7 @@ class TestDGCEExecuteAPI:
             "/v1/dgce/sections/mission-board/approve",
             json={"workspace_path": str(project_root), "selected_mode": "create_only"},
         ).status_code == 200
+        _prepare_section(client, project_root)
         assert client.post(
             "/v1/dgce/sections/mission-board/execute",
             json={"workspace_path": str(project_root)},
@@ -597,6 +660,7 @@ class TestDGCEExecuteAPI:
             "/v1/dgce/sections/mission-board/approve",
             json={"workspace_path": str(project_root), "selected_mode": "create_only"},
         ).status_code == 200
+        _prepare_section(client, project_root)
         before_files = _file_bytes(
             project_root,
             "api/missionboardservice.py",
@@ -626,6 +690,7 @@ class TestDGCEExecuteAPI:
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_prepare_execute_consistent")
         _mark_section_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root)
 
         first_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -658,52 +723,108 @@ class TestDGCEExecuteAPI:
             "artifacts_updated": True,
         }
 
-    def test_execute_blocks_when_source_changes_after_prepare(self, monkeypatch):
-        project_root = _build_workspace(monkeypatch, "dgce_execute_api_prepare_execute_source_changed")
-        _mark_section_ready(project_root)
+    def test_execute_uses_prepared_plan_and_does_not_recompute_wider_set(self, monkeypatch):
+        project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_prepare_execute_source_changed")
+        _mark_owned_bundle_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root, "owned-bundle")
+        sealed_plan_before = json.loads(
+            (project_root / ".dce" / "plans" / "owned-bundle.prepared_plan.json").read_text(encoding="utf-8")
+        )
 
-        first_response = client.post(
-            "/v1/dgce/sections/mission-board/execute",
+        def wider_run(self, executor_name, content):
+            lowered = content.lower()
+            metadata = _stub_executor_result(content).metadata
+            if "plan the system breakdown" in lowered:
+                return ExecutionResult(
+                    output=json.dumps(
+                        {
+                            "modules": [
+                                {
+                                    "name": "IngestModule",
+                                    "layer": "application",
+                                    "responsibility": "Handle observation ingest artifacts.",
+                                    "inputs": [{"name": "request", "type": "ObservationRequest"}],
+                                    "outputs": [{"name": "ingest_api", "type": "artifact"}],
+                                    "dependencies": [],
+                                    "governance_touchpoints": ["governed_execution"],
+                                    "failure_modes": ["invalid_request"],
+                                    "owned_paths": [
+                                        "src/api/ingest.py",
+                                        "src/models/rsobservation.py",
+                                        "src/api/expanded.py",
+                                    ],
+                                    "implementation_order": 1,
+                                }
+                            ],
+                            "file_groups": [
+                                {
+                                    "name": "expanded_bundle",
+                                    "module": "IngestModule",
+                                    "placement": "src",
+                                    "files": [
+                                        {"path": "src/api/ingest.py", "purpose": "Observation ingest API", "kind": "api"},
+                                        {"path": "src/models/rsobservation.py", "purpose": "RS observation model", "kind": "model"},
+                                        {"path": "src/api/expanded.py", "purpose": "Expanded API", "kind": "api"},
+                                    ],
+                                }
+                            ],
+                            "implementation_units": [{"name": "implement_expanded_bundle", "module": "IngestModule", "order": 1}],
+                            "build_graph": {"edges": [["IngestModule", "IngestModule"]]},
+                            "tests": [{"name": "expanded_bundle_paths_are_explicit", "targets": ["IngestModule"]}],
+                            "determinism_rules": ["Stable file ordering"],
+                            "acceptance_criteria": ["Prepared plan remains authoritative"],
+                        }
+                    ),
+                    status=ArtifactStatus.EXPERIMENTAL,
+                    executor=executor_name,
+                    metadata=metadata,
+                )
+            return _stub_executor_result(content)
+
+        monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", wider_run)
+        response = client.post(
+            "/v1/dgce/sections/owned-bundle/execute",
             json={"workspace_path": str(project_root)},
         )
-        assert first_response.status_code == 200
 
-        _mark_section_ready(project_root)
-        prepare_response = client.post(
-            "/v1/dgce/sections/mission-board/prepare",
-            json={"workspace_path": str(project_root)},
+        assert response.status_code == 200
+        assert json.loads((project_root / ".dce" / "plans" / "owned-bundle.prepared_plan.json").read_text(encoding="utf-8")) == sealed_plan_before
+        assert (project_root / "src" / "api" / "expanded.py").exists() is False
+        assert sorted(
+            json.loads((project_root / ".dce" / "execution" / "owned-bundle.execution.json").read_text(encoding="utf-8"))["written_files"],
+            key=lambda entry: entry["path"],
+        ) == sorted(
+            [
+                {
+                    "path": "src/api/ingest.py",
+                    "operation": "create",
+                    "bytes_written": len((project_root / "src" / "api" / "ingest.py").read_bytes()),
+                },
+                {
+                    "path": "src/api/review.py",
+                    "operation": "create",
+                    "bytes_written": len((project_root / "src" / "api" / "review.py").read_bytes()),
+                },
+                {
+                    "path": "src/models/anomaly_record.py",
+                    "operation": "create",
+                    "bytes_written": len((project_root / "src" / "models" / "anomaly_record.py").read_bytes()),
+                },
+                {
+                    "path": "src/models/rsobservation.py",
+                    "operation": "create",
+                    "bytes_written": len((project_root / "src" / "models" / "rsobservation.py").read_bytes()),
+                },
+            ],
+            key=lambda entry: entry["path"],
         )
-        assert prepare_response.status_code == 200
-        assert prepare_response.json()["eligible"] is True
-
-        input_path = project_root / ".dce" / "input" / "mission-board.json"
-        input_payload = json.loads(input_path.read_text(encoding="utf-8"))
-        input_payload["constraints"].append("operator input changed after prepare")
-        input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        before_files = _file_bytes(
-            project_root,
-            ".dce/execution/mission-board.execution.json",
-            ".dce/outputs/mission-board.json",
-        )
-
-        rerun_response = client.post(
-            "/v1/dgce/sections/mission-board/execute",
-            json={"workspace_path": str(project_root), "rerun": True},
-        )
-
-        assert rerun_response.status_code == 400
-        assert rerun_response.json() == {"detail": "Section is not eligible for execution: mission-board"}
-        assert _file_bytes(
-            project_root,
-            ".dce/execution/mission-board.execution.json",
-            ".dce/outputs/mission-board.json",
-        ) == before_files
 
     def test_rerun_with_failed_safe_modify_returns_400_and_does_not_execute(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_safe_modify_block")
         _mark_section_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root)
 
         first_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -711,20 +832,19 @@ class TestDGCEExecuteAPI:
         )
         assert first_response.status_code == 200
 
-        outputs_path = project_root / ".dce" / "outputs" / "mission-board.json"
-        outputs_payload = json.loads(outputs_path.read_text(encoding="utf-8"))
-        outputs_payload["file_plan"] = {
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["file_plan"] = {
             "project_name": "DGCE",
             "files": [
                 {
                     "path": "docs/readme.md",
-                    "language": "markdown",
                     "purpose": "rerun-safe-modify-check",
-                    "content": "updated docs\n",
+                    "source": "expected_targets",
                 }
             ],
         }
-        outputs_path.write_text(json.dumps(outputs_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         ownership_index_path = project_root / ".dce" / "ownership_index.json"
         ownership_index_path.write_text(
             json.dumps(
@@ -749,6 +869,7 @@ class TestDGCEExecuteAPI:
         before_files = _file_bytes(
             project_root,
             "docs/readme.md",
+            ".dce/plans/mission-board.prepared_plan.json",
             ".dce/execution/mission-board.execution.json",
             ".dce/outputs/mission-board.json",
         )
@@ -764,6 +885,7 @@ class TestDGCEExecuteAPI:
         assert _file_bytes(
             project_root,
             "docs/readme.md",
+            ".dce/plans/mission-board.prepared_plan.json",
             ".dce/execution/mission-board.execution.json",
             ".dce/outputs/mission-board.json",
         ) == before_files
@@ -774,6 +896,8 @@ class TestDGCEExecuteAPI:
         _mark_section_ready(first_root)
         _mark_section_ready(second_root)
         client = TestClient(create_app())
+        _prepare_section(client, first_root)
+        _prepare_section(client, second_root)
 
         first_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -806,6 +930,7 @@ class TestDGCEExecuteAPI:
                 json={"workspace_path": str(project_root)},
             )
             assert response.status_code == 200
+            _prepare_section(client, project_root)
 
         first_response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -836,6 +961,7 @@ class TestDGCEExecuteAPI:
         run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
         _mark_owned_bundle_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root, "owned-bundle")
         notes_path = project_root / "notes.txt"
         notes_path.write_text("leave me alone", encoding="utf-8")
         notes_before = notes_path.read_bytes()
@@ -879,6 +1005,7 @@ class TestDGCEExecuteAPI:
         project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_missing_rerun")
         _mark_owned_bundle_ready(project_root)
         client = TestClient(create_app())
+        _prepare_section(client, project_root, "owned-bundle")
 
         first_response = client.post(
             "/v1/dgce/sections/owned-bundle/execute",
@@ -918,6 +1045,7 @@ class TestDGCEExecuteAPI:
         project_root = _build_owned_bundle_workspace(monkeypatch, "dgce_execute_api_owned_bundle_safe_modify_block")
         _mark_owned_bundle_ready(project_root, selected_mode="create_only")
         client = TestClient(create_app())
+        _prepare_section(client, project_root, "owned-bundle")
 
         assert client.post(
             "/v1/dgce/sections/owned-bundle/execute",
@@ -927,6 +1055,7 @@ class TestDGCEExecuteAPI:
         target_path = project_root / "src" / "api" / "ingest.py"
         target_path.write_text("operator modified file\n", encoding="utf-8")
         _mark_owned_bundle_ready(project_root, selected_mode="create_only")
+        _prepare_section(client, project_root, "owned-bundle")
         before_files = _file_bytes(
             project_root,
             "src/api/ingest.py",
@@ -963,6 +1092,7 @@ class TestDGCEExecuteAPI:
 
         for project_root in (first_root, second_root):
             _mark_owned_bundle_ready(project_root)
+            _prepare_section(client, project_root, "owned-bundle")
 
         first_response = client.post(
             "/v1/dgce/sections/owned-bundle/execute",
@@ -994,12 +1124,14 @@ class TestDGCEExecuteAPI:
 
         for project_root in (first_root, second_root):
             _mark_section_ready(project_root)
+            _prepare_section(client, project_root)
             initial_response = client.post(
                 "/v1/dgce/sections/mission-board/execute",
                 json={"workspace_path": str(project_root)},
             )
             assert initial_response.status_code == 200
             _mark_section_ready(project_root)
+            _prepare_section(client, project_root)
 
         first_rerun = client.post(
             "/v1/dgce/sections/mission-board/execute",

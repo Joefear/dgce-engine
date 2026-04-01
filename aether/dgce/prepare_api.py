@@ -10,6 +10,9 @@ from aether.dgce.decompose import (
     SectionExecutionGateInput,
     SectionPreflightInput,
     SectionStaleCheckInput,
+    compute_governed_execution_file_plan,
+    _load_section_from_workspace_input,
+    _write_json,
     _artifact_manifest_entries_by_path,
     _build_execution_gate_artifact,
     _build_preflight_artifact,
@@ -17,6 +20,7 @@ from aether.dgce.decompose import (
     _normalize_artifact_path,
     _validate_locked_artifact_schema,
 )
+from aether.dgce.file_plan import FilePlan
 from aether.dgce.path_utils import resolve_workspace_path
 from aether.dgce.read_api import get_artifact_manifest, get_workspace_index
 
@@ -53,6 +57,51 @@ def _load_validated_json_artifact(project_root: Path, relative_path: str) -> dic
         raise ValueError(f"{artifact_path.name} must contain a JSON object")
     _validate_locked_artifact_schema(artifact_path, payload)
     return payload
+
+
+def _prepared_plan_relative_path(section_id: str) -> str:
+    return f".dce/plans/{section_id}.prepared_plan.json"
+
+
+def _prepared_plan_file_path(project_root: Path, section_id: str) -> Path:
+    return _artifact_file_path(project_root, _prepared_plan_relative_path(section_id))
+
+
+def _prepared_plan_payload(section_id: str, file_plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "artifact_type": "prepared_execution_plan",
+        "generated_by": "DGCE",
+        "schema_version": "1.0",
+        "section_id": section_id,
+        "file_plan": file_plan,
+    }
+
+
+def load_prepared_section_file_plan(project_root: Path, section_id: str) -> FilePlan:
+    artifact_path = _prepared_plan_file_path(project_root, section_id)
+    if not artifact_path.exists():
+        raise ValueError(f"Section requires prepared file plan artifact: {section_id}")
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Prepared file plan artifact must contain a JSON object: {section_id}")
+    if str(payload.get("section_id")) != section_id:
+        raise ValueError(f"Prepared file plan artifact section mismatch: {section_id}")
+    file_plan = payload.get("file_plan")
+    if not isinstance(file_plan, dict):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    try:
+        return FilePlan.model_validate(file_plan)
+    except Exception as exc:
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}") from exc
+
+
+def _seal_prepared_section_file_plan(project_root: Path, section_id: str) -> None:
+    section = _load_section_from_workspace_input(project_root, section_id)
+    file_plan = compute_governed_execution_file_plan(section)
+    _write_json(
+        _prepared_plan_file_path(project_root, section_id),
+        _prepared_plan_payload(section_id, file_plan.model_dump()),
+    )
 
 
 def _validate_manifest_entry(
@@ -179,7 +228,12 @@ def _section_artifacts_valid(
     return True
 
 
-def prepare_section_execution(workspace_path: str | Path, section_id: str) -> dict[str, Any]:
+def prepare_section_execution(
+    workspace_path: str | Path,
+    section_id: str,
+    *,
+    persist_prepared_plan: bool = True,
+) -> dict[str, Any]:
     project_root = resolve_workspace_path(workspace_path)
     dce_root = project_root / ".dce"
     artifact_manifest = get_artifact_manifest(project_root)
@@ -257,6 +311,8 @@ def prepare_section_execution(workspace_path: str | Path, section_id: str) -> di
         "preflight_ready": preflight_ready,
         "gate_ready": gate_ready,
     }
+    if all(checks.values()) and persist_prepared_plan:
+        _seal_prepared_section_file_plan(project_root, section_id)
     return {
         "status": "ok",
         "section_id": section_id,

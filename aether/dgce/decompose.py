@@ -446,6 +446,29 @@ def run_section(
     )
 
 
+def compute_governed_execution_file_plan(
+    section: DGCESection,
+    classification_service: Optional[ClassificationService] = None,
+    router_planner: Optional[RouterPlanner] = None,
+) -> FilePlan:
+    """Compute the exact governed file plan for a section without performing workspace writes."""
+    result = run_section(
+        section,
+        classification_service=classification_service,
+        router_planner=router_planner,
+    )
+    file_plan = result.file_plan
+    if not file_plan.files and section.expected_targets:
+        file_plan = _fallback_expected_target_file_plan(section, result.responses)
+    return _governed_owned_target_file_plan(
+        section,
+        result.responses,
+        file_plan,
+        require_preflight_pass=True,
+        incremental_mode=None,
+    )
+
+
 def run_section_with_workspace(
     section: DGCESection,
     project_root: Path,
@@ -459,6 +482,7 @@ def run_section_with_workspace(
     gate_timestamp: str = "1970-01-01T00:00:00Z",
     alignment_timestamp: str = "1970-01-01T00:00:00Z",
     execution_timestamp: str = "1970-01-01T00:00:00Z",
+    prepared_file_plan: Optional[FilePlan] = None,
 ) -> RunSectionWriteResult:
     """Run a DGCE section with deterministic filesystem-backed workspace metadata."""
     service = classification_service or ClassificationService()
@@ -592,16 +616,19 @@ def run_section_with_workspace(
         _write_json(plan_path, plan_entries)
 
     _write_state(state_path, section_id, DGCEWorkspaceStage.WRITE)
-    file_plan = build_file_plan(responses)
-    if not file_plan.files and section.expected_targets:
-        file_plan = _fallback_expected_target_file_plan(section, responses)
-    file_plan = _governed_owned_target_file_plan(
-        section,
-        responses,
-        file_plan,
-        require_preflight_pass=require_preflight_pass,
-        incremental_mode=incremental_mode,
-    )
+    if prepared_file_plan is not None:
+        file_plan = FilePlan.model_validate(prepared_file_plan.model_dump())
+    else:
+        file_plan = build_file_plan(responses)
+        if not file_plan.files and section.expected_targets:
+            file_plan = _fallback_expected_target_file_plan(section, responses)
+        file_plan = _governed_owned_target_file_plan(
+            section,
+            responses,
+            file_plan,
+            require_preflight_pass=require_preflight_pass,
+            incremental_mode=incremental_mode,
+        )
     if any(Path(str(file_entry["path"])).parts[:1] == (".dce",) for file_entry in file_plan.files):
         raise ValueError("Scaffold file plan must not target the .dce workspace directory")
     if incremental_mode in {"incremental_v1", "incremental_v1_1", "incremental_v2", "incremental_v2_1", "incremental_v2_2"}:
@@ -835,6 +862,7 @@ def run_dgce_section(
     project_root: Path,
     *,
     governed: bool = True,
+    prepared_file_plan: FilePlan | None = None,
 ) -> DGCERunOrchestratorResult:
     """Run one DGCE section through the existing unmanaged or governed workspace pipeline."""
     section = _load_section_from_workspace_input(project_root, section_id)
@@ -871,6 +899,7 @@ def run_dgce_section(
         project_root,
         allow_safe_modify=selected_mode == "safe_modify",
         require_preflight_pass=True,
+        prepared_file_plan=prepared_file_plan,
     )
     return DGCERunOrchestratorResult(
         section_id=section_id,

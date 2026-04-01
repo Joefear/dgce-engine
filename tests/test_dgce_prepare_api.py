@@ -305,7 +305,7 @@ class TestDGCEPrepareAPI:
             },
         }
 
-    def test_prepare_endpoint_is_deterministic_and_read_only(self, monkeypatch):
+    def test_prepare_endpoint_is_deterministic_and_persists_prepared_plan(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_repeatable")
         _mark_section_ready(project_root)
         before_files = _all_file_bytes(project_root)
@@ -315,6 +315,8 @@ class TestDGCEPrepareAPI:
             "/v1/dgce/sections/mission-board/prepare",
             json={"workspace_path": str(project_root)},
         )
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_bytes = prepared_plan_path.read_bytes()
         second_response = client.post(
             "/v1/dgce/sections/mission-board/prepare",
             json={"workspace_path": str(project_root)},
@@ -324,7 +326,15 @@ class TestDGCEPrepareAPI:
         assert second_response.status_code == 200
         assert first_response.json() == second_response.json()
         assert first_response.content == second_response.content
-        assert _all_file_bytes(project_root) == before_files
+        after_files = _all_file_bytes(project_root)
+        prepared_plan_relative_path = ".dce\\plans\\mission-board.prepared_plan.json"
+        assert prepared_plan_relative_path in after_files
+        assert after_files[prepared_plan_relative_path] == prepared_plan_bytes
+        assert {
+            path: payload
+            for path, payload in after_files.items()
+            if path != prepared_plan_relative_path
+        } == before_files
 
     def test_prepare_recomputes_stale_and_gate_from_current_approval_state(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_recompute_current_approval")
