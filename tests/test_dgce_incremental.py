@@ -6048,6 +6048,59 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     assert workspace_summary["sections"][0]["stale_detected"] is False
 
 
+def test_record_section_execution_gate_recomputes_stale_from_current_approval_review_fingerprint(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_gate_recompute_current_review_fingerprint")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    review_path = project_root / ".dce" / "reviews" / "mission-board.review.md"
+    current_review_fingerprint = dgce_decompose.compute_review_artifact_fingerprint(review_path.read_text(encoding="utf-8"))
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["review_fingerprint"] = "stale-review-fingerprint"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    first_gate = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    stale_before = json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))
+
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["review_fingerprint"] = current_review_fingerprint
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    second_gate = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    stale_after = json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))
+
+    assert first_gate["gate_status"] == "gate_blocked_stale"
+    assert stale_before["stale_status"] == "stale_invalidated"
+    assert stale_before["stale_reason"] == "approval_review_fingerprint_mismatch"
+    assert second_gate["gate_status"] == "gate_pass"
+    assert second_gate["execution_blocked"] is False
+    assert second_gate["stale_status"] == "stale_valid"
+    assert stale_after["stale_status"] == "stale_valid"
+    assert stale_after["stale_detected"] is False
+    assert stale_after["stale_reason"] == "approval_links_current"
+
+
 def test_record_section_execution_gate_emits_deterministic_structured_contract(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_v2_7_gate_contract")

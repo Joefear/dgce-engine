@@ -932,16 +932,25 @@ def record_section_execution_gate(
     stale_check_path = workspace["preflight"] / f"{section_id}.stale_check.json"
     if require_preflight_pass:
         record_section_preflight(project_root, section_id, preflight)
-        record_section_stale_check(project_root, section_id, SectionStaleCheckInput(validation_timestamp=preflight.validation_timestamp) if preflight else None)
+    existing_stale_payload = json.loads(stale_check_path.read_text(encoding="utf-8")) if stale_check_path.exists() else {}
+    stale_input = SectionStaleCheckInput(
+        validation_timestamp=str(
+            existing_stale_payload.get(
+                "validation_timestamp",
+                preflight.validation_timestamp if preflight else "1970-01-01T00:00:00Z",
+            )
+        )
+    )
+    stale_artifact = _build_stale_check_artifact(workspace["root"], section_id, stale_input)
+    _write_json(stale_check_path, stale_artifact)
     preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else None
-    stale_check_payload = json.loads(stale_check_path.read_text(encoding="utf-8")) if stale_check_path.exists() else None
     gate_artifact = _build_execution_gate_artifact(
         workspace["root"],
         section_id,
         require_preflight_pass=require_preflight_pass,
         gate_input=gate_input,
         preflight_payload=preflight_payload,
-        stale_check_payload=stale_check_payload,
+        stale_check_payload=stale_artifact,
     )
     _write_json(workspace["preflight"] / f"{section_id}.execution_gate.json", gate_artifact)
     _refresh_workspace_views(workspace)
