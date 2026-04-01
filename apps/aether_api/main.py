@@ -51,11 +51,12 @@ def create_app(
         response.headers["Pragma"] = "no-cache"
         response.headers["X-Request-ID"] = request_id
         logger.info(
-            "Aether API request complete",
+            "request complete",
             extra={
-                "request_method": request.method,
-                "request_path": request.url.path,
+                "method": request.method,
+                "path": request.url.path,
                 "status_code": response.status_code,
+                "request_id": request_id,
             },
         )
         return response

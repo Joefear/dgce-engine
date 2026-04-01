@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+import logging
 import pytest
 
 from apps.aether_api.main import create_app
@@ -323,3 +324,19 @@ class TestDGCEReadAPIHTTP:
         assert response.json() == {"detail": response.json()["detail"]}
         assert "current working directory" in response.json()["detail"]
         _assert_response_safety_headers(response)
+
+    def test_request_id_log_matches_response_header(self, monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger="aether.api")
+        client = TestClient(create_app())
+        monkeypatch.setattr(dgce_read_api, "get_dashboard", lambda workspace_path: {"artifact_type": "dashboard"})
+
+        response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+
+        assert response.status_code == 200
+        request_id = response.headers["X-Request-ID"]
+        log_records = [record for record in caplog.records if record.message == "request complete"]
+        assert log_records
+        assert log_records[-1].request_id == request_id
+        assert log_records[-1].method == "GET"
+        assert log_records[-1].path == "/v1/dgce/dashboard"
+        assert log_records[-1].status_code == 200

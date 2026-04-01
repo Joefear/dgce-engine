@@ -113,8 +113,9 @@ class TestAPIOperational:
             response = client.get("/version")
 
         assert response.status_code == 200
-        request_records = [record for record in caplog.records if record.message == "Aether API request complete"]
+        request_records = [record for record in caplog.records if record.message == "request complete"]
         assert request_records
-        assert request_records[-1].request_method == "GET"
-        assert request_records[-1].request_path == "/version"
+        assert request_records[-1].method == "GET"
+        assert request_records[-1].path == "/version"
         assert request_records[-1].status_code == 200
+        assert request_records[-1].request_id
