@@ -14,6 +14,7 @@ from aether.dgce.prepare_api import (
     _workspace_index_entry,
 )
 from aether.dgce.read_api import get_artifact_manifest, get_workspace_index
+from aether.dgce.refresh_api import refresh_section_artifacts
 
 
 def approve_section_execution(
@@ -58,6 +59,7 @@ def approve_section_execution(
             notes=notes,
         ),
     )
+    refresh_section_artifacts(project_root, section_id)
     return {
         "status": "ok",
         "section_id": section_id,

@@ -7,9 +7,6 @@ import pytest
 from apps.aether_api.main import create_app
 from aether.dgce import (
     DGCESection,
-    SectionExecutionGateInput,
-    SectionPreflightInput,
-    record_section_execution_gate,
     run_section_with_workspace,
 )
 import aether.dgce.decompose as dgce_decompose
@@ -75,6 +72,17 @@ def _build_workspace(monkeypatch, name: str) -> Path:
     return project_root
 
 
+def _alpha_section() -> DGCESection:
+    return DGCESection(
+        section_id="alpha-section",
+        section_type="ui_system",
+        title="Alpha Section",
+        description="A second deterministic section used to verify isolation.",
+        requirements=["keep alpha artifacts isolated"],
+        constraints=["no cross-section leakage"],
+    )
+
+
 class TestDGCEApproveAPI:
     def test_approve_endpoint_writes_current_approval_artifact(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_writes_current_state")
@@ -115,6 +123,9 @@ class TestDGCEApproveAPI:
         assert approval_payload["approved_by"] == "alice"
         assert approval_payload["notes"] == "approved from current section state"
         assert approval_payload["execution_permitted"] is True
+        assert json.loads((project_root / ".dce" / "preflight" / "mission-board.preflight.json").read_text(encoding="utf-8"))["preflight_status"] == "preflight_pass"
+        assert json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))["stale_status"] == "stale_valid"
+        assert json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))["gate_status"] == "gate_pass"
 
     def test_prepare_becomes_eligible_after_approval_when_other_gates_are_satisfied(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_prepare_eligible_after_approval")
@@ -125,14 +136,6 @@ class TestDGCEApproveAPI:
             json={"workspace_path": str(project_root)},
         )
         assert approve_response.status_code == 200
-
-        record_section_execution_gate(
-            project_root,
-            "mission-board",
-            require_preflight_pass=True,
-            gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
-            preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
-        )
 
         prepare_response = client.post(
             "/v1/dgce/sections/mission-board/prepare",
@@ -152,6 +155,29 @@ class TestDGCEApproveAPI:
                 "gate_ready": True,
             },
         }
+
+    def test_approve_recomputes_only_target_section_and_does_not_execute(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_approve_api_scoped_recompute")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        client = TestClient(create_app())
+        alpha_preflight_path = project_root / ".dce" / "preflight" / "alpha-section.preflight.json"
+        alpha_stale_path = project_root / ".dce" / "preflight" / "alpha-section.stale_check.json"
+        alpha_gate_path = project_root / ".dce" / "preflight" / "alpha-section.execution_gate.json"
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 200
+        assert alpha_preflight_path.exists() is False
+        assert alpha_stale_path.exists() is False
+        assert alpha_gate_path.exists() is False
+        assert (project_root / ".dce" / "preflight" / "mission-board.preflight.json").exists()
+        assert (project_root / ".dce" / "preflight" / "mission-board.stale_check.json").exists()
+        assert (project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").exists()
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
     def test_approve_endpoint_blocks_when_required_source_artifact_is_missing(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_missing_review")
