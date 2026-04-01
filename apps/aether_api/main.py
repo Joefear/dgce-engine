@@ -1,5 +1,6 @@
 """Local FastAPI app for Aether v1."""
 
+from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 from typing import Optional
@@ -19,21 +20,24 @@ from aether.dgce.read_api_http import router as dgce_read_router
 logger = logging.getLogger("aether.api")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    config = get_config()
+    app.state.dgce_config = config
+    logger.info(
+        "DGCE API startup",
+        extra={"dgce_api_key_configured": config["api_key"] is not None},
+    )
+    yield
+
+
 def create_app(
     telemetry_path: Optional[Path] = None,
     cache_path: Optional[Path] = None,
     artifact_store_path: Optional[Path] = None,
 ) -> FastAPI:
     """Create the local Aether API app."""
-    app = FastAPI(title="Aether API", version="1.0")
-
-    @app.on_event("startup")
-    async def load_runtime_config() -> None:
-        app.state.dgce_config = get_config()
-        logger.info(
-            "Aether API startup complete",
-            extra={"dgce_api_key_configured": app.state.dgce_config["api_key"] is not None},
-        )
+    app = FastAPI(title="Aether API", version="1.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def log_request_response(request: Request, call_next):

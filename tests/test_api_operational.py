@@ -75,7 +75,7 @@ class TestAPIOperational:
             response = client.get("/health")
 
         assert response.status_code == 200
-        startup_records = [record for record in caplog.records if record.message == "Aether API startup complete"]
+        startup_records = [record for record in caplog.records if record.message == "DGCE API startup"]
         assert startup_records
         assert startup_records[-1].dgce_api_key_configured is False
 
@@ -94,7 +94,7 @@ class TestAPIOperational:
             response = client.get("/health")
 
         assert response.status_code == 200
-        startup_records = [record for record in caplog.records if record.message == "Aether API startup complete"]
+        startup_records = [record for record in caplog.records if record.message == "DGCE API startup"]
         assert startup_records
         assert startup_records[-1].dgce_api_key_configured is True
 
