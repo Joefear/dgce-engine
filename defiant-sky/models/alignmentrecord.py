@@ -12,5 +12,7 @@ from pydantic import BaseModel
 class AlignmentRecord(BaseModel):
     """Implementation-ready DGCE model for AlignmentRecord."""
 
-    alignment_fingerprint: str | None = None
+    alignment_status: str
+    artifact_fingerprint: str | None = None
     section_id: str
+    execution_stamp: ExecutionStamp | None = None

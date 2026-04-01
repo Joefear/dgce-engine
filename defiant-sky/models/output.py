@@ -12,5 +12,5 @@ from pydantic import BaseModel
 class Output(BaseModel):
     """Implementation-ready DGCE model for Output."""
 
-    output_fingerprint: str | None = None
+    artifact_fingerprint: str | None = None
     section_id: str

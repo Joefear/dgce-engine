@@ -14,6 +14,7 @@ from aether.dgce import (
     record_section_execution_gate,
     run_section_with_workspace,
 )
+from aether.dgce.file_plan import FilePlan
 from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
 
@@ -42,6 +43,23 @@ def _alpha_section() -> DGCESection:
         requirements=["keep alpha artifacts isolated"],
         constraints=["no cross-section leakage"],
     )
+
+
+def _owned_materialization_section() -> DGCESection:
+    section = _section().model_copy()
+    section.expected_targets = [
+        {
+            "path": "api/missionboardservice.py",
+            "purpose": "Mission board API",
+            "source": "expected_targets",
+        },
+        {
+            "path": "models/mission.py",
+            "purpose": "Mission model",
+            "source": "expected_targets",
+        },
+    ]
+    return section
 
 
 def _workspace_dir(name: str) -> Path:
@@ -84,6 +102,18 @@ def _build_workspace(monkeypatch, name: str) -> Path:
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
     run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    return project_root
+
+
+def _build_owned_workspace(monkeypatch, name: str) -> Path:
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir(name)
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_owned_materialization_section(), project_root, incremental_mode="incremental_v2_2")
     return project_root
 
 
@@ -145,6 +175,64 @@ def _file_bytes(project_root: Path, *relative_paths: str) -> dict[str, bytes]:
 
 
 class TestDGCEExecuteAPI:
+    def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        client = TestClient(create_app())
+        notes_path = project_root / "notes.txt"
+        notes_path.write_text("leave me alone", encoding="utf-8")
+        notes_before = notes_path.read_bytes()
+
+        monkeypatch.setattr(
+            "aether.dgce.decompose.build_file_plan",
+            lambda responses: FilePlan(
+                project_name="DGCE",
+                files=[
+                    {
+                        "path": "api/unowned.py",
+                        "purpose": "Unowned broad generation",
+                        "source": "api_surface",
+                    }
+                ],
+            ),
+        )
+
+        approve_response = client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        )
+        assert approve_response.status_code == 200
+
+        prepare_response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+        assert prepare_response.status_code == 200
+        assert prepare_response.json()["eligible"] is True
+
+        execute_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert execute_response.status_code == 200
+        assert execute_response.json() == {
+            "status": "ok",
+            "section_id": "mission-board",
+            "executed": True,
+            "artifacts_updated": True,
+        }
+        assert (project_root / "api" / "missionboardservice.py").exists()
+        assert (project_root / "models" / "mission.py").exists()
+        assert (project_root / "api" / "unowned.py").exists() is False
+        assert notes_path.read_bytes() == notes_before
+        assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+        outputs_payload = json.loads((project_root / ".dce" / "outputs" / "mission-board.json").read_text(encoding="utf-8"))
+        assert sorted(artifact["path"] for artifact in outputs_payload["generated_artifacts"]) == [
+            "api/missionboardservice.py",
+            "models/mission.py",
+        ]
+
     def test_execute_endpoint_runs_eligible_section_successfully(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_success")
         _mark_section_ready(project_root)
@@ -267,6 +355,87 @@ class TestDGCEExecuteAPI:
             "executed": True,
             "artifacts_updated": True,
         }
+
+    def test_owned_materialization_second_execution_without_rerun_returns_400(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_missing_rerun")
+        client = TestClient(create_app())
+
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        assert client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+
+        before_files = _file_bytes(
+            project_root,
+            "api/missionboardservice.py",
+            "models/mission.py",
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        )
+        second_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert second_response.status_code == 400
+        assert second_response.json() == {
+            "detail": "Section has prior execution artifacts; rerun=true required: mission-board"
+        }
+        assert _file_bytes(
+            project_root,
+            "api/missionboardservice.py",
+            "models/mission.py",
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        ) == before_files
+
+    def test_owned_materialization_rerun_safe_modify_is_still_enforced(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_safe_modify_block")
+        client = TestClient(create_app())
+
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root), "selected_mode": "create_only"},
+        ).status_code == 200
+        assert client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+
+        target_path = project_root / "api" / "missionboardservice.py"
+        target_path.write_text("operator modified file\n", encoding="utf-8")
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root), "selected_mode": "create_only"},
+        ).status_code == 200
+        before_files = _file_bytes(
+            project_root,
+            "api/missionboardservice.py",
+            "models/mission.py",
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        )
+
+        rerun_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root), "rerun": True},
+        )
+
+        assert rerun_response.status_code == 400
+        assert rerun_response.json() == {
+            "detail": "Section rerun requires safe_modify approval: mission-board"
+        }
+        assert _file_bytes(
+            project_root,
+            "api/missionboardservice.py",
+            "models/mission.py",
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        ) == before_files
 
     def test_prepare_eligible_immediate_rerun_execute_succeeds_without_source_changes(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_prepare_execute_consistent")
@@ -436,6 +605,39 @@ class TestDGCEExecuteAPI:
         assert first_response.content == second_response.content
         assert (first_root / ".dce" / "execution" / "mission-board.execution.json").read_bytes() == (
             second_root / ".dce" / "execution" / "mission-board.execution.json"
+        ).read_bytes()
+        assert (first_root / ".dce" / "outputs" / "mission-board.json").read_bytes() == (
+            second_root / ".dce" / "outputs" / "mission-board.json"
+        ).read_bytes()
+
+    def test_owned_materialization_is_deterministic_across_identical_prepared_workspaces(self, monkeypatch):
+        first_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_repeat_one")
+        second_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_repeat_two")
+        client = TestClient(create_app())
+
+        for project_root in (first_root, second_root):
+            response = client.post(
+                "/v1/dgce/sections/mission-board/approve",
+                json={"workspace_path": str(project_root)},
+            )
+            assert response.status_code == 200
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(first_root)},
+        )
+        second_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(second_root)},
+        )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert (first_root / "api" / "missionboardservice.py").read_bytes() == (
+            second_root / "api" / "missionboardservice.py"
+        ).read_bytes()
+        assert (first_root / "models" / "mission.py").read_bytes() == (
+            second_root / "models" / "mission.py"
         ).read_bytes()
         assert (first_root / ".dce" / "outputs" / "mission-board.json").read_bytes() == (
             second_root / ".dce" / "outputs" / "mission-board.json"

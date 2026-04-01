@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel
 
 class ExecutionStamp(BaseModel):
     """Implementation-ready DGCE model for ExecutionStamp."""
 
-    execution_outcome: Literal['failure', 'success'] | None = None
+    artifact_fingerprint: str | None = None
+    execution_timestamp: str
+    run_outcome_class: str | None = None
     section_id: str
+    output: Output | None = None

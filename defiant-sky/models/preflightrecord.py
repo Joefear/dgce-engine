@@ -12,5 +12,7 @@ from pydantic import BaseModel
 class PreflightRecord(BaseModel):
     """Implementation-ready DGCE model for PreflightRecord."""
 
-    preflight_fingerprint: str | None = None
+    artifact_fingerprint: str | None = None
     section_id: str
+    validation_timestamp: str
+    execution_gate: ExecutionGate | None = None

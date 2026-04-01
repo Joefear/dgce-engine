@@ -595,6 +595,13 @@ def run_section_with_workspace(
     file_plan = build_file_plan(responses)
     if not file_plan.files and section.expected_targets:
         file_plan = _fallback_expected_target_file_plan(section, responses)
+    file_plan = _governed_owned_target_file_plan(
+        section,
+        responses,
+        file_plan,
+        require_preflight_pass=require_preflight_pass,
+        incremental_mode=incremental_mode,
+    )
     if any(Path(str(file_entry["path"])).parts[:1] == (".dce",) for file_entry in file_plan.files):
         raise ValueError("Scaffold file plan must not target the .dce workspace directory")
     if incremental_mode in {"incremental_v1", "incremental_v1_1", "incremental_v2", "incremental_v2_1", "incremental_v2_2"}:
@@ -5049,6 +5056,22 @@ def _fallback_expected_target_file_plan(section: DGCESection, responses: List[Re
     else:
         files = [_expected_target_to_file_entry(entry, requirements) for entry in expected_targets]
     return FilePlan(project_name="DGCE", files=files)
+
+
+def _governed_owned_target_file_plan(
+    section: DGCESection,
+    responses: List[ResponseEnvelope],
+    file_plan: FilePlan,
+    *,
+    require_preflight_pass: bool,
+    incremental_mode: Optional[str],
+) -> FilePlan:
+    """Return the smallest explicit owned-file materialization set for previewed or governed runs."""
+    if not section.expected_targets:
+        return file_plan
+    if not require_preflight_pass and incremental_mode not in {"incremental_v2", "incremental_v2_1", "incremental_v2_2"}:
+        return file_plan
+    return _fallback_expected_target_file_plan(section, responses)
 
 
 def _system_breakdown_expected_target_requirements(

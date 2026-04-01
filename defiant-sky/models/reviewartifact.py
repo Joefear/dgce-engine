@@ -12,5 +12,6 @@ from pydantic import BaseModel
 class ReviewArtifact(BaseModel):
     """Implementation-ready DGCE model for ReviewArtifact."""
 
-    review_fingerprint: str | None = None
+    artifact_fingerprint: str | None = None
     section_id: str
+    approval_artifact: ApprovalArtifact | None = None

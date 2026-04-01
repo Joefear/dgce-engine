@@ -12,5 +12,7 @@ from pydantic import BaseModel
 class ExecutionGate(BaseModel):
     """Implementation-ready DGCE model for ExecutionGate."""
 
-    execution_fingerprint: str | None = None
+    artifact_fingerprint: str | None = None
+    gate_status: str
     section_id: str
+    alignment_record: AlignmentRecord | None = None

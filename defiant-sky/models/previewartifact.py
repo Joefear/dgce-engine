@@ -14,3 +14,5 @@ class PreviewArtifact(BaseModel):
 
     artifact_fingerprint: str | None = None
     section_id: str
+    approval_artifact: ApprovalArtifact | None = None
+    review_artifact: ReviewArtifact | None = None

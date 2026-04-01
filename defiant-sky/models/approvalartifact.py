@@ -12,5 +12,7 @@ from pydantic import BaseModel
 class ApprovalArtifact(BaseModel):
     """Implementation-ready DGCE model for ApprovalArtifact."""
 
-    approval_fingerprint: str | None = None
+    approval_status: str | None = None
+    artifact_fingerprint: str | None = None
     section_id: str
+    preflight_record: PreflightRecord | None = None

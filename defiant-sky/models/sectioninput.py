@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 class SectionInput(BaseModel):
     """Implementation-ready DGCE model for SectionInput."""
 
+    content: dict[str, Any] | None = None
     input_fingerprint: str | None = None
     section_id: str
+    preview_artifact: PreviewArtifact | None = None
