@@ -7104,6 +7104,7 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "skipped_units",
         "unit_results",
         "written_file_count",
+        "written_files",
     ]
     assert execution_payload["artifact_type"] == "execution_record"
     assert execution_payload["generated_by"] == "DGCE"
@@ -7143,6 +7144,28 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         ]
         for entry in execution_payload["artifact_results"]
     )
+    assert execution_payload["written_files"] == [
+        {
+            "path": "api/missionboardservice.py",
+            "operation": "create",
+            "bytes_written": execution_payload["artifact_results"][0]["bytes_written"],
+        },
+        {
+            "path": "mission_board/models.py",
+            "operation": "create",
+            "bytes_written": execution_payload["artifact_results"][1]["bytes_written"],
+        },
+        {
+            "path": "mission_board/service.py",
+            "operation": "create",
+            "bytes_written": execution_payload["artifact_results"][2]["bytes_written"],
+        },
+        {
+            "path": "models/mission.py",
+            "operation": "create",
+            "bytes_written": execution_payload["artifact_results"][3]["bytes_written"],
+        },
+    ]
     assert [entry["unit_id"] for entry in execution_payload["unit_results"]] == [
         "generate_mission_model",
         "generate_missionboardservice_api",

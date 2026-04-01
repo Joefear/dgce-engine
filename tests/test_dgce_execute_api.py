@@ -228,10 +228,24 @@ class TestDGCEExecuteAPI:
         assert notes_path.read_bytes() == notes_before
         assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
         outputs_payload = json.loads((project_root / ".dce" / "outputs" / "mission-board.json").read_text(encoding="utf-8"))
+        execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
         assert sorted(artifact["path"] for artifact in outputs_payload["generated_artifacts"]) == [
             "api/missionboardservice.py",
             "models/mission.py",
         ]
+        assert execution_payload["written_files"] == [
+            {
+                "path": "api/missionboardservice.py",
+                "operation": "create",
+                "bytes_written": len((project_root / "api" / "missionboardservice.py").read_bytes()),
+            },
+            {
+                "path": "models/mission.py",
+                "operation": "create",
+                "bytes_written": len((project_root / "models" / "mission.py").read_bytes()),
+            },
+        ]
+        assert all(entry["path"] != "api/unowned.py" for entry in execution_payload["written_files"])
 
     def test_execute_endpoint_runs_eligible_section_successfully(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_success")
@@ -252,6 +266,8 @@ class TestDGCEExecuteAPI:
         }
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists()
+        execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+        assert execution_payload["written_files"] == []
 
     def test_execute_endpoint_returns_400_for_non_eligible_section_without_writes(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_non_eligible")
@@ -639,6 +655,9 @@ class TestDGCEExecuteAPI:
         assert (first_root / "models" / "mission.py").read_bytes() == (
             second_root / "models" / "mission.py"
         ).read_bytes()
+        assert json.loads((first_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))["written_files"] == (
+            json.loads((second_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))["written_files"]
+        )
         assert (first_root / ".dce" / "outputs" / "mission-board.json").read_bytes() == (
             second_root / ".dce" / "outputs" / "mission-board.json"
         ).read_bytes()

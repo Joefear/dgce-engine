@@ -3477,6 +3477,10 @@ def _build_execution_stamp_artifact(
         write_transparency,
         execution_blocked=execution_blocked,
     )
+    written_files = _build_execution_written_files(
+        write_transparency,
+        execution_blocked=execution_blocked,
+    )
     unit_results = _build_execution_unit_results(artifact_results)
     executed_units = [unit["unit_id"] for unit in unit_results if unit["unit_status"] == "executed"]
     skipped_units = [unit["unit_id"] for unit in unit_results if unit["unit_status"] == "skipped"]
@@ -3526,6 +3530,7 @@ def _build_execution_stamp_artifact(
         "require_preflight_pass": require_preflight_pass,
         "linked_artifacts": linked_artifacts,
         "artifact_results": artifact_results,
+        "written_files": written_files,
         "unit_results": unit_results,
         "executed_units": executed_units,
         "skipped_units": skipped_units,
@@ -3606,6 +3611,34 @@ def _build_execution_artifact_results(
             str(item["implementation_unit"]),
         ),
     )
+
+
+def _build_execution_written_files(
+    write_transparency: dict[str, Any],
+    *,
+    execution_blocked: bool,
+) -> list[dict[str, Any]]:
+    """Return the exact files written during execution from the executed write plan."""
+    if execution_blocked:
+        return []
+
+    written_files: list[dict[str, Any]] = []
+    for decision in write_transparency.get("write_decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        if str(decision.get("decision", "")) != "written":
+            continue
+        normalized_path = Path(str(decision.get("path", ""))).as_posix()
+        if not normalized_path:
+            continue
+        written_files.append(
+            {
+                "path": normalized_path,
+                "operation": "modify" if str(decision.get("reason", "")) == "modify" else "create",
+                "bytes_written": int(decision.get("bytes_written", 0)),
+            }
+        )
+    return written_files
 
 
 def _build_execution_unit_results(artifact_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
