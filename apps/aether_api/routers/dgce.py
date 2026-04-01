@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from aether.dgce import DGCESection, run_section
+from aether.dgce.execute_api import execute_prepared_section
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.refresh_api import refresh_workspace_artifacts
 
@@ -45,6 +46,16 @@ def refresh_dgce_workspace(workspace_path: str = Query(...)) -> dict[str, str | 
 def prepare_dgce_section(section_id: str, payload: WorkspacePathRequest) -> dict[str, str | bool | dict[str, bool]]:
     try:
         return prepare_section_execution(payload.workspace_path, section_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/dgce/sections/{section_id}/execute")
+def execute_dgce_section(section_id: str, payload: WorkspacePathRequest) -> dict[str, str | bool]:
+    try:
+        return execute_prepared_section(payload.workspace_path, section_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
