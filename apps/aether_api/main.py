@@ -3,10 +3,12 @@
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+import time
 from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from aether.dgce.config import get_config
@@ -39,17 +41,45 @@ def create_app(
 ) -> FastAPI:
     """Create the local Aether API app."""
     app = FastAPI(title="Aether API", version="1.0", lifespan=lifespan)
+    app.state.dgce_rate_limit = {}
 
     @app.middleware("http")
     async def log_request_response(request: Request, call_next):
+        def apply_response_headers(response, request_id: str):
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-XSS-Protection"] = "0"
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-Request-ID"] = request_id
+            return response
+
         request_id = str(uuid4())
+        if request.url.path.startswith("/v1/dgce/"):
+            client_host = request.client.host if request.client is not None else "unknown"
+            now = time.time()
+            window_start = now - 60
+            timestamps = [
+                timestamp for timestamp in app.state.dgce_rate_limit.get(client_host, [])
+                if timestamp > window_start
+            ]
+            if len(timestamps) >= 60:
+                response = JSONResponse(status_code=429, content={"detail": "Too Many Requests"})
+                response = apply_response_headers(response, request_id)
+                logger.info(
+                    "request complete",
+                    extra={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": response.status_code,
+                        "request_id": request_id,
+                    },
+                )
+                return response
+            timestamps.append(now)
+            app.state.dgce_rate_limit[client_host] = timestamps
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "0"
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["X-Request-ID"] = request_id
+        response = apply_response_headers(response, request_id)
         logger.info(
             "request complete",
             extra={

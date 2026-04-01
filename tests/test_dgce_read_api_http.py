@@ -340,3 +340,47 @@ class TestDGCEReadAPIHTTP:
         assert log_records[-1].method == "GET"
         assert log_records[-1].path == "/v1/dgce/dashboard"
         assert log_records[-1].status_code == 200
+
+    def test_rate_limit_allows_requests_under_limit(self, monkeypatch):
+        monkeypatch.setattr("apps.aether_api.main.time.time", lambda: 1000.0)
+        client = TestClient(create_app())
+        monkeypatch.setattr(dgce_read_api, "get_dashboard", lambda workspace_path: {"artifact_type": "dashboard"})
+
+        for _ in range(60):
+            response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+            assert response.status_code == 200
+            assert response.json() == {"artifact_type": "dashboard"}
+            _assert_response_safety_headers(response)
+
+    def test_rate_limit_returns_429_when_exceeded(self, monkeypatch):
+        monkeypatch.setattr("apps.aether_api.main.time.time", lambda: 1000.0)
+        client = TestClient(create_app())
+        monkeypatch.setattr(dgce_read_api, "get_dashboard", lambda workspace_path: {"artifact_type": "dashboard"})
+
+        for _ in range(60):
+            response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+            assert response.status_code == 200
+
+        limited_response = client.get("/v1/dgce/dashboard", params={"workspace_path": "workspace-root"})
+
+        assert limited_response.status_code == 429
+        assert limited_response.json() == {"detail": "Too Many Requests"}
+        _assert_response_safety_headers(limited_response)
+
+    def test_health_and_version_are_not_rate_limited(self, monkeypatch):
+        monkeypatch.setattr("apps.aether_api.main.time.time", lambda: 1000.0)
+        client = TestClient(create_app())
+
+        for _ in range(65):
+            health_response = client.get("/health")
+            version_response = client.get("/version")
+            assert health_response.status_code == 200
+            assert version_response.status_code == 200
+            assert health_response.json() == {"status": "ok"}
+            assert version_response.json() == {
+                "service": "aether-api",
+                "dgce_version": "5.x",
+                "api_version": "v1",
+            }
+            _assert_response_safety_headers(health_response)
+            _assert_response_safety_headers(version_response)
