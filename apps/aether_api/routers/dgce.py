@@ -14,6 +14,7 @@ router = APIRouter(prefix="/v1")
 
 class WorkspacePathRequest(BaseModel):
     workspace_path: str
+    rerun: bool = False
 
 
 @router.post("/dgce/section")
@@ -55,7 +56,7 @@ def prepare_dgce_section(section_id: str, payload: WorkspacePathRequest) -> dict
 @router.post("/dgce/sections/{section_id}/execute")
 def execute_dgce_section(section_id: str, payload: WorkspacePathRequest) -> dict[str, str | bool]:
     try:
-        return execute_prepared_section(payload.workspace_path, section_id)
+        return execute_prepared_section(payload.workspace_path, section_id, rerun=payload.rerun)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -114,6 +114,14 @@ def _all_file_bytes(project_root: Path) -> dict[str, bytes]:
     }
 
 
+def _file_bytes(project_root: Path, *relative_paths: str) -> dict[str, bytes]:
+    return {
+        relative_path: (project_root / relative_path).read_bytes()
+        for relative_path in relative_paths
+        if (project_root / relative_path).exists()
+    }
+
+
 class TestDGCEExecuteAPI:
     def test_execute_endpoint_runs_eligible_section_successfully(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_success")
@@ -147,6 +155,30 @@ class TestDGCEExecuteAPI:
 
         assert response.status_code == 400
         assert response.json() == {"detail": "Section is not eligible for execution: mission-board"}
+        assert _all_file_bytes(project_root) == before_files
+
+    def test_second_execution_without_rerun_returns_400_and_does_not_write(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_rerun")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        _mark_section_ready(project_root)
+        before_files = _all_file_bytes(project_root)
+        second_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert second_response.status_code == 400
+        assert second_response.json() == {
+            "detail": "Section has prior execution artifacts; rerun=true required: mission-board"
+        }
         assert _all_file_bytes(project_root) == before_files
 
     def test_execute_endpoint_returns_404_for_invalid_section(self, monkeypatch):
@@ -189,6 +221,99 @@ class TestDGCEExecuteAPI:
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists()
 
+    def test_second_execution_with_rerun_and_valid_ownership_succeeds(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_success")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        _mark_section_ready(project_root)
+        rerun_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root), "rerun": True},
+        )
+
+        assert rerun_response.status_code == 200
+        assert rerun_response.json() == {
+            "status": "ok",
+            "section_id": "mission-board",
+            "executed": True,
+            "artifacts_updated": True,
+        }
+
+    def test_rerun_with_failed_safe_modify_returns_400_and_does_not_execute(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_safe_modify_block")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        outputs_path = project_root / ".dce" / "outputs" / "mission-board.json"
+        outputs_payload = json.loads(outputs_path.read_text(encoding="utf-8"))
+        outputs_payload["file_plan"] = {
+            "project_name": "DGCE",
+            "files": [
+                {
+                    "path": "docs/readme.md",
+                    "language": "markdown",
+                    "purpose": "rerun-safe-modify-check",
+                    "content": "updated docs\n",
+                }
+            ],
+        }
+        outputs_path.write_text(json.dumps(outputs_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        ownership_index_path = project_root / ".dce" / "ownership_index.json"
+        ownership_index_path.write_text(
+            json.dumps(
+                {
+                    "files": [
+                        {
+                            "path": "docs/readme.md",
+                            "section_id": "mission-board",
+                        }
+                    ]
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        service_path = project_root / "docs" / "readme.md"
+        service_path.parent.mkdir(parents=True, exist_ok=True)
+        service_path.write_text("old docs\n", encoding="utf-8")
+        _mark_section_ready(project_root, selected_mode="create_only")
+        before_files = _file_bytes(
+            project_root,
+            "docs/readme.md",
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        )
+        rerun_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root), "rerun": True},
+        )
+
+        assert rerun_response.status_code == 400
+        assert rerun_response.json() == {
+            "detail": "Section rerun requires safe_modify approval: mission-board"
+        }
+        assert _file_bytes(
+            project_root,
+            "docs/readme.md",
+            ".dce/execution/mission-board.execution.json",
+            ".dce/outputs/mission-board.json",
+        ) == before_files
+
     def test_execute_endpoint_is_deterministic_across_identical_prepared_workspaces(self, monkeypatch):
         first_root = _build_workspace(monkeypatch, "dgce_execute_api_repeat_one")
         second_root = _build_workspace(monkeypatch, "dgce_execute_api_repeat_two")
@@ -209,6 +334,40 @@ class TestDGCEExecuteAPI:
         assert second_response.status_code == 200
         assert first_response.json() == second_response.json()
         assert first_response.content == second_response.content
+        assert (first_root / ".dce" / "execution" / "mission-board.execution.json").read_bytes() == (
+            second_root / ".dce" / "execution" / "mission-board.execution.json"
+        ).read_bytes()
+        assert (first_root / ".dce" / "outputs" / "mission-board.json").read_bytes() == (
+            second_root / ".dce" / "outputs" / "mission-board.json"
+        ).read_bytes()
+
+    def test_rerun_is_deterministic_across_identical_prepared_workspaces(self, monkeypatch):
+        first_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_repeat_one")
+        second_root = _build_workspace(monkeypatch, "dgce_execute_api_rerun_repeat_two")
+        client = TestClient(create_app())
+
+        for project_root in (first_root, second_root):
+            _mark_section_ready(project_root)
+            initial_response = client.post(
+                "/v1/dgce/sections/mission-board/execute",
+                json={"workspace_path": str(project_root)},
+            )
+            assert initial_response.status_code == 200
+            _mark_section_ready(project_root)
+
+        first_rerun = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(first_root), "rerun": True},
+        )
+        second_rerun = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(second_root), "rerun": True},
+        )
+
+        assert first_rerun.status_code == 200
+        assert second_rerun.status_code == 200
+        assert first_rerun.json() == second_rerun.json()
+        assert first_rerun.content == second_rerun.content
         assert (first_root / ".dce" / "execution" / "mission-board.execution.json").read_bytes() == (
             second_root / ".dce" / "execution" / "mission-board.execution.json"
         ).read_bytes()
