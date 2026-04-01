@@ -3068,8 +3068,10 @@ def _build_stale_check_artifact(
         "current_review_path": current_review_path,
         "approval_input_fingerprint": approval_input_fingerprint,
         "approval_preview_fingerprint": approval_preview_fingerprint,
+        "approval_review_fingerprint": approval_review_fingerprint,
         "current_input_fingerprint": current_input_fingerprint,
         "current_preview_fingerprint": current_preview_fingerprint,
+        "current_review_fingerprint": current_review_fingerprint,
         "stale_reason": stale_reason,
         "validation_timestamp": str(stale_input.validation_timestamp),
     }

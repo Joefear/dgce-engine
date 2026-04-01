@@ -4856,6 +4856,7 @@ def test_record_section_stale_check_passes_when_fingerprints_match(monkeypatch):
     assert stale["approval_input_path"] == ".dce/input/mission-board.json"
     assert stale["current_input_path"] == ".dce/input/mission-board.json"
     assert stale["approval_input_fingerprint"] == stale["current_input_fingerprint"]
+    assert stale["approval_review_fingerprint"] == stale["current_review_fingerprint"]
 
 
 def test_record_section_stale_check_uses_stored_preview_artifact_fingerprint(monkeypatch):
@@ -4890,6 +4891,40 @@ def test_record_section_stale_check_uses_stored_preview_artifact_fingerprint(mon
     assert stale["current_preview_fingerprint"] == stored_fingerprint
     assert stale["stale_status"] == "stale_valid"
     assert stale["stale_detected"] is False
+
+
+def test_record_section_stale_check_invalidates_on_review_fingerprint_mismatch(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stale_review_fingerprint_mismatch")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["review_fingerprint"] = "mismatched-review-fingerprint"
+    approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    stale = record_section_stale_check(
+        project_root,
+        "mission-board",
+        SectionStaleCheckInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    assert stale["approval_review_fingerprint"] == "mismatched-review-fingerprint"
+    assert stale["current_review_fingerprint"] == dgce_decompose.compute_review_artifact_fingerprint(
+        (project_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+    )
+    assert stale["stale_status"] == "stale_invalidated"
+    assert stale["stale_detected"] is True
+    assert stale["stale_reason"] == "approval_review_fingerprint_mismatch"
 
 
 def test_record_section_stale_check_invalidates_on_input_fingerprint_mismatch(monkeypatch):
