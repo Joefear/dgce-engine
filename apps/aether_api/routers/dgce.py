@@ -1,8 +1,9 @@
 """DGCE section orchestration endpoint for the local Aether API."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from aether.dgce import DGCESection, run_section
+from aether.dgce.refresh_api import refresh_workspace_artifacts
 
 
 router = APIRouter(prefix="/v1")
@@ -17,3 +18,18 @@ def run_dgce_section(section: DGCESection, request: Request) -> dict:
         router_planner=request.app.state.router_planner,
     )
     return result.model_dump()
+
+
+@router.post("/dgce/refresh")
+def refresh_dgce_workspace(workspace_path: str = Query(...)) -> dict[str, str | bool]:
+    try:
+        project_root = refresh_workspace_artifacts(workspace_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "workspace": str(project_root),
+        "artifacts_refreshed": True,
+    }
