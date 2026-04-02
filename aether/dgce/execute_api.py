@@ -772,6 +772,39 @@ def get_bundle_operator_summary(project_root: Path, bundle_fingerprint: str) -> 
     }
 
 
+def get_section_operator_overview(project_root: Path, section_id: str) -> dict[str, Any]:
+    summary = get_section_operator_summary(project_root, section_id)
+    bundle_fingerprints = sorted(
+        reference["bundle_fingerprint"]
+        for reference in summary["bundle_references"]
+    )
+    latest_bundle_fingerprint = bundle_fingerprints[-1] if bundle_fingerprints else None
+    return {
+        "section_id": section_id,
+        "approval_present": summary["approval_present"],
+        "approval_status": summary["approval_status"],
+        "selected_mode": summary["selected_mode"],
+        "execution_permitted": summary["execution_permitted"],
+        "prepared_plan_present": summary["prepared_plan_present"],
+        "prepared_plan_fingerprint": summary["prepared_plan_fingerprint"],
+        "execution_present": summary["execution_present"],
+        "execution_status": summary["execution_status"],
+        "written_files_count": summary["written_files_count"],
+        "provenance_verified": summary["provenance_verified"],
+        "verification_failure_count": summary["verification_failure_count"],
+        "failing_check_ids": list(summary["failing_check_ids"]),
+        "execution_artifact_path": summary["execution_artifact_path"],
+        "prepared_plan_audit_fingerprint": summary["prepared_plan_audit_fingerprint"],
+        "prepared_plan_cross_link_fingerprint": summary["prepared_plan_cross_link_fingerprint"],
+        "bundle_count": summary["bundle_count"],
+        "latest_bundle_fingerprint": latest_bundle_fingerprint,
+        "bundle_references": list(summary["bundle_references"]),
+        "is_executable": bool(summary["approval_present"] and summary["execution_permitted"] is True),
+        "has_been_executed": bool(summary["execution_present"]),
+        "has_provenance_issues": bool(summary["verification_failure_count"] > 0),
+    }
+
+
 def _bundle_section_record(
     *,
     project_root: Path,

@@ -12,6 +12,7 @@ from aether.dgce.execute_api import (
     get_bundle_index_records_by_input_fingerprint,
     get_bundle_operator_summary,
     get_bundle_index_records_for_section,
+    get_section_operator_overview,
     get_section_operator_summary,
     get_section_provenance,
     load_bundle_execution_manifest,
@@ -180,6 +181,17 @@ def get_dgce_section_summary(section_id: str, workspace_path: str = Query(...)) 
     try:
         project_root = resolve_workspace_path(workspace_path)
         return get_section_operator_summary(project_root, section_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/dgce/sections/{section_id}/overview")
+def get_dgce_section_overview(section_id: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return get_section_operator_overview(project_root, section_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
