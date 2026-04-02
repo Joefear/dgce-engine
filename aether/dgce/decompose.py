@@ -23,6 +23,9 @@ from aether.dgce.incremental import (
     scan_workspace_inventory,
 )
 from aether.dgce.file_writer import write_file_plan
+from aether.dgce.model_config import build_model_execution_audit, get_model_execution_config
+from aether.dgce.model_executor import generate_function_stub
+from aether.dgce.model_validator import validate_function_stub
 from aether_core.classifier.rules import ClassifierRules
 from aether_core.classifier.service import ClassificationService
 from aether_core.itera.advisory import build_advisory
@@ -79,6 +82,7 @@ class RunSectionWriteResult(BaseModel):
     advisory: Optional[dict] = None
     write_transparency: Optional[dict] = None
     ownership_index: Optional[dict] = None
+    model_execution: Optional[dict] = None
 
 
 class DGCERunOrchestratorResult(BaseModel):
@@ -767,6 +771,21 @@ def run_section_with_workspace(
                 write_transparency=None,
                 ownership_index=None,
             )
+    model_execution = None
+    if require_preflight_pass and section.section_type == "function_stub":
+        structured_input, target_path = _build_function_stub_structured_input(section, file_plan)
+        model_config = get_model_execution_config()
+        raw_output = generate_function_stub(structured_input, model_config)
+        validated_output = validate_function_stub(raw_output, structured_input)
+        file_plan = _inject_function_stub_content(file_plan, target_path, validated_output)
+        write_plan, write_transparency = build_write_transparency(
+            file_plan,
+            change_plan,
+            project_root,
+            allow_modify_write=effective_allow_safe_modify,
+            owned_paths=owned_paths,
+        )
+        model_execution = build_model_execution_audit(model_config)
     execution_outcome = _build_execution_outcome(
         section_id=section_id,
         stage=DGCEWorkspaceStage.WRITE,
@@ -817,6 +836,7 @@ def run_section_with_workspace(
         run_outcome_class=run_outcome_class,
         execution_blocked=False,
         write_transparency=write_transparency,
+        model_execution=model_execution,
     )
     _refresh_workspace_views(workspace)
 
@@ -838,6 +858,7 @@ def run_section_with_workspace(
         advisory=advisory,
         write_transparency=write_transparency,
         ownership_index=ownership_index,
+        model_execution=model_execution,
     )
 
 
@@ -855,7 +876,52 @@ def run_section_and_write(section: DGCESection, output_dir: Path) -> RunSectionW
         advisory=None,
         write_transparency=None,
         ownership_index=None,
+        model_execution=None,
     )
+
+
+def _build_function_stub_structured_input(section: DGCESection, file_plan: FilePlan) -> tuple[dict[str, Any], str]:
+    if len(file_plan.files) != 1:
+        raise ValueError("function_stub execution requires exactly one planned file")
+    if len(section.expected_targets) != 1 or not isinstance(section.expected_targets[0], dict):
+        raise ValueError("function_stub execution requires exactly one structured expected_target")
+    target = dict(section.expected_targets[0])
+    target_path = str(target.get("path", "")).strip()
+    planned_path = str(file_plan.files[0].get("path", "")).strip()
+    if not target_path or target_path != planned_path:
+        raise ValueError("function_stub execution requires expected_target path to match the governed file plan")
+    name = str(target.get("name", "")).strip()
+    output_type = str(target.get("output", "")).strip()
+    raw_inputs = target.get("inputs")
+    if not name:
+        raise ValueError("function_stub execution requires expected_target.name")
+    if not output_type:
+        raise ValueError("function_stub execution requires expected_target.output")
+    if not isinstance(raw_inputs, list) or not raw_inputs:
+        raise ValueError("function_stub execution requires expected_target.inputs")
+    inputs: list[dict[str, str]] = []
+    for index, raw_input in enumerate(raw_inputs):
+        if not isinstance(raw_input, dict):
+            raise ValueError(f"function_stub execution requires dict inputs: index {index}")
+        input_name = str(raw_input.get("name", "")).strip()
+        input_type = str(raw_input.get("type", "")).strip()
+        if not input_name or not input_type:
+            raise ValueError(f"function_stub execution requires named typed inputs: index {index}")
+        inputs.append({"name": input_name, "type": input_type})
+    return {"name": name, "inputs": inputs, "output": output_type}, target_path
+
+
+def _inject_function_stub_content(file_plan: FilePlan, target_path: str, content: str) -> FilePlan:
+    payload = file_plan.model_dump()
+    injected = False
+    for file_entry in payload.get("files", []):
+        if str(file_entry.get("path", "")).strip() != target_path:
+            continue
+        file_entry["content"] = content
+        injected = True
+    if not injected:
+        raise ValueError("function_stub execution target must remain inside the governed file plan")
+    return FilePlan.model_validate(payload)
 
 
 def run_dgce_section(
@@ -1027,6 +1093,7 @@ def record_section_execution_stamp(
     run_outcome_class: str | None = None,
     execution_blocked: bool = False,
     write_transparency: dict[str, Any] | None = None,
+    model_execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a deterministic execution stamp and refresh workspace linkage."""
     workspace = _ensure_workspace(project_root)
@@ -1039,6 +1106,7 @@ def record_section_execution_stamp(
         run_outcome_class=run_outcome_class,
         execution_blocked=execution_blocked,
         write_transparency=write_transparency or {},
+        model_execution=model_execution,
     )
     if execution_artifact["approval_consumed"]:
         _supersede_approval_artifact(workspace["root"], section_id)
@@ -1943,6 +2011,18 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         _expect_str_list(_expect_required_field(payload_entry, "paths", artifact_name), artifact_name, f"unit_results[{index}].paths")
     for key in ("executed_units", "skipped_units", "failed_units"):
         _expect_str_list(_expect_required_field(artifact, key, artifact_name), artifact_name, key)
+    model_execution = artifact.get("model_execution")
+    if model_execution is not None:
+        model_payload = _expect_dict(model_execution, artifact_name, "model_execution")
+        _expect_str(_expect_required_field(model_payload, "model_id", artifact_name), artifact_name, "model_execution.model_id")
+        _expect_str(
+            _expect_required_field(model_payload, "prompt_template_version", artifact_name),
+            artifact_name,
+            "model_execution.prompt_template_version",
+        )
+        temperature = _expect_required_field(model_payload, "temperature", artifact_name)
+        if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
+            _schema_error(artifact_name, "model_execution.temperature must be a float")
     execution_record_summary = _expect_dict(_expect_required_field(artifact, "execution_record_summary", artifact_name), artifact_name, "execution_record_summary")
     for key in ("execution_status",):
         _expect_str(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
@@ -3507,6 +3587,7 @@ def _build_execution_stamp_artifact(
     run_outcome_class: str | None,
     execution_blocked: bool,
     write_transparency: dict[str, Any],
+    model_execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic execution-stamp artifact from current run facts and linked metadata."""
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
@@ -3594,9 +3675,7 @@ def _build_execution_stamp_artifact(
         execution_blocked=execution_blocked,
     )
 
-    return _with_artifact_metadata(
-        "execution_record",
-        {
+    payload = {
         "section_id": section_id,
         "execution_status": execution_status,
         "governed_execution": governed_execution,
@@ -3625,8 +3704,10 @@ def _build_execution_stamp_artifact(
         "modify_written_count": modify_written_count,
         "created_written_count": created_written_count,
         "execution_timestamp": str(execution_input.execution_timestamp),
-        },
-    )
+    }
+    if model_execution is not None:
+        payload["model_execution"] = model_execution
+    return _with_artifact_metadata("execution_record", payload)
 
 
 def _build_execution_artifact_results(

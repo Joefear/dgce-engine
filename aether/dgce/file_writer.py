@@ -50,6 +50,9 @@ def _ensure_within_output_dir(output_dir: Path, target_path: Path) -> None:
 
 def render_file_entry_content(file_entry: dict) -> str:
     """Return deterministic scaffold file content for one file-plan entry."""
+    explicit_content = file_entry.get("content")
+    if isinstance(explicit_content, str):
+        return explicit_content if explicit_content.endswith("\n") else f"{explicit_content}\n"
     path = str(file_entry["path"])
     purpose = str(file_entry["purpose"])
     source = str(file_entry["source"])
