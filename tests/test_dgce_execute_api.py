@@ -361,15 +361,22 @@ def _prepare_section(client: TestClient, project_root: Path, section_id: str = "
     return response.json()
 
 
-def _execute_bundle(client: TestClient, project_root: Path, section_ids: list[str], *, rerun: bool = False):
-    return client.post(
-        "/v1/dgce/sections/execute-bundle",
-        json={
-            "workspace_path": str(project_root),
-            "section_ids": section_ids,
-            "rerun": rerun,
-        },
-    )
+def _execute_bundle(
+    client: TestClient,
+    project_root: Path,
+    section_ids: list[str],
+    *,
+    planned_order: list[str] | None = None,
+    rerun: bool = False,
+):
+    payload: dict[str, object] = {
+        "workspace_path": str(project_root),
+        "section_ids": section_ids,
+        "rerun": rerun,
+    }
+    if planned_order is not None:
+        payload["planned_order"] = planned_order
+    return client.post("/v1/dgce/sections/execute-bundle", json=payload)
 
 
 def _plan_bundle(client: TestClient, project_root: Path, section_ids: list[str]):
@@ -733,6 +740,219 @@ class TestDGCEExecuteAPI:
             "stopped_early": True,
             "detail": "Bundle requires at least one section_id",
         }
+
+    def test_execute_bundle_accepts_valid_planned_order(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["alpha-section", "mission-board"],
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "section_results": [
+                {
+                    "status": "ok",
+                    "section_id": "alpha-section",
+                    "executed": True,
+                    "artifacts_updated": True,
+                },
+                {
+                    "status": "ok",
+                    "section_id": "mission-board",
+                    "executed": True,
+                    "artifacts_updated": True,
+                },
+            ],
+            "first_failing_section": None,
+            "stopped_early": False,
+        }
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        assert bundle_manifest["section_ids"] == ["alpha-section", "mission-board"]
+
+    def test_execute_bundle_rejects_planned_order_mismatch(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_mismatch")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["mission-board", "not-a-section"],
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle planned_order must contain exactly the same section_ids as section_ids",
+        }
+
+    def test_execute_bundle_rejects_duplicate_planned_order(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_duplicates")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["mission-board", "mission-board"],
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle planned_order must be unique",
+        }
+
+    def test_execute_bundle_rejects_planned_order_with_missing_entries(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_missing")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["mission-board"],
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle planned_order must contain exactly the same section_ids as section_ids",
+        }
+
+    def test_execute_bundle_uses_planned_order_exactly(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_exact")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        original_execute_prepared_section = dgce_execute_api.execute_prepared_section
+        executed_sections: list[str] = []
+
+        def record_bundle_order(workspace_path, section_id, *, rerun=False):
+            executed_sections.append(section_id)
+            return original_execute_prepared_section(workspace_path, section_id, rerun=rerun)
+
+        monkeypatch.setattr("aether.dgce.execute_api.execute_prepared_section", record_bundle_order)
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["alpha-section", "mission-board"],
+        )
+
+        assert response.status_code == 200
+        assert executed_sections == ["alpha-section", "mission-board"]
+
+    def test_execute_bundle_fail_fast_still_works_with_planned_order(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_fail_fast")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["mission-board", "alpha-section"],
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [
+                {
+                    "section_id": "mission-board",
+                    "status": "failed",
+                    "detail": "Section has prior execution artifacts; rerun=true required: mission-board",
+                }
+            ],
+            "first_failing_section": "mission-board",
+            "stopped_early": True,
+        }
+        assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+
+    def test_execute_bundle_planned_order_does_not_widen_section_set(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_no_widen")
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["mission-board", "alpha-section", "not-a-section"],
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle planned_order must contain exactly the same section_ids as section_ids",
+        }
+
+    def test_execute_bundle_with_planned_order_is_deterministic_for_identical_prepared_state(self, monkeypatch):
+        first_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_repeat_one")
+        second_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_repeat_two")
+        client = TestClient(create_app())
+
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            _mark_section_ready(project_root)
+            _mark_alpha_ready(project_root)
+            _prepare_section(client, project_root, "alpha-section")
+            _prepare_section(client, project_root, "mission-board")
+
+        first_response = _execute_bundle(
+            client,
+            first_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["alpha-section", "mission-board"],
+        )
+        second_response = _execute_bundle(
+            client,
+            second_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["alpha-section", "mission-board"],
+        )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.json() == second_response.json()
+        assert first_response.content == second_response.content
+        assert _bundle_manifest_bytes(first_root) == _bundle_manifest_bytes(second_root)
+        assert _bundle_index_bytes(first_root) == _bundle_index_bytes(second_root)
 
     def test_execute_bundle_rejects_unknown_section_id(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_unknown")

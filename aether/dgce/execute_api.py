@@ -1100,6 +1100,7 @@ def execute_prepared_section_bundle(
     workspace_path: str | Path,
     section_ids: list[str],
     *,
+    planned_order: list[str] | None = None,
     rerun: bool = False,
 ) -> tuple[dict[str, Any], int]:
     project_root = resolve_workspace_path(workspace_path)
@@ -1137,9 +1138,57 @@ def execute_prepared_section_bundle(
             400,
         )
 
+    execution_order = list(section_ids)
+    if planned_order is not None:
+        if not planned_order:
+            return (
+                {
+                    "status": "failed",
+                    "section_results": [],
+                    "first_failing_section": None,
+                    "stopped_early": True,
+                    "detail": "Bundle planned_order must contain at least one section_id",
+                },
+                400,
+            )
+        if any(not isinstance(section_id, str) or not section_id.strip() for section_id in planned_order):
+            return (
+                {
+                    "status": "failed",
+                    "section_results": [],
+                    "first_failing_section": None,
+                    "stopped_early": True,
+                    "detail": "Bundle planned_order must be non-empty strings",
+                },
+                400,
+            )
+        if len(planned_order) != len(set(planned_order)):
+            return (
+                {
+                    "status": "failed",
+                    "section_results": [],
+                    "first_failing_section": None,
+                    "stopped_early": True,
+                    "detail": "Bundle planned_order must be unique",
+                },
+                400,
+            )
+        if set(planned_order) != set(section_ids):
+            return (
+                {
+                    "status": "failed",
+                    "section_results": [],
+                    "first_failing_section": None,
+                    "stopped_early": True,
+                    "detail": "Bundle planned_order must contain exactly the same section_ids as section_ids",
+                },
+                400,
+            )
+        execution_order = list(planned_order)
+
     section_results: list[dict[str, Any]] = []
     section_records: list[dict[str, Any]] = []
-    for section_id in section_ids:
+    for section_id in execution_order:
         try:
             result = execute_prepared_section(workspace_path, section_id, rerun=rerun)
         except FileNotFoundError as exc:
@@ -1153,7 +1202,7 @@ def execute_prepared_section_bundle(
             section_records.append(_bundle_section_record(project_root=project_root, section_id=section_id, status="failed"))
             _persist_bundle_execution_audit_manifest(
                 project_root=project_root,
-                section_ids=section_ids,
+                section_ids=execution_order,
                 section_records=section_records,
                 execution_status="failed",
                 stopped_early=True,
@@ -1179,7 +1228,7 @@ def execute_prepared_section_bundle(
             section_records.append(_bundle_section_record(project_root=project_root, section_id=section_id, status="failed"))
             _persist_bundle_execution_audit_manifest(
                 project_root=project_root,
-                section_ids=section_ids,
+                section_ids=execution_order,
                 section_records=section_records,
                 execution_status="failed",
                 stopped_early=True,
@@ -1199,7 +1248,7 @@ def execute_prepared_section_bundle(
 
     _persist_bundle_execution_audit_manifest(
         project_root=project_root,
-        section_ids=section_ids,
+        section_ids=execution_order,
         section_records=section_records,
         execution_status="success",
         stopped_early=False,

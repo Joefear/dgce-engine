@@ -48,6 +48,7 @@ class SectionApprovalRequest(BaseModel):
 class SectionBundleExecutionRequest(BaseModel):
     workspace_path: str
     section_ids: list[str]
+    planned_order: list[Any] | None = None
     rerun: bool = False
 
 
@@ -123,6 +124,7 @@ def execute_dgce_section_bundle(payload: SectionBundleExecutionRequest):
     result, status_code = execute_prepared_section_bundle(
         payload.workspace_path,
         payload.section_ids,
+        planned_order=payload.planned_order,
         rerun=payload.rerun,
     )
     return JSONResponse(status_code=status_code, content=result)
