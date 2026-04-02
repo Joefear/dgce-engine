@@ -368,6 +368,13 @@ def _get_section_bundles(client: TestClient, project_root: Path, section_id: str
     )
 
 
+def _get_section_provenance(client: TestClient, project_root: Path, section_id: str):
+    return client.get(
+        f"/v1/dgce/sections/{section_id}/provenance",
+        params={"workspace_path": str(project_root)},
+    )
+
+
 def _bundle_manifest_payload(project_root: Path) -> dict:
     bundle_paths = sorted(
         path
@@ -1180,6 +1187,223 @@ class TestDGCEExecuteAPI:
         assert first_section_response.status_code == 200
         assert second_section_response.status_code == 200
         assert first_section_response.content == second_section_response.content
+
+    def test_get_section_provenance_returns_compact_chain_for_fully_executed_section(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_provenance_full")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        client = TestClient(create_app())
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        _mark_alpha_ready(project_root)
+        _prepare_section(client, project_root, "mission-board")
+        _prepare_section(client, project_root, "alpha-section")
+        assert _execute_bundle(client, project_root, ["mission-board", "alpha-section"]).status_code == 200
+
+        approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+        approval_lineage = dgce_execute_api._compute_prepared_plan_approval_lineage(project_root, "mission-board")
+        prepared_plan_payload = json.loads((project_root / ".dce" / "plans" / "mission-board.prepared_plan.json").read_text(encoding="utf-8"))
+        execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+        bundle_references = dgce_execute_api.get_bundle_index_records_for_section(project_root, "mission-board")
+
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "section_id": "mission-board",
+            "approval": {
+                "approval_artifact_fingerprint": approval_lineage["approval_artifact_fingerprint"],
+                "approval_path": ".dce/approvals/mission-board.approval.json",
+                "approval_record_fingerprint": approval_lineage["approval_record_fingerprint"],
+                "approval_status": approval_payload["approval_status"],
+                "execution_permitted": approval_payload["execution_permitted"],
+                "selected_mode": approval_payload["selected_mode"],
+            },
+            "prepared_plan": {
+                "approval_lineage_fingerprint": prepared_plan_payload["approval_lineage_fingerprint"],
+                "binding_fingerprint": prepared_plan_payload["binding_fingerprint"],
+                "prepared_plan_fingerprint": dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload),
+                "prepared_plan_path": ".dce/plans/mission-board.prepared_plan.json",
+            },
+            "execution": {
+                "execution_artifact_path": ".dce/execution/mission-board.execution.json",
+                "execution_status": execution_payload["execution_status"],
+                "prepared_plan_audit_fingerprint": execution_payload["prepared_plan_audit_fingerprint"],
+                "prepared_plan_cross_link_fingerprint": execution_payload["prepared_plan_cross_link_fingerprint"],
+                "written_files": execution_payload["prepared_plan_audit_manifest"]["written_files"],
+            },
+            "bundle_references": bundle_references,
+        }
+
+    def test_get_section_provenance_returns_partial_deterministic_chain_when_only_approval_exists(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_provenance_partial")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
+        approval_lineage = dgce_execute_api._compute_prepared_plan_approval_lineage(project_root, "mission-board")
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "section_id": "mission-board",
+            "approval": {
+                "approval_artifact_fingerprint": approval_payload["artifact_fingerprint"],
+                "approval_path": ".dce/approvals/mission-board.approval.json",
+                "approval_record_fingerprint": approval_lineage["approval_record_fingerprint"],
+                "approval_status": approval_payload["approval_status"],
+                "execution_permitted": approval_payload["execution_permitted"],
+                "selected_mode": approval_payload["selected_mode"],
+            },
+            "prepared_plan": {
+                "approval_lineage_fingerprint": None,
+                "binding_fingerprint": None,
+                "prepared_plan_fingerprint": None,
+                "prepared_plan_path": None,
+            },
+            "execution": {
+                "execution_artifact_path": None,
+                "execution_status": None,
+                "prepared_plan_audit_fingerprint": None,
+                "prepared_plan_cross_link_fingerprint": None,
+                "written_files": None,
+            },
+            "bundle_references": [],
+        }
+
+    def test_get_section_provenance_returns_not_found_for_ungrounded_section(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_provenance_missing")
+        client = TestClient(create_app())
+
+        response = _get_section_provenance(client, project_root, "missing-section")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Section provenance not found: missing-section"}
+
+    def test_get_section_provenance_rejects_malformed_approval_artifact(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_provenance_bad_approval")
+        _mark_section_ready(project_root)
+        approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
+        approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+        approval_payload["artifact_fingerprint"] = None
+        approval_path.write_text(json.dumps(approval_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        client = TestClient(create_app())
+
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Approval artifact is malformed: mission-board"}
+
+    def test_get_section_provenance_rejects_malformed_prepared_plan_artifact(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_provenance_bad_prepared")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["binding_fingerprint"] = None
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan artifact is malformed: mission-board"}
+
+    def test_get_section_provenance_rejects_malformed_execution_artifact(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_provenance_bad_execution")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+        assert client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        execution_path = project_root / ".dce" / "execution" / "mission-board.execution.json"
+        execution_payload = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution_payload["prepared_plan_cross_link"]["section_id"] = "other-section"
+        execution_payload["prepared_plan_cross_link_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(
+            execution_payload["prepared_plan_cross_link"]
+        )
+        execution_path.write_text(json.dumps(execution_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "detail": "execution_stamp schema validation failed: prepared_plan_cross_link.section_id must match section_id"
+        }
+
+    def test_get_section_provenance_rejects_malformed_bundle_index(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_provenance_bad_index")
+        _mark_section_ready(project_root)
+        index_path = project_root / ".dce" / "execution" / "bundles" / "index.json"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "bundle_execution_audit_index",
+                    "bundles": "broken",
+                    "by_section": {},
+                    "generated_by": "DGCE",
+                    "schema_version": "1.0",
+                },
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        client = TestClient(create_app())
+
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Bundle index is malformed"}
+
+    def test_section_provenance_response_is_deterministic_across_identical_state(self, monkeypatch):
+        first_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_provenance_repeat_one")
+        second_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_provenance_repeat_two")
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            assert client.post(
+                "/v1/dgce/sections/mission-board/approve",
+                json={"workspace_path": str(project_root)},
+            ).status_code == 200
+            _mark_alpha_ready(project_root)
+            _prepare_section(client, project_root, "mission-board")
+            _prepare_section(client, project_root, "alpha-section")
+            assert _execute_bundle(client, project_root, ["mission-board", "alpha-section"]).status_code == 200
+
+        first_response = _get_section_provenance(client, first_root, "mission-board")
+        second_response = _get_section_provenance(client, second_root, "mission-board")
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.content == second_response.content
+
+    def test_section_provenance_remains_compact_without_large_payload_duplication(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_provenance_compact")
+        client = TestClient(create_app())
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        _prepare_section(client, project_root, "mission-board")
+        assert client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+
+        response = _get_section_provenance(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        serialized = json.dumps(response.json(), indent=2, sort_keys=True)
+        assert "\"file_plan\":" not in serialized
+        assert "\"binding\":" not in serialized
+        assert "\"approval_lineage\":" not in serialized
+        assert "\"prepared_plan_audit_manifest\":" not in serialized
+        assert "\"sections\":" not in serialized
 
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")

@@ -25,6 +25,8 @@ from aether.dgce.path_utils import resolve_workspace_path
 from aether.dgce.prepare_api import (
     _compute_prepared_plan_approval_lineage,
     _compute_prepared_plan_binding,
+    _load_validated_json_artifact,
+    _prepared_plan_relative_path as prepare_api_prepared_plan_relative_path,
     load_prepared_section_file_plan,
     load_prepared_section_plan_artifact,
     prepare_section_execution,
@@ -107,6 +109,37 @@ def _execution_artifact_path(project_root: Path, section_id: str) -> Path:
 
 def _execution_artifact_relative_path(section_id: str) -> str:
     return f".dce/execution/{section_id}.execution.json"
+
+
+def _approval_artifact_relative_path(section_id: str) -> str:
+    return f".dce/approvals/{section_id}.approval.json"
+
+
+def load_section_approval_artifact(project_root: Path, section_id: str) -> dict[str, Any]:
+    approval_path = _approval_artifact_relative_path(section_id)
+    approval_payload = _load_validated_json_artifact(project_root, approval_path)
+    approval_artifact_fingerprint = approval_payload.get("artifact_fingerprint")
+    if not isinstance(approval_artifact_fingerprint, str):
+        raise ValueError(f"Approval artifact is malformed: {section_id}")
+    return approval_payload
+
+
+def load_section_execution_artifact(project_root: Path, section_id: str) -> dict[str, Any]:
+    execution_path = _execution_artifact_relative_path(section_id)
+    execution_payload = _load_validated_json_artifact(project_root, execution_path)
+    execution_status = execution_payload.get("execution_status")
+    if not isinstance(execution_status, str):
+        raise ValueError(f"Execution artifact is malformed: {section_id}")
+    written_files = execution_payload.get("written_files")
+    if not isinstance(written_files, list):
+        raise ValueError(f"Execution artifact is malformed: {section_id}")
+    prepared_plan_audit_fingerprint = execution_payload.get("prepared_plan_audit_fingerprint")
+    if prepared_plan_audit_fingerprint is not None and not isinstance(prepared_plan_audit_fingerprint, str):
+        raise ValueError(f"Execution artifact is malformed: {section_id}")
+    prepared_plan_cross_link_fingerprint = execution_payload.get("prepared_plan_cross_link_fingerprint")
+    if prepared_plan_cross_link_fingerprint is not None and not isinstance(prepared_plan_cross_link_fingerprint, str):
+        raise ValueError(f"Execution artifact is malformed: {section_id}")
+    return execution_payload
 
 
 def _bundle_input_fingerprint(section_ids: list[str]) -> str:
@@ -279,6 +312,56 @@ def get_bundle_index_records_for_section(project_root: Path, section_id: str) ->
         for bundle_fingerprint in bundle_fingerprints
         if bundle_fingerprint in records_by_fingerprint
     ]
+
+
+def get_section_provenance(project_root: Path, section_id: str) -> dict[str, Any]:
+    approval_path = project_root / _approval_artifact_relative_path(section_id)
+    prepared_plan_path = project_root / prepare_api_prepared_plan_relative_path(section_id)
+    execution_path = _execution_artifact_path(project_root, section_id)
+
+    approval: dict[str, Any] | None = None
+    approval_lineage: dict[str, Any] | None = None
+    prepared_plan: dict[str, Any] | None = None
+    execution: dict[str, Any] | None = None
+
+    if approval_path.exists():
+        approval = load_section_approval_artifact(project_root, section_id)
+        approval_lineage = _compute_prepared_plan_approval_lineage(project_root, section_id)
+    if prepared_plan_path.exists():
+        prepared_plan = load_prepared_section_plan_artifact(project_root, section_id)
+    if execution_path.exists():
+        execution = load_section_execution_artifact(project_root, section_id)
+
+    bundle_references = get_bundle_index_records_for_section(project_root, section_id)
+    if approval is None and prepared_plan is None and execution is None and not bundle_references:
+        raise FileNotFoundError(f"Section provenance not found: {section_id}")
+
+    prepared_plan_audit_manifest = execution.get("prepared_plan_audit_manifest") if execution is not None else None
+    return {
+        "section_id": section_id,
+        "approval": {
+            "approval_artifact_fingerprint": approval_lineage["approval_artifact_fingerprint"] if approval_lineage is not None else None,
+            "approval_path": _approval_artifact_relative_path(section_id) if approval is not None else None,
+            "approval_record_fingerprint": approval_lineage["approval_record_fingerprint"] if approval_lineage is not None else None,
+            "approval_status": approval.get("approval_status") if approval is not None else None,
+            "execution_permitted": approval.get("execution_permitted") if approval is not None else None,
+            "selected_mode": approval.get("selected_mode") if approval is not None else None,
+        },
+        "prepared_plan": {
+            "approval_lineage_fingerprint": prepared_plan.get("approval_lineage_fingerprint") if prepared_plan is not None else None,
+            "binding_fingerprint": prepared_plan.get("binding_fingerprint") if prepared_plan is not None else None,
+            "prepared_plan_fingerprint": compute_json_payload_fingerprint(prepared_plan) if prepared_plan is not None else None,
+            "prepared_plan_path": _prepared_plan_relative_path(section_id) if prepared_plan is not None else None,
+        },
+        "execution": {
+            "execution_artifact_path": _execution_artifact_relative_path(section_id) if execution is not None else None,
+            "execution_status": execution.get("execution_status") if execution is not None else None,
+            "prepared_plan_audit_fingerprint": execution.get("prepared_plan_audit_fingerprint") if execution is not None else None,
+            "prepared_plan_cross_link_fingerprint": execution.get("prepared_plan_cross_link_fingerprint") if execution is not None else None,
+            "written_files": prepared_plan_audit_manifest.get("written_files") if isinstance(prepared_plan_audit_manifest, dict) else None,
+        },
+        "bundle_references": bundle_references,
+    }
 
 
 def _bundle_section_record(

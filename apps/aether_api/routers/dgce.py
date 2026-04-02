@@ -11,6 +11,7 @@ from aether.dgce.execute_api import (
     execute_prepared_section_bundle,
     get_bundle_index_records_by_input_fingerprint,
     get_bundle_index_records_for_section,
+    get_section_provenance,
     load_bundle_execution_manifest,
 )
 from aether.dgce.path_utils import resolve_workspace_path
@@ -148,3 +149,14 @@ def get_dgce_section_bundles(section_id: str, workspace_path: str = Query(...)) 
     if not records:
         raise HTTPException(status_code=404, detail=f"Section bundle participation not found: {section_id}")
     return records
+
+
+@router.get("/dgce/sections/{section_id}/provenance")
+def get_dgce_section_provenance(section_id: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return get_section_provenance(project_root, section_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
