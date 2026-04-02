@@ -348,15 +348,31 @@ def _execute_bundle(client: TestClient, project_root: Path, section_ids: list[st
 
 
 def _bundle_manifest_payload(project_root: Path) -> dict:
-    bundle_paths = sorted((project_root / ".dce" / "execution" / "bundles").glob("*.json"))
+    bundle_paths = sorted(
+        path
+        for path in (project_root / ".dce" / "execution" / "bundles").glob("*.json")
+        if path.name != "index.json"
+    )
     assert len(bundle_paths) == 1
     return json.loads(bundle_paths[0].read_text(encoding="utf-8"))
 
 
 def _bundle_manifest_bytes(project_root: Path) -> bytes:
-    bundle_paths = sorted((project_root / ".dce" / "execution" / "bundles").glob("*.json"))
+    bundle_paths = sorted(
+        path
+        for path in (project_root / ".dce" / "execution" / "bundles").glob("*.json")
+        if path.name != "index.json"
+    )
     assert len(bundle_paths) == 1
     return bundle_paths[0].read_bytes()
+
+
+def _bundle_index_payload(project_root: Path) -> dict:
+    return json.loads((project_root / ".dce" / "execution" / "bundles" / "index.json").read_text(encoding="utf-8"))
+
+
+def _bundle_index_bytes(project_root: Path) -> bytes:
+    return (project_root / ".dce" / "execution" / "bundles" / "index.json").read_bytes()
 
 
 def _realign_preview_fingerprint_after_stale_gate(project_root: Path) -> str:
@@ -439,6 +455,7 @@ class TestDGCEExecuteAPI:
         }
         assert executed_sections == ["alpha-section", "mission-board"]
         bundle_manifest = _bundle_manifest_payload(project_root)
+        bundle_index = _bundle_index_payload(project_root)
         assert bundle_manifest["section_ids"] == ["alpha-section", "mission-board"]
         assert [entry["section_id"] for entry in bundle_manifest["sections"]] == ["alpha-section", "mission-board"]
         assert bundle_manifest["execution_status"] == "success"
@@ -475,6 +492,36 @@ class TestDGCEExecuteAPI:
                 "status": "success",
             },
         ]
+        assert bundle_index == {
+            "artifact_type": "bundle_execution_audit_index",
+            "bundles": [
+                {
+                    "bundle_fingerprint": bundle_manifest["bundle_fingerprint"],
+                    "bundle_input_fingerprint": bundle_manifest["bundle_input_fingerprint"],
+                    "execution_status": "success",
+                    "first_failing_section": None,
+                    "manifest_path": f".dce/execution/bundles/{bundle_manifest['bundle_fingerprint']}.json",
+                    "section_ids": ["alpha-section", "mission-board"],
+                    "stopped_early": False,
+                }
+            ],
+            "by_section": {
+                "alpha-section": [bundle_manifest["bundle_fingerprint"]],
+                "mission-board": [bundle_manifest["bundle_fingerprint"]],
+            },
+            "generated_by": "DGCE",
+            "schema_version": "1.0",
+        }
+        assert dgce_execute_api.get_bundle_index_record_by_fingerprint(project_root, bundle_manifest["bundle_fingerprint"]) == (
+            bundle_index["bundles"][0]
+        )
+        assert dgce_execute_api.get_bundle_index_records_by_input_fingerprint(
+            project_root,
+            bundle_manifest["bundle_input_fingerprint"],
+        ) == bundle_index["bundles"]
+        assert dgce_execute_api.get_bundle_fingerprints_for_section(project_root, "alpha-section") == [
+            bundle_manifest["bundle_fingerprint"]
+        ]
 
     def test_execute_bundle_stops_immediately_on_first_failure(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_fail_fast")
@@ -506,6 +553,7 @@ class TestDGCEExecuteAPI:
         }
         assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
         bundle_manifest = _bundle_manifest_payload(project_root)
+        bundle_index = _bundle_index_payload(project_root)
         assert bundle_manifest["execution_status"] == "failed"
         assert bundle_manifest["stopped_early"] is True
         assert bundle_manifest["first_failing_section"] == "mission-board"
@@ -521,6 +569,21 @@ class TestDGCEExecuteAPI:
                 "status": "failed",
             }
         ]
+        assert bundle_index["bundles"] == [
+            {
+                "bundle_fingerprint": bundle_manifest["bundle_fingerprint"],
+                "bundle_input_fingerprint": bundle_manifest["bundle_input_fingerprint"],
+                "execution_status": "failed",
+                "first_failing_section": "mission-board",
+                "manifest_path": f".dce/execution/bundles/{bundle_manifest['bundle_fingerprint']}.json",
+                "section_ids": ["mission-board", "alpha-section"],
+                "stopped_early": True,
+            }
+        ]
+        assert bundle_index["by_section"] == {
+            "alpha-section": [bundle_manifest["bundle_fingerprint"]],
+            "mission-board": [bundle_manifest["bundle_fingerprint"]],
+        }
 
     def test_execute_bundle_rejects_duplicate_section_ids(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_duplicates")
@@ -779,6 +842,7 @@ class TestDGCEExecuteAPI:
             second_root / ".dce" / "execution" / "mission-board.execution.json"
         ).read_bytes()
         assert _bundle_manifest_bytes(first_root) == _bundle_manifest_bytes(second_root)
+        assert _bundle_index_bytes(first_root) == _bundle_index_bytes(second_root)
 
     def test_execute_bundle_order_changes_bundle_input_fingerprint(self, monkeypatch):
         first_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_fingerprint_order_one")
@@ -800,6 +864,9 @@ class TestDGCEExecuteAPI:
         assert first_manifest["bundle_input_fingerprint"] != second_manifest["bundle_input_fingerprint"]
         assert first_manifest["section_ids"] == ["alpha-section", "mission-board"]
         assert second_manifest["section_ids"] == ["mission-board", "alpha-section"]
+        assert _bundle_index_payload(first_root)["bundles"][0]["bundle_input_fingerprint"] != (
+            _bundle_index_payload(second_root)["bundles"][0]["bundle_input_fingerprint"]
+        )
 
     def test_bundle_manifest_contains_only_references_and_fingerprints(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_manifest_shape")
@@ -820,6 +887,101 @@ class TestDGCEExecuteAPI:
         assert "\"approval_lineage\":" not in serialized_manifest
         assert "\"binding\":" not in serialized_manifest
         assert "prepared_plan_audit_manifest" not in serialized_manifest
+
+    def test_bundle_index_is_idempotent_for_repeated_identical_bundle_runs(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_index_idempotent")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root, selected_mode="safe_modify")
+        _mark_alpha_ready(project_root, selected_mode="safe_modify")
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        first_response = _execute_bundle(client, project_root, ["alpha-section", "mission-board"])
+        assert first_response.status_code == 200
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        index_bytes_after_first = _bundle_index_bytes(project_root)
+
+        dgce_execute_api._update_bundle_execution_index(project_root, bundle_manifest)
+
+        assert _bundle_index_bytes(project_root) == index_bytes_after_first
+        assert len(_bundle_index_payload(project_root)["bundles"]) == 1
+
+    def test_bundle_index_tracks_section_participation_across_distinct_bundle_runs(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_index_participation")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root, selected_mode="safe_modify")
+        _mark_alpha_ready(project_root, selected_mode="safe_modify")
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        first_response = _execute_bundle(client, project_root, ["alpha-section", "mission-board"])
+        assert first_response.status_code == 200
+        second_response = _execute_bundle(client, project_root, ["alpha-section"])
+        assert second_response.status_code == 400
+
+        bundle_index = _bundle_index_payload(project_root)
+        expected_alpha_fingerprints = sorted(entry["bundle_fingerprint"] for entry in bundle_index["bundles"])
+        expected_mission_fingerprints = sorted(
+            entry["bundle_fingerprint"]
+            for entry in bundle_index["bundles"]
+            if "mission-board" in entry["section_ids"]
+        )
+
+        assert len(bundle_index["bundles"]) == 2
+        assert bundle_index["by_section"] == {
+            "alpha-section": expected_alpha_fingerprints,
+            "mission-board": expected_mission_fingerprints,
+        }
+        assert dgce_execute_api.get_bundle_fingerprints_for_section(project_root, "alpha-section") == expected_alpha_fingerprints
+        assert dgce_execute_api.get_bundle_fingerprints_for_section(project_root, "mission-board") == expected_mission_fingerprints
+        assert dgce_execute_api.get_bundle_index_records_by_input_fingerprint(
+            project_root,
+            bundle_index["bundles"][0]["bundle_input_fingerprint"],
+        ) == [bundle_index["bundles"][0]]
+
+    def test_load_bundle_execution_index_rejects_malformed_index(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_index_malformed")
+        index_path = project_root / ".dce" / "execution" / "bundles" / "index.json"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "bundle_execution_audit_index",
+                    "bundles": "not-a-list",
+                    "by_section": {},
+                    "generated_by": "DGCE",
+                    "schema_version": "1.0",
+                },
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="Bundle index is malformed"):
+            dgce_execute_api.load_bundle_execution_index(project_root)
+
+    def test_bundle_index_contains_only_compact_bundle_references(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_index_shape")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        response = _execute_bundle(client, project_root, ["alpha-section", "mission-board"])
+
+        assert response.status_code == 200
+        serialized_index = json.dumps(_bundle_index_payload(project_root), indent=2, sort_keys=True)
+        assert "\"sections\":" not in serialized_index
+        assert "prepared_plan_fingerprint" not in serialized_index
+        assert "prepared_plan_audit_fingerprint" not in serialized_index
+        assert "approval_lineage_fingerprint" not in serialized_index
+        assert "binding_fingerprint" not in serialized_index
+        assert "\"written_files\":" not in serialized_index
 
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")

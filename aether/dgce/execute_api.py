@@ -140,6 +140,78 @@ def _bundle_manifest_path(project_root: Path, bundle_fingerprint: str) -> Path:
     return project_root / ".dce" / "execution" / "bundles" / f"{bundle_fingerprint}.json"
 
 
+def _bundle_index_path(project_root: Path) -> Path:
+    return project_root / ".dce" / "execution" / "bundles" / "index.json"
+
+
+def _validate_bundle_index_payload(payload: object) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Bundle index must contain a JSON object")
+    for key, expected in (
+        ("artifact_type", "bundle_execution_audit_index"),
+        ("generated_by", "DGCE"),
+        ("schema_version", "1.0"),
+    ):
+        if payload.get(key) != expected:
+            raise ValueError("Bundle index is malformed")
+    bundles = payload.get("bundles")
+    if not isinstance(bundles, list):
+        raise ValueError("Bundle index is malformed")
+    by_section = payload.get("by_section")
+    if not isinstance(by_section, dict):
+        raise ValueError("Bundle index is malformed")
+    for entry in bundles:
+        if not isinstance(entry, dict):
+            raise ValueError("Bundle index is malformed")
+        if any(not isinstance(entry.get(key), str) for key in ("bundle_fingerprint", "bundle_input_fingerprint", "execution_status", "manifest_path")):
+            raise ValueError("Bundle index is malformed")
+        if not isinstance(entry.get("section_ids"), list) or any(not isinstance(item, str) for item in entry["section_ids"]):
+            raise ValueError("Bundle index is malformed")
+        if not isinstance(entry.get("stopped_early"), bool):
+            raise ValueError("Bundle index is malformed")
+        first_failing_section = entry.get("first_failing_section")
+        if first_failing_section is not None and not isinstance(first_failing_section, str):
+            raise ValueError("Bundle index is malformed")
+    for section_id, bundle_fingerprints in by_section.items():
+        if not isinstance(section_id, str):
+            raise ValueError("Bundle index is malformed")
+        if not isinstance(bundle_fingerprints, list) or any(not isinstance(item, str) for item in bundle_fingerprints):
+            raise ValueError("Bundle index is malformed")
+    return payload
+
+
+def load_bundle_execution_index(project_root: Path) -> dict[str, Any]:
+    index_path = _bundle_index_path(project_root)
+    if not index_path.exists():
+        return {
+            "artifact_type": "bundle_execution_audit_index",
+            "bundles": [],
+            "by_section": {},
+            "generated_by": "DGCE",
+            "schema_version": "1.0",
+        }
+    return _validate_bundle_index_payload(json.loads(index_path.read_text(encoding="utf-8")))
+
+
+def get_bundle_index_record_by_fingerprint(project_root: Path, bundle_fingerprint: str) -> dict[str, Any] | None:
+    for record in load_bundle_execution_index(project_root)["bundles"]:
+        if record["bundle_fingerprint"] == bundle_fingerprint:
+            return record
+    return None
+
+
+def get_bundle_index_records_by_input_fingerprint(project_root: Path, bundle_input_fingerprint: str) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in load_bundle_execution_index(project_root)["bundles"]
+        if record["bundle_input_fingerprint"] == bundle_input_fingerprint
+    ]
+
+
+def get_bundle_fingerprints_for_section(project_root: Path, section_id: str) -> list[str]:
+    return list(load_bundle_execution_index(project_root)["by_section"].get(section_id, []))
+
+
 def _bundle_section_record(
     *,
     project_root: Path,
@@ -196,7 +268,48 @@ def _persist_bundle_execution_audit_manifest(
         **core_payload,
         "bundle_fingerprint": bundle_fingerprint,
     }
-    _write_json(_bundle_manifest_path(project_root, bundle_fingerprint), manifest_payload)
+    manifest_path = _bundle_manifest_path(project_root, bundle_fingerprint)
+    _write_json(manifest_path, manifest_payload)
+    _update_bundle_execution_index(project_root, manifest_payload)
+
+
+def _update_bundle_execution_index(project_root: Path, manifest_payload: dict[str, Any]) -> None:
+    index_payload = load_bundle_execution_index(project_root)
+    record = {
+        "bundle_fingerprint": manifest_payload["bundle_fingerprint"],
+        "bundle_input_fingerprint": manifest_payload["bundle_input_fingerprint"],
+        "execution_status": manifest_payload["execution_status"],
+        "first_failing_section": manifest_payload["first_failing_section"],
+        "manifest_path": _bundle_manifest_path(project_root, manifest_payload["bundle_fingerprint"]).relative_to(project_root).as_posix(),
+        "section_ids": list(manifest_payload["section_ids"]),
+        "stopped_early": manifest_payload["stopped_early"],
+    }
+    bundles_by_fingerprint = {
+        entry["bundle_fingerprint"]: entry
+        for entry in index_payload["bundles"]
+    }
+    bundles_by_fingerprint[record["bundle_fingerprint"]] = record
+    bundles = sorted(
+        bundles_by_fingerprint.values(),
+        key=lambda entry: (
+            entry["bundle_input_fingerprint"],
+            entry["bundle_fingerprint"],
+        ),
+    )
+    by_section: dict[str, list[str]] = {}
+    for entry in bundles:
+        for section_id in entry["section_ids"]:
+            by_section.setdefault(section_id, [])
+            if entry["bundle_fingerprint"] not in by_section[section_id]:
+                by_section[section_id].append(entry["bundle_fingerprint"])
+    index_artifact = {
+        "artifact_type": "bundle_execution_audit_index",
+        "bundles": bundles,
+        "by_section": {section_id: sorted(bundle_fingerprints) for section_id, bundle_fingerprints in sorted(by_section.items())},
+        "generated_by": "DGCE",
+        "schema_version": "1.0",
+    }
+    _write_json(_bundle_index_path(project_root), index_artifact)
 
 
 def _build_prepared_plan_audit_manifest(
