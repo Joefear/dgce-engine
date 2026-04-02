@@ -836,6 +836,43 @@ def get_bundle_operator_overview(project_root: Path, bundle_fingerprint: str) ->
     }
 
 
+def get_section_operator_dashboard(project_root: Path, section_id: str) -> dict[str, Any]:
+    summary = get_section_operator_summary(project_root, section_id)
+    overview = get_section_operator_overview(project_root, section_id)
+    if overview["verification_failure_count"] > 0:
+        health_status = "error"
+    elif summary["approval_present"] is not True:
+        health_status = "warning"
+    elif summary["prepared_plan_present"] is not True or overview["has_been_executed"] is not True:
+        health_status = "warning"
+    else:
+        health_status = "healthy"
+    return {
+        "section_id": section_id,
+        "health_status": health_status,
+        "provenance_verified": overview["provenance_verified"],
+        "verification_failure_count": overview["verification_failure_count"],
+        "alert_check_ids": list(overview["failing_check_ids"]),
+        "approval_status": overview["approval_status"],
+        "selected_mode": overview["selected_mode"],
+        "execution_permitted": overview["execution_permitted"],
+        "execution_status": overview["execution_status"],
+        "is_executable": overview["is_executable"],
+        "has_been_executed": overview["has_been_executed"],
+        "written_files_count": overview["written_files_count"],
+        "prepared_plan_present": summary["prepared_plan_present"],
+        "prepared_plan_fingerprint": summary["prepared_plan_fingerprint"],
+        "binding_fingerprint": summary["binding_fingerprint"],
+        "approval_lineage_fingerprint": summary["approval_lineage_fingerprint"],
+        "execution_artifact_path": overview["execution_artifact_path"],
+        "prepared_plan_audit_fingerprint": overview["prepared_plan_audit_fingerprint"],
+        "prepared_plan_cross_link_fingerprint": overview["prepared_plan_cross_link_fingerprint"],
+        "bundle_count": overview["bundle_count"],
+        "latest_bundle_fingerprint": overview["latest_bundle_fingerprint"],
+        "bundle_references": list(overview["bundle_references"]),
+    }
+
+
 def _bundle_section_record(
     *,
     project_root: Path,

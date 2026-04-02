@@ -417,6 +417,13 @@ def _get_bundle_overview(client: TestClient, project_root: Path, bundle_fingerpr
     )
 
 
+def _get_section_dashboard(client: TestClient, project_root: Path, section_id: str):
+    return client.get(
+        f"/v1/dgce/sections/{section_id}/dashboard",
+        params={"workspace_path": str(project_root)},
+    )
+
+
 def _bundle_manifest_payload(project_root: Path) -> dict:
     bundle_paths = sorted(
         path
@@ -2247,6 +2254,120 @@ class TestDGCEExecuteAPI:
         assert "\"written_files\":" not in serialized
         assert "\"binding_fingerprint\":" not in serialized
         assert "\"approval_lineage_fingerprint\":" not in serialized
+
+    def test_get_section_dashboard_returns_correct_compact_data_for_fully_executed_healthy_section(self, monkeypatch):
+        project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_dashboard_full")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        client = TestClient(create_app())
+        assert client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        _mark_alpha_ready(project_root)
+        _prepare_section(client, project_root, "mission-board")
+        _prepare_section(client, project_root, "alpha-section")
+        assert _execute_bundle(client, project_root, ["mission-board", "alpha-section"]).status_code == 200
+
+        summary = _get_section_summary(client, project_root, "mission-board").json()
+        overview = _get_section_overview(client, project_root, "mission-board").json()
+        response = _get_section_dashboard(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "section_id": "mission-board",
+            "health_status": "healthy",
+            "provenance_verified": overview["provenance_verified"],
+            "verification_failure_count": overview["verification_failure_count"],
+            "alert_check_ids": [],
+            "approval_status": summary["approval_status"],
+            "selected_mode": summary["selected_mode"],
+            "execution_permitted": summary["execution_permitted"],
+            "execution_status": overview["execution_status"],
+            "is_executable": overview["is_executable"],
+            "has_been_executed": overview["has_been_executed"],
+            "written_files_count": overview["written_files_count"],
+            "prepared_plan_present": summary["prepared_plan_present"],
+            "prepared_plan_fingerprint": summary["prepared_plan_fingerprint"],
+            "binding_fingerprint": summary["binding_fingerprint"],
+            "approval_lineage_fingerprint": summary["approval_lineage_fingerprint"],
+            "execution_artifact_path": overview["execution_artifact_path"],
+            "prepared_plan_audit_fingerprint": overview["prepared_plan_audit_fingerprint"],
+            "prepared_plan_cross_link_fingerprint": overview["prepared_plan_cross_link_fingerprint"],
+            "bundle_count": overview["bundle_count"],
+            "latest_bundle_fingerprint": overview["latest_bundle_fingerprint"],
+            "bundle_references": overview["bundle_references"],
+        }
+
+    def test_get_section_dashboard_health_is_warning_for_partial_grounded_section(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_dashboard_warning")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        response = _get_section_dashboard(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        assert response.json()["health_status"] == "warning"
+        assert response.json()["provenance_verified"] is True
+        assert response.json()["verification_failure_count"] == 0
+        assert response.json()["alert_check_ids"] == []
+
+    def test_get_section_dashboard_health_is_error_for_grounded_section_with_verification_failures(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_dashboard_error")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["binding_fingerprint"] = "tampered"
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = _get_section_dashboard(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        assert response.json()["health_status"] == "error"
+        assert response.json()["alert_check_ids"] == [
+            "prepared_plan.valid",
+            "prepared_plan.binding",
+            "prepared_plan.lineage",
+            "prepared_plan.fingerprint",
+        ]
+        assert response.json()["verification_failure_count"] == 4
+
+    def test_get_section_dashboard_returns_not_found_for_unknown_section(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_dashboard_missing")
+        client = TestClient(create_app())
+
+        response = _get_section_dashboard(client, project_root, "missing-section")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Section provenance not found: missing-section"}
+
+    def test_get_section_dashboard_is_deterministic_and_compact(self, monkeypatch):
+        first_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_dashboard_repeat_one")
+        second_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_section_dashboard_repeat_two")
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            assert client.post(
+                "/v1/dgce/sections/mission-board/approve",
+                json={"workspace_path": str(project_root)},
+            ).status_code == 200
+            _mark_alpha_ready(project_root)
+            _prepare_section(client, project_root, "mission-board")
+            _prepare_section(client, project_root, "alpha-section")
+            assert _execute_bundle(client, project_root, ["mission-board", "alpha-section"]).status_code == 200
+
+        first_response = _get_section_dashboard(client, first_root, "mission-board")
+        second_response = _get_section_dashboard(client, second_root, "mission-board")
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.content == second_response.content
+        serialized = first_response.text
+        assert "\"checks\":" not in serialized
+        assert "\"written_files\":" not in serialized
+        assert "\"prepared_plan_audit_manifest\":" not in serialized
+        assert "\"sections\":" not in serialized
 
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")
