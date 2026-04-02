@@ -1,5 +1,7 @@
 """DGCE section orchestration endpoint for the local Aether API."""
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -23,6 +25,7 @@ from aether.dgce.execute_api import (
     verify_section_artifact_chain,
 )
 from aether.dgce.path_utils import resolve_workspace_path
+from aether.dgce.plan_api import plan_section_bundle
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.refresh_api import refresh_workspace_artifacts
 
@@ -46,6 +49,11 @@ class SectionBundleExecutionRequest(BaseModel):
     workspace_path: str
     section_ids: list[str]
     rerun: bool = False
+
+
+class SectionBundlePlanRequest(BaseModel):
+    workspace_path: str
+    section_ids: list[Any]
 
 
 @router.post("/dgce/section")
@@ -117,6 +125,20 @@ def execute_dgce_section_bundle(payload: SectionBundleExecutionRequest):
         payload.section_ids,
         rerun=payload.rerun,
     )
+    return JSONResponse(status_code=status_code, content=result)
+
+
+@router.post("/dgce/sections/plan-bundle")
+def plan_dgce_section_bundle(payload: SectionBundlePlanRequest):
+    try:
+        result, status_code = plan_section_bundle(
+            payload.workspace_path,
+            payload.section_ids,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(status_code=status_code, content=result)
 
 

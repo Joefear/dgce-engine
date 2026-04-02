@@ -43,6 +43,7 @@ class DGCESection(BaseModel):
     description: str
     requirements: List[str] = Field(default_factory=list)
     constraints: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
     expected_targets: List[Any] = Field(default_factory=list)
 
 

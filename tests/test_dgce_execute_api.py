@@ -88,6 +88,18 @@ def _owned_bundle_section() -> DGCESection:
     )
 
 
+def _dependency_section(section_id: str, *, dependencies: list[str] | None = None) -> DGCESection:
+    return DGCESection(
+        section_id=section_id,
+        section_type="system_component",
+        title=section_id.replace("-", " ").title(),
+        description=f"Deterministic planning fixture for {section_id}.",
+        requirements=["preserve deterministic planning"],
+        constraints=["read-only planning only"],
+        dependencies=list(dependencies or []),
+    )
+
+
 def _workspace_dir(name: str) -> Path:
     base = Path("tests/.tmp") / name
     if base.exists():
@@ -128,6 +140,19 @@ def _build_workspace(monkeypatch, name: str) -> Path:
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
     run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    return project_root
+
+
+def _build_dependency_workspace(monkeypatch, name: str, sections: list[DGCESection]) -> Path:
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir(name)
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    for section in sections:
+        run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2")
     return project_root
 
 
@@ -343,6 +368,16 @@ def _execute_bundle(client: TestClient, project_root: Path, section_ids: list[st
             "workspace_path": str(project_root),
             "section_ids": section_ids,
             "rerun": rerun,
+        },
+    )
+
+
+def _plan_bundle(client: TestClient, project_root: Path, section_ids: list[str]):
+    return client.post(
+        "/v1/dgce/sections/plan-bundle",
+        json={
+            "workspace_path": str(project_root),
+            "section_ids": section_ids,
         },
     )
 
@@ -3553,3 +3588,204 @@ class TestDGCEExecuteAPI:
             ).encode("utf-8")
 
         assert rerun_audit_payloads[first_root] == rerun_audit_payloads[second_root]
+
+    def test_plan_bundle_preserves_input_order_for_independent_sections(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_independent",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b"),
+                _dependency_section("section-c"),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-c", "section-a", "section-b"])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "plan_valid": True,
+            "ordered_section_ids": ["section-c", "section-a", "section-b"],
+            "input_section_ids": ["section-c", "section-a", "section-b"],
+            "dependency_edges": [],
+            "cycles_detected": [],
+            "missing_dependencies": [],
+        }
+
+    def test_plan_bundle_orders_simple_dependency(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_simple_dependency",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-b", "section-a"])
+
+        assert response.status_code == 200
+        assert response.json()["ordered_section_ids"] == ["section-a", "section-b"]
+        assert response.json()["plan_valid"] is True
+
+    def test_plan_bundle_orders_multi_level_dependencies(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_multi_level_dependency",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+                _dependency_section("section-c", dependencies=["section-b"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-c", "section-b", "section-a"])
+
+        assert response.status_code == 200
+        assert response.json()["ordered_section_ids"] == ["section-a", "section-b", "section-c"]
+        assert response.json()["plan_valid"] is True
+
+    def test_plan_bundle_detects_cycles_without_throwing(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_cycle",
+            [
+                _dependency_section("section-a", dependencies=["section-b"]),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-a", "section-b"])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "invalid",
+            "plan_valid": False,
+            "ordered_section_ids": [],
+            "input_section_ids": ["section-a", "section-b"],
+            "dependency_edges": [
+                {"from": "section-a", "to": "section-b"},
+                {"from": "section-b", "to": "section-a"},
+            ],
+            "cycles_detected": [["section-a", "section-b"]],
+            "missing_dependencies": [],
+            "detail": "Bundle plan contains dependency cycles",
+        }
+
+    def test_plan_bundle_detects_missing_dependencies(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_missing_dependency",
+            [
+                _dependency_section("section-a", dependencies=["section-missing"]),
+                _dependency_section("section-b"),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-a", "section-b"])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "invalid",
+            "plan_valid": False,
+            "ordered_section_ids": ["section-a", "section-b"],
+            "input_section_ids": ["section-a", "section-b"],
+            "dependency_edges": [],
+            "cycles_detected": [],
+            "missing_dependencies": ["section-missing"],
+            "detail": "Bundle plan contains missing dependencies",
+        }
+
+    def test_plan_bundle_rejects_duplicate_section_ids(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_duplicate_input",
+            [_dependency_section("section-a")],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-a", "section-a"])
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Bundle section_ids must be unique"}
+
+    def test_plan_bundle_rejects_empty_section_list(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_empty_input",
+            [_dependency_section("section-a")],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, [])
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Bundle requires at least one section_id"}
+
+    def test_plan_bundle_is_deterministic_across_runs(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_deterministic",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+                _dependency_section("section-c"),
+            ],
+        )
+        client = TestClient(create_app())
+
+        first_response = _plan_bundle(client, project_root, ["section-c", "section-b", "section-a"])
+        second_response = _plan_bundle(client, project_root, ["section-c", "section-b", "section-a"])
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.json() == second_response.json()
+        assert first_response.content == second_response.content
+
+    def test_plan_bundle_does_not_expand_missing_section_set(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_no_expansion",
+            [
+                _dependency_section("section-a", dependencies=["section-missing"]),
+                _dependency_section("section-b"),
+                _dependency_section("section-missing"),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-a", "section-b"])
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["plan_valid"] is False
+        assert payload["ordered_section_ids"] == ["section-a", "section-b"]
+        assert payload["input_section_ids"] == ["section-a", "section-b"]
+        assert "section-missing" not in payload["ordered_section_ids"]
+
+    def test_plan_bundle_reports_dependency_edges(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_plan_bundle_edges",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+                _dependency_section("section-c", dependencies=["section-a", "section-b"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _plan_bundle(client, project_root, ["section-c", "section-b", "section-a"])
+
+        assert response.status_code == 200
+        assert response.json()["dependency_edges"] == [
+            {"from": "section-a", "to": "section-b"},
+            {"from": "section-a", "to": "section-c"},
+            {"from": "section-b", "to": "section-c"},
+        ]
