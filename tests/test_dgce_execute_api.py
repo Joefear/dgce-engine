@@ -583,6 +583,9 @@ class TestDGCEExecuteAPI:
         bundle_manifest = _bundle_manifest_payload(project_root)
         bundle_index = _bundle_index_payload(project_root)
         assert bundle_manifest["section_ids"] == ["alpha-section", "mission-board"]
+        assert bundle_manifest["input_section_ids"] == ["alpha-section", "mission-board"]
+        assert bundle_manifest["effective_execution_order"] == ["alpha-section", "mission-board"]
+        assert bundle_manifest["order_source"] == "input_order"
         assert [entry["section_id"] for entry in bundle_manifest["sections"]] == ["alpha-section", "mission-board"]
         assert bundle_manifest["execution_status"] == "success"
         assert bundle_manifest["stopped_early"] is False
@@ -684,6 +687,9 @@ class TestDGCEExecuteAPI:
         assert bundle_manifest["stopped_early"] is True
         assert bundle_manifest["first_failing_section"] == "mission-board"
         assert bundle_manifest["section_ids"] == ["mission-board", "alpha-section"]
+        assert bundle_manifest["input_section_ids"] == ["mission-board", "alpha-section"]
+        assert bundle_manifest["effective_execution_order"] == ["mission-board", "alpha-section"]
+        assert bundle_manifest["order_source"] == "input_order"
         assert bundle_manifest["sections"] == [
             {
                 "approval_lineage_fingerprint": None,
@@ -779,6 +785,9 @@ class TestDGCEExecuteAPI:
         }
         bundle_manifest = _bundle_manifest_payload(project_root)
         assert bundle_manifest["section_ids"] == ["alpha-section", "mission-board"]
+        assert bundle_manifest["input_section_ids"] == ["mission-board", "alpha-section"]
+        assert bundle_manifest["effective_execution_order"] == ["alpha-section", "mission-board"]
+        assert bundle_manifest["order_source"] == "planned_order"
 
     def test_execute_bundle_rejects_planned_order_mismatch(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_planned_order_mismatch")
@@ -953,6 +962,45 @@ class TestDGCEExecuteAPI:
         assert first_response.content == second_response.content
         assert _bundle_manifest_bytes(first_root) == _bundle_manifest_bytes(second_root)
         assert _bundle_index_bytes(first_root) == _bundle_index_bytes(second_root)
+
+    def test_execute_bundle_manifest_records_raw_input_order_audit_linkage(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_order_audit_input")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        response = _execute_bundle(client, project_root, ["mission-board", "alpha-section"])
+
+        assert response.status_code == 200
+        manifest = _bundle_manifest_payload(project_root)
+        assert manifest["input_section_ids"] == ["mission-board", "alpha-section"]
+        assert manifest["effective_execution_order"] == ["mission-board", "alpha-section"]
+        assert manifest["order_source"] == "input_order"
+
+    def test_execute_bundle_manifest_records_planned_order_audit_linkage(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_order_audit_planned")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["alpha-section", "mission-board"],
+        )
+
+        assert response.status_code == 200
+        manifest = _bundle_manifest_payload(project_root)
+        assert manifest["input_section_ids"] == ["mission-board", "alpha-section"]
+        assert manifest["effective_execution_order"] == ["alpha-section", "mission-board"]
+        assert manifest["order_source"] == "planned_order"
 
     def test_execute_bundle_rejects_unknown_section_id(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_unknown")
@@ -1971,6 +2019,62 @@ class TestDGCEExecuteAPI:
             for check in payload["checks"]
         )
 
+    @pytest.mark.parametrize(
+        ("field_name", "field_value", "expected_check_id"),
+        [
+            ("input_section_ids", ["alpha-section", "mission-board"], "bundle_manifest.input"),
+            ("effective_execution_order", ["mission-board", "alpha-section"], "bundle_manifest.order"),
+            ("order_source", "input_order", "bundle_manifest.order"),
+        ],
+    )
+    def test_verify_bundle_detects_order_linkage_tampering(self, monkeypatch, field_name, field_value, expected_check_id):
+        project_root = _build_workspace(monkeypatch, f"dgce_execute_api_verify_bundle_order_tamper_{field_name}")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["alpha-section", "mission-board"],
+        ).status_code == 200
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        bundle_path = project_root / ".dce" / "execution" / "bundles" / f"{bundle_manifest['bundle_fingerprint']}.json"
+        tampered_manifest = dict(bundle_manifest)
+        tampered_manifest[field_name] = field_value
+        tampered_manifest["bundle_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(
+            {key: value for key, value in tampered_manifest.items() if key != "bundle_fingerprint"}
+        )
+        bundle_path.unlink()
+        index_payload = _bundle_index_payload(project_root)
+        index_payload["bundles"][0]["bundle_fingerprint"] = tampered_manifest["bundle_fingerprint"]
+        index_payload["bundles"][0]["manifest_path"] = f".dce/execution/bundles/{tampered_manifest['bundle_fingerprint']}.json"
+        index_payload["by_section"] = {
+            "alpha-section": [tampered_manifest["bundle_fingerprint"]],
+            "mission-board": [tampered_manifest["bundle_fingerprint"]],
+        }
+        (project_root / ".dce" / "execution" / "bundles" / "index.json").write_text(
+            json.dumps(index_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (project_root / ".dce" / "execution" / "bundles" / f"{tampered_manifest['bundle_fingerprint']}.json").write_text(
+            json.dumps(tampered_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        response = _verify_bundle(client, project_root, tampered_manifest["bundle_fingerprint"])
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["verified"] is False
+        assert any(
+            check["check_id"] == expected_check_id and check["status"] == "fail"
+            for check in payload["checks"]
+        )
+
     def test_verify_bundle_returns_not_found_for_unknown_bundle(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_verify_bundle_missing")
         client = TestClient(create_app())
@@ -2239,10 +2343,11 @@ class TestDGCEExecuteAPI:
             "section_count": 2,
             "section_ids": ["alpha-section", "mission-board"],
             "bundle_verified": False,
-            "verification_failure_count": 2,
+            "verification_failure_count": 3,
             "failing_check_ids": [
                 "bundle_manifest.valid",
                 "bundle_manifest.input",
+                "bundle_manifest.order",
             ],
             "manifest_path": f".dce/execution/bundles/{bundle_manifest['bundle_fingerprint']}.json",
             "index_present": True,

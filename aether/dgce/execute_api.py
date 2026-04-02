@@ -151,6 +151,9 @@ def _bundle_input_fingerprint(section_ids: list[str]) -> str:
 def _bundle_manifest_core_payload(
     *,
     section_ids: list[str],
+    input_section_ids: list[str],
+    effective_execution_order: list[str],
+    order_source: str,
     execution_status: str,
     stopped_early: bool,
     first_failing_section: str | None,
@@ -158,10 +161,13 @@ def _bundle_manifest_core_payload(
 ) -> dict[str, Any]:
     return {
         "artifact_type": "bundle_execution_audit_manifest",
-        "bundle_input_fingerprint": _bundle_input_fingerprint(section_ids),
+        "bundle_input_fingerprint": _bundle_input_fingerprint(input_section_ids),
         "execution_status": execution_status,
+        "effective_execution_order": effective_execution_order,
         "first_failing_section": first_failing_section,
         "generated_by": "DGCE",
+        "input_section_ids": input_section_ids,
+        "order_source": order_source,
         "schema_version": "1.0",
         "section_ids": section_ids,
         "sections": sections,
@@ -189,7 +195,17 @@ def _validate_bundle_manifest_payload(payload: object) -> dict[str, Any]:
             raise ValueError("Bundle audit manifest is malformed")
     if any(not isinstance(payload.get(key), str) for key in ("bundle_fingerprint", "bundle_input_fingerprint", "execution_status")):
         raise ValueError("Bundle audit manifest is malformed")
+    if payload.get("order_source") not in {"input_order", "planned_order"}:
+        raise ValueError("Bundle audit manifest is malformed")
     if not isinstance(payload.get("section_ids"), list) or any(not isinstance(item, str) for item in payload["section_ids"]):
+        raise ValueError("Bundle audit manifest is malformed")
+    if not isinstance(payload.get("input_section_ids"), list) or any(not isinstance(item, str) for item in payload["input_section_ids"]):
+        raise ValueError("Bundle audit manifest is malformed")
+    if not isinstance(payload.get("effective_execution_order"), list) or any(
+        not isinstance(item, str) for item in payload["effective_execution_order"]
+    ):
+        raise ValueError("Bundle audit manifest is malformed")
+    if payload["section_ids"] != payload["effective_execution_order"]:
         raise ValueError("Bundle audit manifest is malformed")
     if not isinstance(payload.get("stopped_early"), bool):
         raise ValueError("Bundle audit manifest is malformed")
@@ -513,7 +529,20 @@ def verify_bundle_artifact_chain(project_root: Path, bundle_fingerprint: str) ->
     manifest_payload: dict[str, Any] | None = None
     try:
         manifest_payload = load_bundle_execution_manifest(project_root, bundle_fingerprint)
-        input_ok = manifest_payload["bundle_input_fingerprint"] == _bundle_input_fingerprint(list(manifest_payload["section_ids"]))
+        input_ok = manifest_payload["bundle_input_fingerprint"] == _bundle_input_fingerprint(list(manifest_payload["input_section_ids"]))
+        order_ok = (
+            manifest_payload["section_ids"] == manifest_payload["effective_execution_order"]
+            and (
+                (
+                    manifest_payload["order_source"] == "input_order"
+                    and manifest_payload["input_section_ids"] == manifest_payload["effective_execution_order"]
+                )
+                or (
+                    manifest_payload["order_source"] == "planned_order"
+                    and sorted(manifest_payload["input_section_ids"]) == sorted(manifest_payload["effective_execution_order"])
+                )
+            )
+        )
         checks.append(_verification_check("bundle_manifest.exists", "bundle_manifest", True, "Bundle manifest exists"))
         checks.append(_verification_check("bundle_manifest.valid", "bundle_manifest", True, "Bundle manifest is valid"))
         checks.append(
@@ -521,13 +550,22 @@ def verify_bundle_artifact_chain(project_root: Path, bundle_fingerprint: str) ->
                 "bundle_manifest.input",
                 "bundle_manifest",
                 input_ok,
-                "Bundle input fingerprint matches ordered section_ids" if input_ok else "Bundle input fingerprint mismatch",
+                "Bundle input fingerprint matches input_section_ids" if input_ok else "Bundle input fingerprint mismatch",
+            )
+        )
+        checks.append(
+            _verification_check(
+                "bundle_manifest.order",
+                "bundle_manifest",
+                order_ok,
+                "Bundle execution order linkage is coherent" if order_ok else "Bundle execution order linkage is incoherent",
             )
         )
     except Exception as exc:
         checks.append(_verification_check("bundle_manifest.exists", "bundle_manifest", True, "Bundle manifest exists"))
         checks.append(_verification_check("bundle_manifest.valid", "bundle_manifest", False, str(exc)))
         checks.append(_verification_check("bundle_manifest.input", "bundle_manifest", False, str(exc)))
+        checks.append(_verification_check("bundle_manifest.order", "bundle_manifest", False, str(exc)))
 
     try:
         index_record = get_bundle_index_record_by_fingerprint(project_root, bundle_fingerprint)
@@ -940,6 +978,9 @@ def _persist_bundle_execution_audit_manifest(
     *,
     project_root: Path,
     section_ids: list[str],
+    input_section_ids: list[str],
+    effective_execution_order: list[str],
+    order_source: str,
     section_records: list[dict[str, Any]],
     execution_status: str,
     stopped_early: bool,
@@ -947,6 +988,9 @@ def _persist_bundle_execution_audit_manifest(
 ) -> None:
     core_payload = _bundle_manifest_core_payload(
         section_ids=section_ids,
+        input_section_ids=input_section_ids,
+        effective_execution_order=effective_execution_order,
+        order_source=order_source,
         execution_status=execution_status,
         stopped_early=stopped_early,
         first_failing_section=first_failing_section,
@@ -1139,6 +1183,7 @@ def execute_prepared_section_bundle(
         )
 
     execution_order = list(section_ids)
+    order_source = "input_order"
     if planned_order is not None:
         if not planned_order:
             return (
@@ -1185,6 +1230,7 @@ def execute_prepared_section_bundle(
                 400,
             )
         execution_order = list(planned_order)
+        order_source = "planned_order"
 
     section_results: list[dict[str, Any]] = []
     section_records: list[dict[str, Any]] = []
@@ -1203,6 +1249,9 @@ def execute_prepared_section_bundle(
             _persist_bundle_execution_audit_manifest(
                 project_root=project_root,
                 section_ids=execution_order,
+                input_section_ids=section_ids,
+                effective_execution_order=execution_order,
+                order_source=order_source,
                 section_records=section_records,
                 execution_status="failed",
                 stopped_early=True,
@@ -1229,6 +1278,9 @@ def execute_prepared_section_bundle(
             _persist_bundle_execution_audit_manifest(
                 project_root=project_root,
                 section_ids=execution_order,
+                input_section_ids=section_ids,
+                effective_execution_order=execution_order,
+                order_source=order_source,
                 section_records=section_records,
                 execution_status="failed",
                 stopped_early=True,
@@ -1249,6 +1301,9 @@ def execute_prepared_section_bundle(
     _persist_bundle_execution_audit_manifest(
         project_root=project_root,
         section_ids=execution_order,
+        input_section_ids=section_ids,
+        effective_execution_order=execution_order,
+        order_source=order_source,
         section_records=section_records,
         execution_status="success",
         stopped_early=False,
