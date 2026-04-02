@@ -396,6 +396,13 @@ def _get_section_summary(client: TestClient, project_root: Path, section_id: str
     )
 
 
+def _get_bundle_summary(client: TestClient, project_root: Path, bundle_fingerprint: str):
+    return client.get(
+        f"/v1/dgce/bundles/{bundle_fingerprint}/summary",
+        params={"workspace_path": str(project_root)},
+    )
+
+
 def _bundle_manifest_payload(project_root: Path) -> dict:
     bundle_paths = sorted(
         path
@@ -1858,6 +1865,131 @@ class TestDGCEExecuteAPI:
         assert "\"checks\":" not in serialized
         assert "\"binding\":" not in serialized
         assert "\"approval_lineage\":" not in serialized
+
+    def test_get_bundle_summary_returns_expected_compact_summary_for_valid_bundle(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_summary_full")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        bundle_index = _bundle_index_payload(project_root)
+
+        response = _get_bundle_summary(client, project_root, bundle_manifest["bundle_fingerprint"])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "bundle_fingerprint": bundle_manifest["bundle_fingerprint"],
+            "bundle_input_fingerprint": bundle_manifest["bundle_input_fingerprint"],
+            "execution_status": "success",
+            "stopped_early": False,
+            "first_failing_section": None,
+            "section_count": 2,
+            "section_ids": ["alpha-section", "mission-board"],
+            "bundle_verified": True,
+            "verification_failure_count": 0,
+            "failing_check_ids": [],
+            "manifest_path": f".dce/execution/bundles/{bundle_manifest['bundle_fingerprint']}.json",
+            "index_present": True,
+            "sections": bundle_manifest["sections"],
+        }
+        assert bundle_index["bundles"][0]["bundle_fingerprint"] == bundle_manifest["bundle_fingerprint"]
+
+    def test_get_bundle_summary_reflects_failing_check_ids_when_bundle_is_tampered(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_summary_tampered")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        index_path = project_root / ".dce" / "execution" / "bundles" / "index.json"
+        index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+        index_payload["bundles"][0]["execution_status"] = "failed"
+        index_path.write_text(json.dumps(index_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = _get_bundle_summary(client, project_root, bundle_manifest["bundle_fingerprint"])
+
+        assert response.status_code == 200
+        assert response.json()["bundle_verified"] is False
+        assert response.json()["verification_failure_count"] > 0
+        assert response.json()["failing_check_ids"] == ["bundle_index.match"]
+
+    def test_get_bundle_summary_returns_not_found_for_unknown_bundle(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_summary_missing")
+        client = TestClient(create_app())
+
+        response = _get_bundle_summary(client, project_root, "missing-bundle")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Bundle not found: missing-bundle"}
+
+    def test_get_bundle_summary_returns_grounded_inconsistent_bundle_with_verification_failures(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_summary_inconsistent")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        bundle_path = project_root / ".dce" / "execution" / "bundles" / f"{bundle_manifest['bundle_fingerprint']}.json"
+        tampered_manifest = dict(bundle_manifest)
+        tampered_manifest["sections"] = "broken"
+        bundle_path.write_text(json.dumps(tampered_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = _get_bundle_summary(client, project_root, bundle_manifest["bundle_fingerprint"])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "bundle_fingerprint": bundle_manifest["bundle_fingerprint"],
+            "bundle_input_fingerprint": bundle_manifest["bundle_input_fingerprint"],
+            "execution_status": "success",
+            "stopped_early": False,
+            "first_failing_section": None,
+            "section_count": 2,
+            "section_ids": ["alpha-section", "mission-board"],
+            "bundle_verified": False,
+            "verification_failure_count": 2,
+            "failing_check_ids": [
+                "bundle_manifest.valid",
+                "bundle_manifest.input",
+            ],
+            "manifest_path": f".dce/execution/bundles/{bundle_manifest['bundle_fingerprint']}.json",
+            "index_present": True,
+            "sections": [],
+        }
+
+    def test_get_bundle_summary_is_deterministic_and_compact(self, monkeypatch):
+        first_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_summary_repeat_one")
+        second_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_summary_repeat_two")
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            _mark_section_ready(project_root)
+            _mark_alpha_ready(project_root)
+            _prepare_section(client, project_root, "alpha-section")
+            _prepare_section(client, project_root, "mission-board")
+            assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+
+        first_bundle = _bundle_manifest_payload(first_root)["bundle_fingerprint"]
+        second_bundle = _bundle_manifest_payload(second_root)["bundle_fingerprint"]
+        first_response = _get_bundle_summary(client, first_root, first_bundle)
+        second_response = _get_bundle_summary(client, second_root, second_bundle)
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.content == second_response.content
+        serialized = first_response.text
+        assert "\"checks\":" not in serialized
+        assert "\"written_files\":" not in serialized
+        assert "\"prepared_plan_audit_manifest\":" not in serialized
 
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")

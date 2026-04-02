@@ -10,6 +10,7 @@ from aether.dgce.execute_api import (
     execute_prepared_section,
     execute_prepared_section_bundle,
     get_bundle_index_records_by_input_fingerprint,
+    get_bundle_operator_summary,
     get_bundle_index_records_for_section,
     get_section_operator_summary,
     get_section_provenance,
@@ -190,5 +191,14 @@ def verify_dgce_bundle(bundle_fingerprint: str, workspace_path: str = Query(...)
     try:
         project_root = resolve_workspace_path(workspace_path)
         return verify_bundle_artifact_chain(project_root, bundle_fingerprint)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/dgce/bundles/{bundle_fingerprint}/summary")
+def get_dgce_bundle_summary(bundle_fingerprint: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return get_bundle_operator_summary(project_root, bundle_fingerprint)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

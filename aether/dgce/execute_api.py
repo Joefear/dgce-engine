@@ -709,6 +709,69 @@ def get_section_operator_summary(project_root: Path, section_id: str) -> dict[st
     }
 
 
+def get_bundle_operator_summary(project_root: Path, bundle_fingerprint: str) -> dict[str, Any]:
+    manifest_path = _bundle_manifest_path(project_root, bundle_fingerprint)
+    try:
+        index_record = get_bundle_index_record_by_fingerprint(project_root, bundle_fingerprint)
+    except ValueError:
+        index_record = None
+    if not manifest_path.exists() and index_record is None:
+        raise FileNotFoundError(f"Bundle not found: {bundle_fingerprint}")
+
+    verification = verify_bundle_artifact_chain(project_root, bundle_fingerprint)
+    try:
+        manifest = load_bundle_execution_manifest(project_root, bundle_fingerprint)
+    except ValueError:
+        manifest = None
+
+    if manifest is not None:
+        bundle_input_fingerprint = manifest["bundle_input_fingerprint"]
+        execution_status = manifest["execution_status"]
+        stopped_early = manifest["stopped_early"]
+        first_failing_section = manifest["first_failing_section"]
+        section_ids = list(manifest["section_ids"])
+        sections = [
+            {
+                "section_id": section["section_id"],
+                "status": section["status"],
+                "execution_artifact_path": section["execution_artifact_path"],
+                "prepared_plan_fingerprint": section["prepared_plan_fingerprint"],
+                "prepared_plan_audit_fingerprint": section["prepared_plan_audit_fingerprint"],
+                "binding_fingerprint": section["binding_fingerprint"],
+                "approval_lineage_fingerprint": section["approval_lineage_fingerprint"],
+            }
+            for section in manifest["sections"]
+        ]
+    else:
+        bundle_input_fingerprint = index_record.get("bundle_input_fingerprint") if index_record is not None else None
+        execution_status = index_record.get("execution_status") if index_record is not None else None
+        stopped_early = index_record.get("stopped_early") if index_record is not None else None
+        first_failing_section = index_record.get("first_failing_section") if index_record is not None else None
+        section_ids = list(index_record.get("section_ids", [])) if index_record is not None else []
+        sections = []
+
+    failing_check_ids = [
+        check["check_id"]
+        for check in verification["checks"]
+        if check["status"] == "fail"
+    ]
+    return {
+        "bundle_fingerprint": bundle_fingerprint,
+        "bundle_input_fingerprint": bundle_input_fingerprint,
+        "execution_status": execution_status,
+        "stopped_early": stopped_early,
+        "first_failing_section": first_failing_section,
+        "section_count": len(section_ids),
+        "section_ids": section_ids,
+        "bundle_verified": verification["verified"],
+        "verification_failure_count": verification["failure_count"],
+        "failing_check_ids": failing_check_ids,
+        "manifest_path": _bundle_manifest_path(project_root, bundle_fingerprint).relative_to(project_root).as_posix(),
+        "index_present": index_record is not None,
+        "sections": sections,
+    }
+
+
 def _bundle_section_record(
     *,
     project_root: Path,
