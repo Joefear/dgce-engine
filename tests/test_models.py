@@ -23,6 +23,20 @@ from aether_core.enums import (
 )
 
 
+def _test_tmp_path(name: str) -> Path:
+    base = Path("tests/.tmp") / name
+    if base.exists():
+        for path in sorted(base.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+        if base.exists():
+            base.rmdir()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 class TestClassificationRequest:
     """Test ClassificationRequest model."""
 
@@ -357,9 +371,9 @@ class TestTelemetry:
         assert "classification_result" in json_line
         assert "req_001" in json_line
 
-    def test_local_jsonl_telemetry_write_and_read(self, tmp_path):
+    def test_local_jsonl_telemetry_write_and_read(self):
         """Test writing and reading JSONL telemetry."""
-        log_file = tmp_path / "test_telemetry.jsonl"
+        log_file = _test_tmp_path("telemetry_write_and_read") / "test_telemetry.jsonl"
         telemetry = LocalJSONLTelemetry(log_path=log_file)
 
         # Write events
@@ -382,9 +396,9 @@ class TestTelemetry:
         assert events[0]["request_id"] == "req_001"
         assert events[1]["data"]["status"] == "approved"
 
-    def test_local_jsonl_telemetry_clear(self, tmp_path):
+    def test_local_jsonl_telemetry_clear(self):
         """Test clearing telemetry logs."""
-        log_file = tmp_path / "test_telemetry.jsonl"
+        log_file = _test_tmp_path("telemetry_clear") / "test_telemetry.jsonl"
         telemetry = LocalJSONLTelemetry(log_path=log_file)
 
         event = TelemetryEvent(
