@@ -1,12 +1,19 @@
 """DGCE section orchestration endpoint for the local Aether API."""
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from aether.dgce import DGCESection, run_section
 from aether.dgce.approve_api import approve_section_execution
-from aether.dgce.execute_api import execute_prepared_section, execute_prepared_section_bundle
+from aether.dgce.execute_api import (
+    execute_prepared_section,
+    execute_prepared_section_bundle,
+    get_bundle_index_records_by_input_fingerprint,
+    get_bundle_index_records_for_section,
+    load_bundle_execution_manifest,
+)
+from aether.dgce.path_utils import resolve_workspace_path
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.refresh_api import refresh_workspace_artifacts
 
@@ -102,3 +109,42 @@ def execute_dgce_section_bundle(payload: SectionBundleExecutionRequest):
         rerun=payload.rerun,
     )
     return JSONResponse(status_code=status_code, content=result)
+
+
+@router.get("/dgce/bundles/{bundle_fingerprint}")
+def get_dgce_bundle(bundle_fingerprint: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return load_bundle_execution_manifest(project_root, bundle_fingerprint)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/dgce/bundles/by-input/{bundle_input_fingerprint}")
+def get_dgce_bundles_by_input(bundle_input_fingerprint: str, workspace_path: str = Query(...)) -> list[dict]:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        records = get_bundle_index_records_by_input_fingerprint(project_root, bundle_input_fingerprint)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Bundle input fingerprint not found: {bundle_input_fingerprint}")
+    return records
+
+
+@router.get("/dgce/sections/{section_id}/bundles")
+def get_dgce_section_bundles(section_id: str, workspace_path: str = Query(...)) -> list[dict]:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        records = get_bundle_index_records_for_section(project_root, section_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Section bundle participation not found: {section_id}")
+    return records

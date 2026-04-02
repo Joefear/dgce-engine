@@ -347,6 +347,27 @@ def _execute_bundle(client: TestClient, project_root: Path, section_ids: list[st
     )
 
 
+def _get_bundle_manifest(client: TestClient, project_root: Path, bundle_fingerprint: str):
+    return client.get(
+        f"/v1/dgce/bundles/{bundle_fingerprint}",
+        params={"workspace_path": str(project_root)},
+    )
+
+
+def _get_bundles_by_input(client: TestClient, project_root: Path, bundle_input_fingerprint: str):
+    return client.get(
+        f"/v1/dgce/bundles/by-input/{bundle_input_fingerprint}",
+        params={"workspace_path": str(project_root)},
+    )
+
+
+def _get_section_bundles(client: TestClient, project_root: Path, section_id: str):
+    return client.get(
+        f"/v1/dgce/sections/{section_id}/bundles",
+        params={"workspace_path": str(project_root)},
+    )
+
+
 def _bundle_manifest_payload(project_root: Path) -> dict:
     bundle_paths = sorted(
         path
@@ -982,6 +1003,183 @@ class TestDGCEExecuteAPI:
         assert "approval_lineage_fingerprint" not in serialized_index
         assert "binding_fingerprint" not in serialized_index
         assert "\"written_files\":" not in serialized_index
+
+    def test_get_bundle_by_fingerprint_returns_exact_stored_manifest(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_manifest")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        response = _get_bundle_manifest(client, project_root, bundle_manifest["bundle_fingerprint"])
+
+        assert response.status_code == 200
+        assert response.json() == bundle_manifest
+
+    def test_get_bundles_by_input_returns_compact_records_in_deterministic_order(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundles_by_input")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root, selected_mode="safe_modify")
+        _mark_alpha_ready(project_root, selected_mode="safe_modify")
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+        assert _execute_bundle(client, project_root, ["mission-board", "alpha-section"], rerun=True).status_code == 400
+
+        index_payload = _bundle_index_payload(project_root)
+        target_record = index_payload["bundles"][0]
+        response = _get_bundles_by_input(client, project_root, target_record["bundle_input_fingerprint"])
+
+        assert response.status_code == 200
+        assert response.json() == [target_record]
+        assert "sections" not in json.dumps(response.json(), sort_keys=True)
+
+    def test_get_section_bundles_returns_compact_records_in_deterministic_order(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_section_bundles")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+        assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+        assert _execute_bundle(client, project_root, ["alpha-section"]).status_code == 400
+
+        index_payload = _bundle_index_payload(project_root)
+        records_by_fingerprint = {
+            record["bundle_fingerprint"]: record
+            for record in index_payload["bundles"]
+        }
+        expected_records = [
+            records_by_fingerprint[bundle_fingerprint]
+            for bundle_fingerprint in index_payload["by_section"]["alpha-section"]
+        ]
+        response = _get_section_bundles(client, project_root, "alpha-section")
+
+        assert response.status_code == 200
+        assert response.json() == expected_records
+        assert "prepared_plan_fingerprint" not in json.dumps(response.json(), sort_keys=True)
+
+    def test_get_bundle_by_unknown_fingerprint_returns_not_found(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_unknown")
+        client = TestClient(create_app())
+
+        response = _get_bundle_manifest(client, project_root, "missing-bundle")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Bundle not found: missing-bundle"}
+
+    def test_get_bundles_by_unknown_input_returns_not_found(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_input_unknown")
+        client = TestClient(create_app())
+
+        response = _get_bundles_by_input(client, project_root, "missing-input")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Bundle input fingerprint not found: missing-input"}
+
+    def test_get_section_bundles_for_unknown_participation_returns_not_found(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_section_unknown")
+        client = TestClient(create_app())
+
+        response = _get_section_bundles(client, project_root, "missing-section")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Section bundle participation not found: missing-section"}
+
+    def test_get_bundles_by_input_rejects_malformed_index(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_malformed_index")
+        index_path = project_root / ".dce" / "execution" / "bundles" / "index.json"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "bundle_execution_audit_index",
+                    "bundles": "broken",
+                    "by_section": {},
+                    "generated_by": "DGCE",
+                    "schema_version": "1.0",
+                },
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        client = TestClient(create_app())
+
+        response = _get_bundles_by_input(client, project_root, "any-input")
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Bundle index is malformed"}
+
+    def test_get_bundle_by_fingerprint_rejects_malformed_manifest(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_malformed_manifest")
+        bundle_path = project_root / ".dce" / "execution" / "bundles" / "bad-bundle.json"
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        bundle_path.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "bundle_execution_audit_manifest",
+                    "bundle_fingerprint": "bad-bundle",
+                    "bundle_input_fingerprint": "input",
+                    "execution_status": "success",
+                    "first_failing_section": None,
+                    "generated_by": "DGCE",
+                    "schema_version": "1.0",
+                    "section_ids": ["alpha-section"],
+                    "sections": [],
+                    "stopped_early": False,
+                },
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        client = TestClient(create_app())
+
+        response = _get_bundle_manifest(client, project_root, "bad-bundle")
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Bundle audit manifest is malformed"}
+
+    def test_bundle_read_endpoints_are_deterministic_across_identical_prepared_state(self, monkeypatch):
+        first_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_repeat_one")
+        second_root = _build_workspace(monkeypatch, "dgce_execute_api_get_bundle_repeat_two")
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            _mark_section_ready(project_root)
+            _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            _prepare_section(client, project_root, "alpha-section")
+            _prepare_section(client, project_root, "mission-board")
+            assert _execute_bundle(client, project_root, ["alpha-section", "mission-board"]).status_code == 200
+
+        first_manifest = _bundle_manifest_payload(first_root)
+        second_manifest = _bundle_manifest_payload(second_root)
+        first_manifest_response = _get_bundle_manifest(client, first_root, first_manifest["bundle_fingerprint"])
+        second_manifest_response = _get_bundle_manifest(client, second_root, second_manifest["bundle_fingerprint"])
+        first_index_record = _bundle_index_payload(first_root)["bundles"][0]
+        second_index_record = _bundle_index_payload(second_root)["bundles"][0]
+        first_input_response = _get_bundles_by_input(client, first_root, first_index_record["bundle_input_fingerprint"])
+        second_input_response = _get_bundles_by_input(client, second_root, second_index_record["bundle_input_fingerprint"])
+        first_section_response = _get_section_bundles(client, first_root, "alpha-section")
+        second_section_response = _get_section_bundles(client, second_root, "alpha-section")
+
+        assert first_manifest_response.status_code == 200
+        assert second_manifest_response.status_code == 200
+        assert first_manifest_response.content == second_manifest_response.content
+        assert first_input_response.status_code == 200
+        assert second_input_response.status_code == 200
+        assert first_input_response.content == second_input_response.content
+        assert first_section_response.status_code == 200
+        assert second_section_response.status_code == 200
+        assert first_section_response.content == second_section_response.content
 
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")
