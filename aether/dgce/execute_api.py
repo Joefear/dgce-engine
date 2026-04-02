@@ -364,6 +364,260 @@ def get_section_provenance(project_root: Path, section_id: str) -> dict[str, Any
     }
 
 
+def _verification_check(check_id: str, artifact: str, passed: bool, reason: str) -> dict[str, str]:
+    return {
+        "check_id": check_id,
+        "status": "pass" if passed else "fail",
+        "artifact": artifact,
+        "reason": reason,
+    }
+
+
+def _verification_report(subject_type: str, subject_id: str, checks: list[dict[str, str]]) -> dict[str, Any]:
+    failure_count = sum(1 for check in checks if check["status"] == "fail")
+    return {
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+        "verified": failure_count == 0,
+        "checks": checks,
+        "failure_count": failure_count,
+    }
+
+
+def verify_section_artifact_chain(project_root: Path, section_id: str) -> dict[str, Any]:
+    approval_path = project_root / _approval_artifact_relative_path(section_id)
+    prepared_plan_path = project_root / prepare_api_prepared_plan_relative_path(section_id)
+    execution_path = _execution_artifact_path(project_root, section_id)
+    checks: list[dict[str, str]] = []
+
+    bundle_references = get_bundle_index_records_for_section(project_root, section_id)
+    grounded = approval_path.exists() or prepared_plan_path.exists() or execution_path.exists() or bool(bundle_references)
+    if not grounded:
+        raise FileNotFoundError(f"Section not found: {section_id}")
+
+    approval_payload: dict[str, Any] | None = None
+    prepared_plan_payload: dict[str, Any] | None = None
+    execution_payload: dict[str, Any] | None = None
+
+    if approval_path.exists():
+        try:
+            approval_payload = load_section_approval_artifact(project_root, section_id)
+            approval_lineage = _compute_prepared_plan_approval_lineage(project_root, section_id)
+            checks.append(_verification_check("approval.exists", "approval", True, "Approval artifact exists"))
+            checks.append(_verification_check("approval.valid", "approval", True, "Approval artifact is valid"))
+            checks.append(_verification_check("approval.identity", "approval", True, "Approval identity fields are present"))
+        except Exception as exc:
+            checks.append(_verification_check("approval.exists", "approval", True, "Approval artifact exists"))
+            checks.append(_verification_check("approval.valid", "approval", False, str(exc)))
+            checks.append(_verification_check("approval.identity", "approval", False, str(exc)))
+            approval_lineage = None
+    else:
+        checks.append(_verification_check("approval.exists", "approval", False, "Approval artifact missing"))
+        approval_lineage = None
+
+    if prepared_plan_path.exists():
+        try:
+            prepared_plan_payload = load_prepared_section_plan_artifact(project_root, section_id)
+            prepared_plan_fingerprint = compute_json_payload_fingerprint(prepared_plan_payload)
+            checks.append(_verification_check("prepared_plan.exists", "prepared_plan", True, "Prepared plan artifact exists"))
+            checks.append(_verification_check("prepared_plan.valid", "prepared_plan", True, "Prepared plan artifact is valid"))
+            checks.append(_verification_check("prepared_plan.binding", "prepared_plan", True, "Prepared plan binding is valid"))
+            checks.append(_verification_check("prepared_plan.lineage", "prepared_plan", True, "Prepared plan approval lineage is valid"))
+            checks.append(_verification_check("prepared_plan.fingerprint", "prepared_plan", True, prepared_plan_fingerprint))
+        except Exception as exc:
+            checks.append(_verification_check("prepared_plan.exists", "prepared_plan", True, "Prepared plan artifact exists"))
+            checks.append(_verification_check("prepared_plan.valid", "prepared_plan", False, str(exc)))
+            checks.append(_verification_check("prepared_plan.binding", "prepared_plan", False, str(exc)))
+            checks.append(_verification_check("prepared_plan.lineage", "prepared_plan", False, str(exc)))
+            checks.append(_verification_check("prepared_plan.fingerprint", "prepared_plan", False, str(exc)))
+            prepared_plan_fingerprint = None
+    else:
+        prepared_plan_fingerprint = None
+        if execution_path.exists():
+            checks.append(_verification_check("prepared_plan.exists", "prepared_plan", False, "Prepared plan artifact missing"))
+        else:
+            checks.append(_verification_check("prepared_plan.exists", "prepared_plan", True, "Prepared plan artifact not present"))
+
+    if execution_path.exists():
+        try:
+            execution_payload = load_section_execution_artifact(project_root, section_id)
+            checks.append(_verification_check("execution.exists", "execution", True, "Execution artifact exists"))
+            checks.append(_verification_check("execution.valid", "execution", True, "Execution artifact is valid"))
+            audit_manifest = execution_payload.get("prepared_plan_audit_manifest")
+            audit_fingerprint = execution_payload.get("prepared_plan_audit_fingerprint")
+            cross_link = execution_payload.get("prepared_plan_cross_link")
+            cross_link_fingerprint = execution_payload.get("prepared_plan_cross_link_fingerprint")
+            audit_ok = (
+                isinstance(audit_manifest, dict)
+                and isinstance(audit_fingerprint, str)
+                and compute_json_payload_fingerprint(audit_manifest) == audit_fingerprint
+            )
+            checks.append(
+                _verification_check(
+                    "execution.audit",
+                    "execution",
+                    audit_ok,
+                    "Prepared-plan audit manifest is consistent" if audit_ok else "Prepared-plan audit manifest fingerprint mismatch",
+                )
+            )
+            cross_link_ok = (
+                isinstance(cross_link, dict)
+                and isinstance(cross_link_fingerprint, str)
+                and compute_json_payload_fingerprint(cross_link) == cross_link_fingerprint
+            )
+            checks.append(
+                _verification_check(
+                    "execution.cross_link",
+                    "execution",
+                    cross_link_ok,
+                    "Prepared-plan cross-link is consistent" if cross_link_ok else "Prepared-plan cross-link fingerprint mismatch",
+                )
+            )
+            prepared_identity_ok = (
+                prepared_plan_payload is not None
+                and audit_ok
+                and cross_link_ok
+                and cross_link.get("prepared_plan_fingerprint") == prepared_plan_fingerprint
+                and audit_manifest.get("prepared_plan_fingerprint") == prepared_plan_fingerprint
+                and audit_manifest.get("binding_fingerprint") == prepared_plan_payload.get("binding_fingerprint")
+                and audit_manifest.get("approval_lineage_fingerprint") == prepared_plan_payload.get("approval_lineage_fingerprint")
+            )
+            checks.append(
+                _verification_check(
+                    "execution.prepared_plan_identity",
+                    "execution",
+                    prepared_identity_ok,
+                    "Execution artifact matches sealed prepared plan"
+                    if prepared_identity_ok
+                    else "Execution artifact does not match sealed prepared plan identity",
+                )
+            )
+        except Exception as exc:
+            checks.append(_verification_check("execution.exists", "execution", True, "Execution artifact exists"))
+            checks.append(_verification_check("execution.valid", "execution", False, str(exc)))
+            checks.append(_verification_check("execution.audit", "execution", False, str(exc)))
+            checks.append(_verification_check("execution.cross_link", "execution", False, str(exc)))
+            checks.append(_verification_check("execution.prepared_plan_identity", "execution", False, str(exc)))
+    else:
+        checks.append(_verification_check("execution.exists", "execution", True, "Execution artifact not present"))
+
+    return _verification_report("section", section_id, checks)
+
+
+def verify_bundle_artifact_chain(project_root: Path, bundle_fingerprint: str) -> dict[str, Any]:
+    manifest_path = _bundle_manifest_path(project_root, bundle_fingerprint)
+    checks: list[dict[str, str]] = []
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Bundle not found: {bundle_fingerprint}")
+
+    manifest_payload: dict[str, Any] | None = None
+    try:
+        manifest_payload = load_bundle_execution_manifest(project_root, bundle_fingerprint)
+        input_ok = manifest_payload["bundle_input_fingerprint"] == _bundle_input_fingerprint(list(manifest_payload["section_ids"]))
+        checks.append(_verification_check("bundle_manifest.exists", "bundle_manifest", True, "Bundle manifest exists"))
+        checks.append(_verification_check("bundle_manifest.valid", "bundle_manifest", True, "Bundle manifest is valid"))
+        checks.append(
+            _verification_check(
+                "bundle_manifest.input",
+                "bundle_manifest",
+                input_ok,
+                "Bundle input fingerprint matches ordered section_ids" if input_ok else "Bundle input fingerprint mismatch",
+            )
+        )
+    except Exception as exc:
+        checks.append(_verification_check("bundle_manifest.exists", "bundle_manifest", True, "Bundle manifest exists"))
+        checks.append(_verification_check("bundle_manifest.valid", "bundle_manifest", False, str(exc)))
+        checks.append(_verification_check("bundle_manifest.input", "bundle_manifest", False, str(exc)))
+
+    try:
+        index_record = get_bundle_index_record_by_fingerprint(project_root, bundle_fingerprint)
+        index_loaded = True
+    except Exception as exc:
+        index_record = None
+        index_loaded = False
+        index_error = str(exc)
+    if not index_loaded:
+        checks.append(_verification_check("bundle_index.valid", "bundle_index", False, index_error))
+        checks.append(_verification_check("bundle_index.record", "bundle_index", False, index_error))
+    else:
+        checks.append(_verification_check("bundle_index.valid", "bundle_index", True, "Bundle index is valid"))
+        record_exists = index_record is not None
+        checks.append(
+            _verification_check(
+                "bundle_index.record",
+                "bundle_index",
+                record_exists,
+                "Bundle index entry exists" if record_exists else "Bundle index entry missing",
+            )
+        )
+        if record_exists and manifest_payload is not None:
+            record_matches = all(
+                index_record.get(key) == expected
+                for key, expected in (
+                    ("bundle_input_fingerprint", manifest_payload["bundle_input_fingerprint"]),
+                    ("manifest_path", _bundle_manifest_path(project_root, bundle_fingerprint).relative_to(project_root).as_posix()),
+                    ("section_ids", manifest_payload["section_ids"]),
+                    ("execution_status", manifest_payload["execution_status"]),
+                    ("stopped_early", manifest_payload["stopped_early"]),
+                    ("first_failing_section", manifest_payload["first_failing_section"]),
+                )
+            )
+            checks.append(
+                _verification_check(
+                    "bundle_index.match",
+                    "bundle_index",
+                    record_matches,
+                    "Bundle index entry matches manifest" if record_matches else "Bundle index entry does not match manifest",
+                )
+            )
+
+    if manifest_payload is not None:
+        sections = list(manifest_payload["sections"])
+        fail_fast_ok = True
+        if manifest_payload["execution_status"] == "failed" and manifest_payload["stopped_early"] is True:
+            first_failing_section = manifest_payload.get("first_failing_section")
+            if first_failing_section not in manifest_payload["section_ids"]:
+                fail_fast_ok = False
+            else:
+                expected_prefix = manifest_payload["section_ids"][: manifest_payload["section_ids"].index(first_failing_section) + 1]
+                fail_fast_ok = [entry["section_id"] for entry in sections] == expected_prefix
+        checks.append(
+            _verification_check(
+                "bundle_manifest.fail_fast",
+                "bundle_manifest",
+                fail_fast_ok,
+                "Bundle fail-fast semantics are coherent" if fail_fast_ok else "Bundle fail-fast semantics are incoherent",
+            )
+        )
+        for section_record in sections:
+            section_id = section_record["section_id"]
+            artifact_label = f"section:{section_id}"
+            execution_artifact_path = project_root / section_record["execution_artifact_path"]
+            if not execution_artifact_path.exists():
+                checks.append(_verification_check(f"bundle_section.{section_id}.execution", artifact_label, False, "Execution artifact missing"))
+                continue
+            try:
+                execution_payload = load_section_execution_artifact(project_root, section_id)
+                audit_manifest = execution_payload["prepared_plan_audit_manifest"]
+                prepared_plan_payload = load_prepared_section_plan_artifact(project_root, section_id)
+                prepared_plan_fingerprint = compute_json_payload_fingerprint(prepared_plan_payload)
+                prepared_plan_match = section_record.get("prepared_plan_fingerprint") == prepared_plan_fingerprint == audit_manifest.get("prepared_plan_fingerprint")
+                audit_match = section_record.get("prepared_plan_audit_fingerprint") == execution_payload.get("prepared_plan_audit_fingerprint")
+                binding_match = section_record.get("binding_fingerprint") == audit_manifest.get("binding_fingerprint") == prepared_plan_payload.get("binding_fingerprint")
+                lineage_match = section_record.get("approval_lineage_fingerprint") == audit_manifest.get("approval_lineage_fingerprint") == prepared_plan_payload.get("approval_lineage_fingerprint")
+                checks.append(_verification_check(f"bundle_section.{section_id}.prepared_plan", artifact_label, prepared_plan_match, "Prepared plan fingerprint matches section linkage" if prepared_plan_match else "Prepared plan fingerprint mismatch"))
+                checks.append(_verification_check(f"bundle_section.{section_id}.audit", artifact_label, audit_match, "Prepared-plan audit fingerprint matches section linkage" if audit_match else "Prepared-plan audit fingerprint mismatch"))
+                checks.append(_verification_check(f"bundle_section.{section_id}.binding", artifact_label, binding_match, "Binding fingerprint matches section linkage" if binding_match else "Binding fingerprint mismatch"))
+                checks.append(_verification_check(f"bundle_section.{section_id}.lineage", artifact_label, lineage_match, "Approval lineage fingerprint matches section linkage" if lineage_match else "Approval lineage fingerprint mismatch"))
+            except Exception as exc:
+                checks.append(_verification_check(f"bundle_section.{section_id}.prepared_plan", artifact_label, False, str(exc)))
+                checks.append(_verification_check(f"bundle_section.{section_id}.audit", artifact_label, False, str(exc)))
+                checks.append(_verification_check(f"bundle_section.{section_id}.binding", artifact_label, False, str(exc)))
+                checks.append(_verification_check(f"bundle_section.{section_id}.lineage", artifact_label, False, str(exc)))
+
+    return _verification_report("bundle", bundle_fingerprint, checks)
+
+
 def _bundle_section_record(
     *,
     project_root: Path,

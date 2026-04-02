@@ -13,6 +13,8 @@ from aether.dgce.execute_api import (
     get_bundle_index_records_for_section,
     get_section_provenance,
     load_bundle_execution_manifest,
+    verify_bundle_artifact_chain,
+    verify_section_artifact_chain,
 )
 from aether.dgce.path_utils import resolve_workspace_path
 from aether.dgce.prepare_api import prepare_section_execution
@@ -160,3 +162,21 @@ def get_dgce_section_provenance(section_id: str, workspace_path: str = Query(...
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/dgce/sections/{section_id}/verify")
+def verify_dgce_section(section_id: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return verify_section_artifact_chain(project_root, section_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/dgce/bundles/{bundle_fingerprint}/verify")
+def verify_dgce_bundle(bundle_fingerprint: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return verify_bundle_artifact_chain(project_root, bundle_fingerprint)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
