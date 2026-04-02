@@ -347,6 +347,18 @@ def _execute_bundle(client: TestClient, project_root: Path, section_ids: list[st
     )
 
 
+def _bundle_manifest_payload(project_root: Path) -> dict:
+    bundle_paths = sorted((project_root / ".dce" / "execution" / "bundles").glob("*.json"))
+    assert len(bundle_paths) == 1
+    return json.loads(bundle_paths[0].read_text(encoding="utf-8"))
+
+
+def _bundle_manifest_bytes(project_root: Path) -> bytes:
+    bundle_paths = sorted((project_root / ".dce" / "execution" / "bundles").glob("*.json"))
+    assert len(bundle_paths) == 1
+    return bundle_paths[0].read_bytes()
+
+
 def _realign_preview_fingerprint_after_stale_gate(project_root: Path) -> str:
     approval_path = project_root / ".dce" / "approvals" / "mission-board.approval.json"
     preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
@@ -426,6 +438,43 @@ class TestDGCEExecuteAPI:
             "stopped_early": False,
         }
         assert executed_sections == ["alpha-section", "mission-board"]
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        assert bundle_manifest["section_ids"] == ["alpha-section", "mission-board"]
+        assert [entry["section_id"] for entry in bundle_manifest["sections"]] == ["alpha-section", "mission-board"]
+        assert bundle_manifest["execution_status"] == "success"
+        assert bundle_manifest["stopped_early"] is False
+        assert bundle_manifest["first_failing_section"] is None
+        assert bundle_manifest["bundle_input_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(
+            {"section_ids": ["alpha-section", "mission-board"]}
+        )
+        bundle_core = {
+            key: value
+            for key, value in bundle_manifest.items()
+            if key != "bundle_fingerprint"
+        }
+        assert bundle_manifest["bundle_fingerprint"] == dgce_decompose.compute_json_payload_fingerprint(bundle_core)
+        alpha_execution = json.loads((project_root / ".dce" / "execution" / "alpha-section.execution.json").read_text(encoding="utf-8"))
+        mission_execution = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
+        assert bundle_manifest["sections"] == [
+            {
+                "approval_lineage_fingerprint": alpha_execution["prepared_plan_audit_manifest"]["approval_lineage_fingerprint"],
+                "binding_fingerprint": alpha_execution["prepared_plan_audit_manifest"]["binding_fingerprint"],
+                "execution_artifact_path": ".dce/execution/alpha-section.execution.json",
+                "prepared_plan_audit_fingerprint": alpha_execution["prepared_plan_audit_fingerprint"],
+                "prepared_plan_fingerprint": alpha_execution["prepared_plan_audit_manifest"]["prepared_plan_fingerprint"],
+                "section_id": "alpha-section",
+                "status": "success",
+            },
+            {
+                "approval_lineage_fingerprint": mission_execution["prepared_plan_audit_manifest"]["approval_lineage_fingerprint"],
+                "binding_fingerprint": mission_execution["prepared_plan_audit_manifest"]["binding_fingerprint"],
+                "execution_artifact_path": ".dce/execution/mission-board.execution.json",
+                "prepared_plan_audit_fingerprint": mission_execution["prepared_plan_audit_fingerprint"],
+                "prepared_plan_fingerprint": mission_execution["prepared_plan_audit_manifest"]["prepared_plan_fingerprint"],
+                "section_id": "mission-board",
+                "status": "success",
+            },
+        ]
 
     def test_execute_bundle_stops_immediately_on_first_failure(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_fail_fast")
@@ -456,6 +505,22 @@ class TestDGCEExecuteAPI:
             "stopped_early": True,
         }
         assert (project_root / ".dce" / "execution" / "alpha-section.execution.json").exists() is False
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        assert bundle_manifest["execution_status"] == "failed"
+        assert bundle_manifest["stopped_early"] is True
+        assert bundle_manifest["first_failing_section"] == "mission-board"
+        assert bundle_manifest["section_ids"] == ["mission-board", "alpha-section"]
+        assert bundle_manifest["sections"] == [
+            {
+                "approval_lineage_fingerprint": None,
+                "binding_fingerprint": None,
+                "execution_artifact_path": ".dce/execution/mission-board.execution.json",
+                "prepared_plan_audit_fingerprint": None,
+                "prepared_plan_fingerprint": None,
+                "section_id": "mission-board",
+                "status": "failed",
+            }
+        ]
 
     def test_execute_bundle_rejects_duplicate_section_ids(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_duplicates")
@@ -713,6 +778,48 @@ class TestDGCEExecuteAPI:
         assert (first_root / ".dce" / "execution" / "mission-board.execution.json").read_bytes() == (
             second_root / ".dce" / "execution" / "mission-board.execution.json"
         ).read_bytes()
+        assert _bundle_manifest_bytes(first_root) == _bundle_manifest_bytes(second_root)
+
+    def test_execute_bundle_order_changes_bundle_input_fingerprint(self, monkeypatch):
+        first_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_fingerprint_order_one")
+        second_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_fingerprint_order_two")
+        for project_root in (first_root, second_root):
+            run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+            _mark_section_ready(project_root)
+            _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            _prepare_section(client, project_root, "alpha-section")
+            _prepare_section(client, project_root, "mission-board")
+
+        assert _execute_bundle(client, first_root, ["alpha-section", "mission-board"]).status_code == 200
+        assert _execute_bundle(client, second_root, ["mission-board", "alpha-section"]).status_code == 200
+
+        first_manifest = _bundle_manifest_payload(first_root)
+        second_manifest = _bundle_manifest_payload(second_root)
+        assert first_manifest["bundle_input_fingerprint"] != second_manifest["bundle_input_fingerprint"]
+        assert first_manifest["section_ids"] == ["alpha-section", "mission-board"]
+        assert second_manifest["section_ids"] == ["mission-board", "alpha-section"]
+
+    def test_bundle_manifest_contains_only_references_and_fingerprints(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_manifest_shape")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        _mark_alpha_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "alpha-section")
+        _prepare_section(client, project_root, "mission-board")
+
+        response = _execute_bundle(client, project_root, ["alpha-section", "mission-board"])
+
+        assert response.status_code == 200
+        bundle_manifest = _bundle_manifest_payload(project_root)
+        serialized_manifest = json.dumps(bundle_manifest, indent=2, sort_keys=True)
+        assert "written_files" not in serialized_manifest
+        assert "execution_timestamp" not in serialized_manifest
+        assert "\"approval_lineage\":" not in serialized_manifest
+        assert "\"binding\":" not in serialized_manifest
+        assert "prepared_plan_audit_manifest" not in serialized_manifest
 
     def test_execute_materializes_only_owned_expected_target_files(self, monkeypatch):
         project_root = _build_owned_workspace(monkeypatch, "dgce_execute_api_owned_materialization")

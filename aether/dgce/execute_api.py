@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,100 @@ def _prepared_plan_relative_path(section_id: str) -> str:
 
 def _execution_artifact_path(project_root: Path, section_id: str) -> Path:
     return project_root / ".dce" / "execution" / f"{section_id}.execution.json"
+
+
+def _execution_artifact_relative_path(section_id: str) -> str:
+    return f".dce/execution/{section_id}.execution.json"
+
+
+def _bundle_input_fingerprint(section_ids: list[str]) -> str:
+    ordered_payload = {"section_ids": section_ids}
+    ordered_bytes = (json.dumps(ordered_payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return hashlib.sha256(ordered_bytes).hexdigest()
+
+
+def _bundle_manifest_core_payload(
+    *,
+    section_ids: list[str],
+    execution_status: str,
+    stopped_early: bool,
+    first_failing_section: str | None,
+    sections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "artifact_type": "bundle_execution_audit_manifest",
+        "bundle_input_fingerprint": _bundle_input_fingerprint(section_ids),
+        "execution_status": execution_status,
+        "first_failing_section": first_failing_section,
+        "generated_by": "DGCE",
+        "schema_version": "1.0",
+        "section_ids": section_ids,
+        "sections": sections,
+        "stopped_early": stopped_early,
+    }
+
+
+def _bundle_manifest_path(project_root: Path, bundle_fingerprint: str) -> Path:
+    return project_root / ".dce" / "execution" / "bundles" / f"{bundle_fingerprint}.json"
+
+
+def _bundle_section_record(
+    *,
+    project_root: Path,
+    section_id: str,
+    status: str,
+) -> dict[str, Any]:
+    execution_artifact_path = _execution_artifact_relative_path(section_id)
+    if status != "success":
+        return {
+            "approval_lineage_fingerprint": None,
+            "binding_fingerprint": None,
+            "execution_artifact_path": execution_artifact_path,
+            "prepared_plan_audit_fingerprint": None,
+            "prepared_plan_fingerprint": None,
+            "section_id": section_id,
+            "status": status,
+        }
+
+    execution_artifact = json.loads(_execution_artifact_path(project_root, section_id).read_text(encoding="utf-8"))
+    if not isinstance(execution_artifact, dict):
+        raise ValueError(f"Bundle audit manifest requires valid execution artifact: {section_id}")
+    prepared_plan_audit_manifest = execution_artifact.get("prepared_plan_audit_manifest")
+    if not isinstance(prepared_plan_audit_manifest, dict):
+        raise ValueError(f"Bundle audit manifest requires valid prepared-plan audit manifest: {section_id}")
+    return {
+        "approval_lineage_fingerprint": prepared_plan_audit_manifest.get("approval_lineage_fingerprint"),
+        "binding_fingerprint": prepared_plan_audit_manifest.get("binding_fingerprint"),
+        "execution_artifact_path": execution_artifact_path,
+        "prepared_plan_audit_fingerprint": execution_artifact.get("prepared_plan_audit_fingerprint"),
+        "prepared_plan_fingerprint": prepared_plan_audit_manifest.get("prepared_plan_fingerprint"),
+        "section_id": section_id,
+        "status": status,
+    }
+
+
+def _persist_bundle_execution_audit_manifest(
+    *,
+    project_root: Path,
+    section_ids: list[str],
+    section_records: list[dict[str, Any]],
+    execution_status: str,
+    stopped_early: bool,
+    first_failing_section: str | None,
+) -> None:
+    core_payload = _bundle_manifest_core_payload(
+        section_ids=section_ids,
+        execution_status=execution_status,
+        stopped_early=stopped_early,
+        first_failing_section=first_failing_section,
+        sections=section_records,
+    )
+    bundle_fingerprint = compute_json_payload_fingerprint(core_payload)
+    manifest_payload = {
+        **core_payload,
+        "bundle_fingerprint": bundle_fingerprint,
+    }
+    _write_json(_bundle_manifest_path(project_root, bundle_fingerprint), manifest_payload)
 
 
 def _build_prepared_plan_audit_manifest(
@@ -205,6 +300,7 @@ def execute_prepared_section_bundle(
     *,
     rerun: bool = False,
 ) -> tuple[dict[str, Any], int]:
+    project_root = resolve_workspace_path(workspace_path)
     if not section_ids:
         return (
             {
@@ -240,6 +336,7 @@ def execute_prepared_section_bundle(
         )
 
     section_results: list[dict[str, Any]] = []
+    section_records: list[dict[str, Any]] = []
     for section_id in section_ids:
         try:
             result = execute_prepared_section(workspace_path, section_id, rerun=rerun)
@@ -250,6 +347,15 @@ def execute_prepared_section_bundle(
                     "status": "failed",
                     "detail": str(exc),
                 }
+            )
+            section_records.append(_bundle_section_record(project_root=project_root, section_id=section_id, status="failed"))
+            _persist_bundle_execution_audit_manifest(
+                project_root=project_root,
+                section_ids=section_ids,
+                section_records=section_records,
+                execution_status="failed",
+                stopped_early=True,
+                first_failing_section=section_id,
             )
             return (
                 {
@@ -268,6 +374,15 @@ def execute_prepared_section_bundle(
                     "detail": str(exc),
                 }
             )
+            section_records.append(_bundle_section_record(project_root=project_root, section_id=section_id, status="failed"))
+            _persist_bundle_execution_audit_manifest(
+                project_root=project_root,
+                section_ids=section_ids,
+                section_records=section_records,
+                execution_status="failed",
+                stopped_early=True,
+                first_failing_section=section_id,
+            )
             return (
                 {
                     "status": "failed",
@@ -278,7 +393,16 @@ def execute_prepared_section_bundle(
                 400,
             )
         section_results.append(result)
+        section_records.append(_bundle_section_record(project_root=project_root, section_id=section_id, status="success"))
 
+    _persist_bundle_execution_audit_manifest(
+        project_root=project_root,
+        section_ids=section_ids,
+        section_records=section_records,
+        execution_status="success",
+        stopped_early=False,
+        first_failing_section=None,
+    )
     return (
         {
             "status": "ok",
