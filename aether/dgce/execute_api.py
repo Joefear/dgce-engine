@@ -22,6 +22,7 @@ from aether.dgce.incremental import (
     scan_workspace_file_paths,
 )
 from aether.dgce.path_utils import resolve_workspace_path
+from aether.dgce.plan_api import _load_section_dependencies
 from aether.dgce.prepare_api import (
     _compute_prepared_plan_approval_lineage,
     _compute_prepared_plan_binding,
@@ -31,6 +32,28 @@ from aether.dgce.prepare_api import (
     load_prepared_section_plan_artifact,
     prepare_section_execution,
 )
+
+
+def _validate_planned_dependency_order(
+    project_root: Path,
+    section_ids: list[str],
+    planned_order: list[str] | None,
+    *,
+    verify_dependencies: bool,
+) -> None:
+    if verify_dependencies is not True:
+        return
+    if planned_order is None:
+        raise ValueError("Bundle verify_dependencies requires planned_order")
+
+    planned_positions = {section_id: index for index, section_id in enumerate(planned_order)}
+    section_id_set = set(section_ids)
+    for section_id in section_ids:
+        for dependency in _load_section_dependencies(project_root, section_id):
+            if dependency not in section_id_set:
+                raise ValueError(f"Bundle planned_order dependency missing from section_ids: {dependency} -> {section_id}")
+            if planned_positions[dependency] >= planned_positions[section_id]:
+                raise ValueError(f"Bundle planned_order violates dependency order: {dependency} -> {section_id}")
 
 
 def _approval_payload(project_root: Path, section_id: str) -> dict[str, Any]:
@@ -1145,6 +1168,7 @@ def execute_prepared_section_bundle(
     section_ids: list[str],
     *,
     planned_order: list[str] | None = None,
+    verify_dependencies: bool = False,
     rerun: bool = False,
 ) -> tuple[dict[str, Any], int]:
     project_root = resolve_workspace_path(workspace_path)
@@ -1231,6 +1255,24 @@ def execute_prepared_section_bundle(
             )
         execution_order = list(planned_order)
         order_source = "planned_order"
+    try:
+        _validate_planned_dependency_order(
+            project_root,
+            section_ids,
+            planned_order,
+            verify_dependencies=verify_dependencies,
+        )
+    except ValueError as exc:
+        return (
+            {
+                "status": "failed",
+                "section_results": [],
+                "first_failing_section": None,
+                "stopped_early": True,
+                "detail": str(exc),
+            },
+            400,
+        )
 
     section_results: list[dict[str, Any]] = []
     section_records: list[dict[str, Any]] = []

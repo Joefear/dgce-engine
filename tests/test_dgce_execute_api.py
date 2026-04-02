@@ -351,6 +351,25 @@ def _mark_alpha_ready(project_root: Path, *, selected_mode: str = "create_only")
     )
 
 
+def _mark_section_id_ready(project_root: Path, section_id: str, *, selected_mode: str = "create_only") -> None:
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode=selected_mode,
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_execution_gate(
+        project_root,
+        section_id,
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+
 def _prepare_section(client: TestClient, project_root: Path, section_id: str = "mission-board") -> dict:
     response = client.post(
         f"/v1/dgce/sections/{section_id}/prepare",
@@ -367,11 +386,13 @@ def _execute_bundle(
     section_ids: list[str],
     *,
     planned_order: list[str] | None = None,
+    verify_dependencies: bool = False,
     rerun: bool = False,
 ):
     payload: dict[str, object] = {
         "workspace_path": str(project_root),
         "section_ids": section_ids,
+        "verify_dependencies": verify_dependencies,
         "rerun": rerun,
     }
     if planned_order is not None:
@@ -1001,6 +1022,273 @@ class TestDGCEExecuteAPI:
         assert manifest["input_section_ids"] == ["mission-board", "alpha-section"]
         assert manifest["effective_execution_order"] == ["alpha-section", "mission-board"]
         assert manifest["order_source"] == "planned_order"
+
+    def test_execute_bundle_with_verify_dependencies_accepts_valid_planned_order(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_valid",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+        _mark_section_id_ready(project_root, "section-a")
+        _mark_section_id_ready(project_root, "section-b")
+        _prepare_section(client, project_root, "section-a")
+        _prepare_section(client, project_root, "section-b")
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-b", "section-a"],
+            planned_order=["section-a", "section-b"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+
+    def test_execute_bundle_with_verify_dependencies_rejects_invalid_dependency_order(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_invalid_order",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-b", "section-a"],
+            planned_order=["section-b", "section-a"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle planned_order violates dependency order: section-a -> section-b",
+        }
+
+    def test_execute_bundle_with_verify_dependencies_rejects_missing_dependency_in_section_ids(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_missing_dependency",
+            [
+                _dependency_section("section-a", dependencies=["section-missing"]),
+                _dependency_section("section-b"),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-a", "section-b"],
+            planned_order=["section-a", "section-b"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle planned_order dependency missing from section_ids: section-missing -> section-a",
+        }
+
+    def test_execute_bundle_with_verify_dependencies_requires_planned_order(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_requires_planned",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-b", "section-a"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [],
+            "first_failing_section": None,
+            "stopped_early": True,
+            "detail": "Bundle verify_dependencies requires planned_order",
+        }
+
+    def test_execute_bundle_with_verify_dependencies_false_preserves_existing_behavior(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_false",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-b", "section-a"],
+            planned_order=["section-b", "section-a"],
+            verify_dependencies=False,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "status": "failed",
+            "section_results": [
+                {
+                    "section_id": "section-b",
+                    "status": "failed",
+                    "detail": "Section is not eligible for execution: section-b",
+                }
+            ],
+            "first_failing_section": "section-b",
+            "stopped_early": True,
+        }
+
+    def test_execute_bundle_with_verify_dependencies_still_follows_planned_order_exactly(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_exact_order",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+        _mark_section_id_ready(project_root, "section-a")
+        _mark_section_id_ready(project_root, "section-b")
+        _prepare_section(client, project_root, "section-a")
+        _prepare_section(client, project_root, "section-b")
+
+        original_execute_prepared_section = dgce_execute_api.execute_prepared_section
+        executed_sections: list[str] = []
+
+        def record_bundle_order(workspace_path, section_id, *, rerun=False):
+            executed_sections.append(section_id)
+            return original_execute_prepared_section(workspace_path, section_id, rerun=rerun)
+
+        monkeypatch.setattr("aether.dgce.execute_api.execute_prepared_section", record_bundle_order)
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-b", "section-a"],
+            planned_order=["section-a", "section-b"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 200
+        assert executed_sections == ["section-a", "section-b"]
+
+    def test_execute_bundle_with_verify_dependencies_preserves_fail_fast_behavior(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_verify_dependencies_fail_fast")
+        run_section_with_workspace(_alpha_section(), project_root, incremental_mode="incremental_v2_2")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root, "mission-board")
+
+        first_response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+        assert first_response.status_code == 200
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["mission-board", "alpha-section"],
+            planned_order=["mission-board", "alpha-section"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["first_failing_section"] == "mission-board"
+        assert response.json()["stopped_early"] is True
+
+    def test_execute_bundle_with_verify_dependencies_is_deterministic(self, monkeypatch):
+        first_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_repeat_one",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        second_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_repeat_two",
+            [
+                _dependency_section("section-a"),
+                _dependency_section("section-b", dependencies=["section-a"]),
+            ],
+        )
+        client = TestClient(create_app())
+        for project_root in (first_root, second_root):
+            _mark_section_id_ready(project_root, "section-a")
+            _mark_section_id_ready(project_root, "section-b")
+            _prepare_section(client, project_root, "section-a")
+            _prepare_section(client, project_root, "section-b")
+
+        first_response = _execute_bundle(
+            client,
+            first_root,
+            ["section-b", "section-a"],
+            planned_order=["section-a", "section-b"],
+            verify_dependencies=True,
+        )
+        second_response = _execute_bundle(
+            client,
+            second_root,
+            ["section-b", "section-a"],
+            planned_order=["section-a", "section-b"],
+            verify_dependencies=True,
+        )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.json() == second_response.json()
+        assert first_response.content == second_response.content
+
+    def test_execute_bundle_with_verify_dependencies_does_not_widen_section_set(self, monkeypatch):
+        project_root = _build_dependency_workspace(
+            monkeypatch,
+            "dgce_execute_api_bundle_verify_dependencies_no_widen",
+            [
+                _dependency_section("section-a", dependencies=["section-missing"]),
+                _dependency_section("section-b"),
+                _dependency_section("section-missing"),
+            ],
+        )
+        client = TestClient(create_app())
+
+        response = _execute_bundle(
+            client,
+            project_root,
+            ["section-a", "section-b"],
+            planned_order=["section-a", "section-b"],
+            verify_dependencies=True,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Bundle planned_order dependency missing from section_ids: section-missing -> section-a"
 
     def test_execute_bundle_rejects_unknown_section_id(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_bundle_unknown")

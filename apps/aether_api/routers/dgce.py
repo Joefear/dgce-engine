@@ -49,6 +49,7 @@ class SectionBundleExecutionRequest(BaseModel):
     workspace_path: str
     section_ids: list[str]
     planned_order: list[Any] | None = None
+    verify_dependencies: bool = False
     rerun: bool = False
 
 
@@ -125,6 +126,7 @@ def execute_dgce_section_bundle(payload: SectionBundleExecutionRequest):
         payload.workspace_path,
         payload.section_ids,
         planned_order=payload.planned_order,
+        verify_dependencies=payload.verify_dependencies,
         rerun=payload.rerun,
     )
     return JSONResponse(status_code=status_code, content=result)
