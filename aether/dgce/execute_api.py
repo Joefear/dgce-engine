@@ -618,6 +618,97 @@ def verify_bundle_artifact_chain(project_root: Path, bundle_fingerprint: str) ->
     return _verification_report("bundle", bundle_fingerprint, checks)
 
 
+def get_section_operator_summary(project_root: Path, section_id: str) -> dict[str, Any]:
+    approval_path = project_root / _approval_artifact_relative_path(section_id)
+    prepared_plan_path = project_root / prepare_api_prepared_plan_relative_path(section_id)
+    execution_path = _execution_artifact_path(project_root, section_id)
+    bundle_records = get_bundle_index_records_for_section(project_root, section_id)
+    if not (approval_path.exists() or prepared_plan_path.exists() or execution_path.exists() or bundle_records):
+        raise FileNotFoundError(f"Section provenance not found: {section_id}")
+
+    verification = verify_section_artifact_chain(project_root, section_id)
+    try:
+        provenance = get_section_provenance(project_root, section_id)
+    except ValueError:
+        approval = {
+            "approval_path": None,
+            "approval_status": None,
+            "selected_mode": None,
+            "execution_permitted": None,
+        }
+        if approval_path.exists():
+            try:
+                approval_payload = load_section_approval_artifact(project_root, section_id)
+                approval = {
+                    "approval_path": _approval_artifact_relative_path(section_id),
+                    "approval_status": approval_payload.get("approval_status"),
+                    "selected_mode": approval_payload.get("selected_mode"),
+                    "execution_permitted": approval_payload.get("execution_permitted"),
+                }
+            except ValueError:
+                approval["approval_path"] = _approval_artifact_relative_path(section_id)
+        provenance = {
+            "section_id": section_id,
+            "approval": approval,
+            "prepared_plan": {
+                "approval_lineage_fingerprint": None,
+                "binding_fingerprint": None,
+                "prepared_plan_fingerprint": None,
+                "prepared_plan_path": _prepared_plan_relative_path(section_id) if prepared_plan_path.exists() else None,
+            },
+            "execution": {
+                "execution_artifact_path": _execution_artifact_relative_path(section_id) if execution_path.exists() else None,
+                "execution_status": None,
+                "prepared_plan_audit_fingerprint": None,
+                "prepared_plan_cross_link_fingerprint": None,
+                "written_files": None,
+            },
+            "bundle_references": bundle_records,
+        }
+
+    written_files = provenance["execution"]["written_files"]
+    written_file_paths = (
+        [str(entry["path"]) for entry in written_files if isinstance(entry, dict) and isinstance(entry.get("path"), str)]
+        if isinstance(written_files, list)
+        else []
+    )
+    bundle_references = [
+        {
+            "bundle_fingerprint": record["bundle_fingerprint"],
+            "execution_status": record["execution_status"],
+        }
+        for record in provenance["bundle_references"]
+    ]
+    failing_check_ids = [
+        check["check_id"]
+        for check in verification["checks"]
+        if check["status"] == "fail"
+    ]
+    return {
+        "section_id": section_id,
+        "approval_present": provenance["approval"]["approval_path"] is not None,
+        "approval_status": provenance["approval"]["approval_status"],
+        "selected_mode": provenance["approval"]["selected_mode"],
+        "execution_permitted": provenance["approval"]["execution_permitted"],
+        "prepared_plan_present": provenance["prepared_plan"]["prepared_plan_path"] is not None,
+        "prepared_plan_fingerprint": provenance["prepared_plan"]["prepared_plan_fingerprint"],
+        "binding_fingerprint": provenance["prepared_plan"]["binding_fingerprint"],
+        "approval_lineage_fingerprint": provenance["prepared_plan"]["approval_lineage_fingerprint"],
+        "execution_present": provenance["execution"]["execution_artifact_path"] is not None,
+        "execution_status": provenance["execution"]["execution_status"],
+        "execution_artifact_path": provenance["execution"]["execution_artifact_path"],
+        "prepared_plan_audit_fingerprint": provenance["execution"]["prepared_plan_audit_fingerprint"],
+        "prepared_plan_cross_link_fingerprint": provenance["execution"]["prepared_plan_cross_link_fingerprint"],
+        "written_files_count": len(written_file_paths),
+        "written_file_paths": written_file_paths,
+        "provenance_verified": verification["verified"],
+        "verification_failure_count": verification["failure_count"],
+        "failing_check_ids": failing_check_ids,
+        "bundle_count": len(bundle_references),
+        "bundle_references": bundle_references,
+    }
+
+
 def _bundle_section_record(
     *,
     project_root: Path,
