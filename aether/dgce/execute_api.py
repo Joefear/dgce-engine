@@ -805,6 +805,37 @@ def get_section_operator_overview(project_root: Path, section_id: str) -> dict[s
     }
 
 
+def get_bundle_operator_overview(project_root: Path, bundle_fingerprint: str) -> dict[str, Any]:
+    summary = get_bundle_operator_summary(project_root, bundle_fingerprint)
+    return {
+        "bundle_fingerprint": summary["bundle_fingerprint"],
+        "bundle_input_fingerprint": summary["bundle_input_fingerprint"],
+        "execution_status": summary["execution_status"],
+        "stopped_early": summary["stopped_early"],
+        "first_failing_section": summary["first_failing_section"],
+        "section_count": summary["section_count"],
+        "section_ids": list(summary["section_ids"]),
+        "bundle_verified": summary["bundle_verified"],
+        "verification_failure_count": summary["verification_failure_count"],
+        "failing_check_ids": list(summary["failing_check_ids"]),
+        "manifest_path": summary["manifest_path"],
+        "index_present": summary["index_present"],
+        "sections": [
+            {
+                "section_id": section["section_id"],
+                "status": section["status"],
+                "execution_artifact_path": section["execution_artifact_path"],
+                "prepared_plan_fingerprint": section["prepared_plan_fingerprint"],
+                "prepared_plan_audit_fingerprint": section["prepared_plan_audit_fingerprint"],
+            }
+            for section in summary["sections"]
+        ],
+        "is_complete_success": bool(summary["execution_status"] == "success" and summary["stopped_early"] is False),
+        "has_failures": bool(summary["execution_status"] == "failed"),
+        "has_verification_issues": bool(summary["verification_failure_count"] > 0),
+    }
+
+
 def _bundle_section_record(
     *,
     project_root: Path,
