@@ -873,6 +873,34 @@ def get_section_operator_dashboard(project_root: Path, section_id: str) -> dict[
     }
 
 
+def get_bundle_operator_dashboard(project_root: Path, bundle_fingerprint: str) -> dict[str, Any]:
+    overview = get_bundle_operator_overview(project_root, bundle_fingerprint)
+    if overview["verification_failure_count"] > 0:
+        health_status = "error"
+    elif overview["execution_status"] == "success" and overview["stopped_early"] is False:
+        health_status = "healthy"
+    else:
+        health_status = "warning"
+    return {
+        "bundle_fingerprint": overview["bundle_fingerprint"],
+        "bundle_input_fingerprint": overview["bundle_input_fingerprint"],
+        "health_status": health_status,
+        "bundle_verified": overview["bundle_verified"],
+        "verification_failure_count": overview["verification_failure_count"],
+        "alert_check_ids": list(overview["failing_check_ids"]),
+        "execution_status": overview["execution_status"],
+        "stopped_early": overview["stopped_early"],
+        "first_failing_section": overview["first_failing_section"],
+        "section_count": overview["section_count"],
+        "is_complete_success": overview["is_complete_success"],
+        "has_failures": overview["has_failures"],
+        "manifest_path": overview["manifest_path"],
+        "index_present": overview["index_present"],
+        "sections": list(overview["sections"]),
+        "has_verification_issues": overview["has_verification_issues"],
+    }
+
+
 def _bundle_section_record(
     *,
     project_root: Path,

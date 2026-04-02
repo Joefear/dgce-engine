@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from aether.dgce import DGCESection, run_section
 from aether.dgce.approve_api import approve_section_execution
 from aether.dgce.execute_api import (
+    get_bundle_operator_dashboard,
     execute_prepared_section,
     execute_prepared_section_bundle,
     get_bundle_index_records_by_input_fingerprint,
@@ -234,5 +235,14 @@ def get_dgce_bundle_overview(bundle_fingerprint: str, workspace_path: str = Quer
     try:
         project_root = resolve_workspace_path(workspace_path)
         return get_bundle_operator_overview(project_root, bundle_fingerprint)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/dgce/bundles/{bundle_fingerprint}/dashboard")
+def get_dgce_bundle_dashboard(bundle_fingerprint: str, workspace_path: str = Query(...)) -> dict:
+    try:
+        project_root = resolve_workspace_path(workspace_path)
+        return get_bundle_operator_dashboard(project_root, bundle_fingerprint)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
