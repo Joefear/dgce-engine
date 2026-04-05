@@ -33,6 +33,7 @@ from aether.dgce.execution_failure import (
     classify_function_stub_execution_failure,
 )
 from aether.dgce.execution_timing import build_execution_timing, duration_ms
+from aether.dgce.function_stub_canonicalizer import canonicalize_function_stub_output
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_execution_basis import (
     assert_function_stub_model_execution_basis_consistent,
@@ -820,6 +821,7 @@ def run_section_with_workspace(
             validation_start_ns = time.perf_counter_ns()
             validated_output = validate_function_stub(raw_output, structured_input)
             validation_duration_ms = duration_ms(validation_start_ns, time.perf_counter_ns())
+            validated_output = canonicalize_function_stub_output(validated_output)
         except ValueError as exc:
             total_model_path_duration_ms = duration_ms(total_model_path_start_ns, time.perf_counter_ns())
             if validation_start_ns is not None and validation_duration_ms is None:

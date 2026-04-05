@@ -19,6 +19,7 @@ from aether.dgce.execution_fingerprint import (
 )
 from aether.dgce.execution_failure import classify_function_stub_execution_failure
 from aether.dgce.execution_timing import build_execution_timing
+from aether.dgce.function_stub_canonicalizer import canonicalize_function_stub_output
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_execution_basis import (
     assert_function_stub_model_execution_basis_consistent,
@@ -388,6 +389,27 @@ def test_determine_function_stub_write_idempotence_status_is_deterministic():
     ) == "existing_content_match"
 
 
+def test_execution_fingerprinting_and_idempotence_use_canonical_content():
+    canonical = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n"
+    )
+    variant = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\r\n    return {}   \r\n\r\n"
+    )
+    assert canonical == variant
+    assert build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        canonical,
+    ) == build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        variant,
+    )
+
+
 def test_classify_function_stub_execution_failure_is_bounded():
     assert classify_function_stub_execution_failure(raw_output_obtained=False) == {
         "execution_failure_category": "provider_failure",
@@ -429,6 +451,22 @@ def test_build_execution_timing_is_bounded():
         "validation_duration_ms": 2.0,
         "total_model_path_duration_ms": 3.0,
     }
+
+
+def test_canonicalize_function_stub_output_is_deterministic():
+    assert canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\r\n    return {}   \r\n\r\n"
+    ) == "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n"
+
+
+def test_harmless_formatting_differences_normalize_to_same_canonical_content():
+    first = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n"
+    )
+    second = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\r\n    return {}   \r\n\r\n\r\n"
+    )
+    assert first == second
 
 
 def test_parse_function_stub_spec_normalizes_valid_input_deterministically():
@@ -903,3 +941,21 @@ def test_execute_prepared_function_stub_does_not_write_if_model_execution_basis_
     assert not (project_root / "src/function_stub.py").exists()
     assert not (project_root / ".dce/outputs/function-stub.json").exists()
     assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+
+
+def test_execute_prepared_function_stub_does_not_write_if_canonicalization_fails(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_canonicalization_failure")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose.canonicalize_function_stub_output",
+        lambda validated_output: (_ for _ in ()).throw(ValueError("canonicalization failed")),
+    )
+
+    with pytest.raises(ValueError, match="canonicalization failed"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "validation_failure"

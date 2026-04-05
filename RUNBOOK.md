@@ -64,6 +64,7 @@ python -m pytest tests/test_model_execution_slice.py
 - execution records may include bounded `provider_request_context`; it is audit-safe and excludes prompts, outputs, and secrets
 - execution records may include bounded `execution_timing` for the model path; this is not a full tracing or observability system
 - function-stub execution records include a bounded `model_execution_basis_fingerprint`; it is a consistency trace for the governed model path, not a prompt or payload log
+- validated function-stub output is canonicalized in a bounded way before fingerprinting and write; this is formatting normalization only, not semantic rewriting
 
 ## What NOT to do
 
