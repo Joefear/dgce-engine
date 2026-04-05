@@ -22,6 +22,7 @@ from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.prompt_templates import build_function_stub_prompt
+from aether.dgce.provider_request_context import build_provider_request_context
 from aether.dgce.providers import claude_provider
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.model_validator import validate_function_stub
@@ -136,6 +137,13 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
     assert execution_artifact["write_idempotence_status"] == "new_content"
     assert "execution_failure_category" not in execution_artifact
     assert "execution_failure_reason" not in execution_artifact
+    assert execution_artifact["provider_request_context"] == {
+        "provider": "stub",
+        "model_id": "stub-model-v1",
+        "prompt_template_version": "v1",
+        "temperature": 0.0,
+        "request_attempted": False,
+    }
 
 
 def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
@@ -311,6 +319,26 @@ def test_classify_function_stub_execution_failure_is_bounded():
     assert classify_function_stub_execution_failure(raw_output_obtained=True) == {
         "execution_failure_category": "validation_failure",
         "execution_failure_reason": "validator_rejected_output",
+    }
+
+
+def test_build_provider_request_context_is_audit_safe_and_bounded():
+    assert build_provider_request_context(
+        {
+            "provider": "claude",
+            "model_id": "claude-3-7-sonnet",
+            "prompt_template_version": "v1",
+            "temperature": 0.0,
+            "api_key": "secret-key",
+            "api_base_url": "https://example.invalid",
+        },
+        request_attempted=True,
+    ) == {
+        "provider": "claude",
+        "model_id": "claude-3-7-sonnet",
+        "prompt_template_version": "v1",
+        "temperature": 0.0,
+        "request_attempted": True,
     }
 
 
@@ -563,6 +591,9 @@ def test_execute_prepared_function_stub_does_not_write_on_validation_failure(mon
     execution_artifact = load_section_execution_artifact(project_root, "function-stub")
     assert execution_artifact["execution_failure_category"] == "validation_failure"
     assert execution_artifact["execution_failure_reason"] == "validator_rejected_output"
+    assert execution_artifact["provider_request_context"]["request_attempted"] is False
+    assert "api_key" not in json.dumps(execution_artifact)
+    assert "wrong_name" not in json.dumps(execution_artifact)
     assert execution_artifact.get("written_files") == []
 
 
@@ -589,6 +620,14 @@ def test_execute_prepared_function_stub_does_not_write_on_provider_config_failur
     execution_artifact = load_section_execution_artifact(project_root, "function-stub")
     assert execution_artifact["execution_failure_category"] == "provider_failure"
     assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
+    assert execution_artifact["provider_request_context"] == {
+        "provider": "claude",
+        "model_id": "claude-3-7-sonnet",
+        "prompt_template_version": "v1",
+        "temperature": 0.0,
+        "request_attempted": False,
+    }
+    assert "secret-key" not in json.dumps(execution_artifact)
 
 
 def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failure(monkeypatch):
@@ -619,6 +658,8 @@ def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failu
     execution_artifact = load_section_execution_artifact(project_root, "function-stub")
     assert execution_artifact["execution_failure_category"] == "provider_failure"
     assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
+    assert execution_artifact["provider_request_context"]["request_attempted"] is True
+    assert "secret-key" not in json.dumps(execution_artifact)
 
 
 def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure(monkeypatch):
@@ -638,6 +679,7 @@ def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure
     execution_artifact = load_section_execution_artifact(project_root, "function-stub")
     assert execution_artifact["execution_failure_category"] == "provider_failure"
     assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
+    assert execution_artifact["provider_request_context"]["request_attempted"] is False
 
 
 def test_execute_prepared_function_stub_records_deterministic_fingerprint_and_idempotence_on_repeat(monkeypatch):

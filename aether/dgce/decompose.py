@@ -35,6 +35,7 @@ from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.model_validator import validate_function_stub
+from aether.dgce.provider_request_context import build_provider_request_context
 from aether_core.classifier.rules import ClassifierRules
 from aether_core.classifier.service import ClassificationService
 from aether_core.itera.advisory import build_advisory
@@ -781,6 +782,7 @@ def run_section_with_workspace(
                 ownership_index=None,
             )
     model_execution = None
+    provider_request_context = None
     execution_content_fingerprint = None
     write_idempotence_status = None
     if require_preflight_pass and section.section_type == "function_stub":
@@ -791,9 +793,23 @@ def run_section_with_workspace(
         try:
             structured_input, target_path = _build_function_stub_structured_input(section, file_plan)
             model_config = get_model_execution_config()
+            provider_request_context = build_provider_request_context(
+                model_config,
+                request_attempted=False,
+            )
             raw_output = generate_function_stub(structured_input, model_config)
+            provider_request_context = build_provider_request_context(
+                model_config,
+                request_attempted=bool(model_config.get("provider") == "claude"),
+            )
             validated_output = validate_function_stub(raw_output, structured_input)
-        except ValueError:
+        except ValueError as exc:
+            request_attempted = bool(getattr(exc, "request_attempted", False))
+            if model_config is not None:
+                provider_request_context = build_provider_request_context(
+                    model_config,
+                    request_attempted=request_attempted or bool(raw_output is not None and model_config.get("provider") == "claude"),
+                )
             failure_metadata = build_execution_failure_metadata(
                 classify_function_stub_execution_failure(raw_output_obtained=raw_output is not None)
             )
@@ -806,6 +822,7 @@ def run_section_with_workspace(
                 execution_blocked=True,
                 write_transparency=write_transparency,
                 model_execution=build_model_execution_metadata(model_config) if model_config is not None else None,
+                provider_request_context=provider_request_context,
                 execution_failure_category=failure_metadata["execution_failure_category"],
                 execution_failure_reason=failure_metadata["execution_failure_reason"],
             )
@@ -881,6 +898,7 @@ def run_section_with_workspace(
         execution_blocked=False,
         write_transparency=write_transparency,
         model_execution=model_execution,
+        provider_request_context=provider_request_context,
         execution_content_fingerprint=execution_content_fingerprint,
         write_idempotence_status=write_idempotence_status,
     )
@@ -1126,6 +1144,7 @@ def record_section_execution_stamp(
     execution_blocked: bool = False,
     write_transparency: dict[str, Any] | None = None,
     model_execution: dict[str, Any] | None = None,
+    provider_request_context: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
     write_idempotence_status: str | None = None,
     execution_failure_category: str | None = None,
@@ -1143,6 +1162,7 @@ def record_section_execution_stamp(
         execution_blocked=execution_blocked,
         write_transparency=write_transparency or {},
         model_execution=model_execution,
+        provider_request_context=provider_request_context,
         execution_content_fingerprint=execution_content_fingerprint,
         write_idempotence_status=write_idempotence_status,
         execution_failure_category=execution_failure_category,
@@ -2065,6 +2085,24 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             _schema_error(artifact_name, "model_execution.temperature must be a float")
         _expect_str(_expect_required_field(model_payload, "postprocess", artifact_name), artifact_name, "model_execution.postprocess")
+    provider_request_context = artifact.get("provider_request_context")
+    if provider_request_context is not None:
+        request_payload = _expect_dict(provider_request_context, artifact_name, "provider_request_context")
+        _expect_str(_expect_required_field(request_payload, "provider", artifact_name), artifact_name, "provider_request_context.provider")
+        _expect_str(_expect_required_field(request_payload, "model_id", artifact_name), artifact_name, "provider_request_context.model_id")
+        _expect_str(
+            _expect_required_field(request_payload, "prompt_template_version", artifact_name),
+            artifact_name,
+            "provider_request_context.prompt_template_version",
+        )
+        request_temperature = _expect_required_field(request_payload, "temperature", artifact_name)
+        if not isinstance(request_temperature, (int, float)) or isinstance(request_temperature, bool):
+            _schema_error(artifact_name, "provider_request_context.temperature must be a float")
+        _expect_bool(
+            _expect_required_field(request_payload, "request_attempted", artifact_name),
+            artifact_name,
+            "provider_request_context.request_attempted",
+        )
     execution_content_fingerprint = artifact.get("execution_content_fingerprint")
     if execution_content_fingerprint is not None:
         _expect_str(execution_content_fingerprint, artifact_name, "execution_content_fingerprint")
@@ -3642,6 +3680,7 @@ def _build_execution_stamp_artifact(
     execution_blocked: bool,
     write_transparency: dict[str, Any],
     model_execution: dict[str, Any] | None = None,
+    provider_request_context: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
     write_idempotence_status: str | None = None,
     execution_failure_category: str | None = None,
@@ -3765,6 +3804,8 @@ def _build_execution_stamp_artifact(
     }
     if model_execution is not None:
         payload["model_execution"] = model_execution
+    if provider_request_context is not None:
+        payload["provider_request_context"] = provider_request_context
     if execution_content_fingerprint is not None:
         payload["execution_content_fingerprint"] = str(execution_content_fingerprint)
     if write_idempotence_status is not None:

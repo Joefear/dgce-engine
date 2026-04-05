@@ -12,20 +12,30 @@ DEFAULT_API_BASE_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_MAX_TOKENS = 512
 
 
+class ClaudeProviderError(ValueError):
+    """Bounded Claude provider error with request-attempt metadata."""
+
+    def __init__(self, message: str, *, request_attempted: bool) -> None:
+        super().__init__(message)
+        self.request_attempted = request_attempted
+
+
 def generate_text(prompt: str, config: dict[str, Any]) -> str:
     """Validate Claude provider config and return raw text from one Claude response."""
     _require_non_empty_string(prompt, "prompt")
     model_id = _require_non_empty_string(config.get("model_id"), "config.model_id")
     api_key = _resolve_api_key(config)
     if api_key is None:
-        raise ValueError("Claude provider requires config.api_key")
+        raise ClaudeProviderError("Claude provider requires config.api_key", request_attempted=False)
     request = _build_request(prompt, config, model_id, api_key)
     try:
         with urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        return _extract_text(payload)
+    except ClaudeProviderError:
+        raise
     except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Claude provider request failed") from exc
-    return _extract_text(payload)
+        raise ClaudeProviderError("Claude provider request failed", request_attempted=True) from exc
 
 
 def _build_request(prompt: str, config: dict[str, Any], model_id: str, api_key: str) -> Request:
@@ -53,10 +63,10 @@ def _build_request(prompt: str, config: dict[str, Any], model_id: str, api_key: 
 
 def _extract_text(payload: Any) -> str:
     if not isinstance(payload, dict):
-        raise ValueError("Claude provider response missing text content")
+        raise ClaudeProviderError("Claude provider response missing text content", request_attempted=True)
     content = payload.get("content")
     if not isinstance(content, list) or not content:
-        raise ValueError("Claude provider response missing text content")
+        raise ClaudeProviderError("Claude provider response missing text content", request_attempted=True)
     text_segments: list[str] = []
     for item in content:
         if not isinstance(item, dict):
@@ -67,7 +77,7 @@ def _extract_text(payload: Any) -> str:
         if isinstance(text, str) and text:
             text_segments.append(text)
     if not text_segments:
-        raise ValueError("Claude provider response missing text content")
+        raise ClaudeProviderError("Claude provider response missing text content", request_attempted=True)
     return "".join(text_segments)
 
 
