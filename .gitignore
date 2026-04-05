@@ -56,4 +56,4 @@ defiant-sky/.runtime/
 
 # Local/generated data logs
 data/*.jsonl
-'@ | Set-Content .gitignore
+'@ | Set-Content .gitignore.pytest_local_tmp/
