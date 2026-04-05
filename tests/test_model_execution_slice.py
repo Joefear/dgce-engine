@@ -18,6 +18,7 @@ from aether.dgce.execution_fingerprint import (
     determine_function_stub_write_idempotence_status,
 )
 from aether.dgce.execution_failure import classify_function_stub_execution_failure
+from aether.dgce.execution_timing import build_execution_timing
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_provider import generate_response
@@ -146,6 +147,14 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
         "temperature": 0.0,
         "request_attempted": False,
     }
+    assert sorted(execution_artifact["execution_timing"].keys()) == [
+        "provider_duration_ms",
+        "total_model_path_duration_ms",
+        "validation_duration_ms",
+    ]
+    for value in execution_artifact["execution_timing"].values():
+        assert isinstance(value, (int, float))
+        assert float(value) >= 0.0
 
 
 def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
@@ -352,6 +361,18 @@ def test_build_provider_request_context_is_audit_safe_and_bounded():
         "prompt_template_version": "v1",
         "temperature": 0.0,
         "request_attempted": True,
+    }
+
+
+def test_build_execution_timing_is_bounded():
+    assert build_execution_timing(
+        provider_duration_ms=1.0,
+        validation_duration_ms=2.0,
+        total_model_path_duration_ms=3.0,
+    ) == {
+        "provider_duration_ms": 1.0,
+        "validation_duration_ms": 2.0,
+        "total_model_path_duration_ms": 3.0,
     }
 
 
@@ -653,6 +674,11 @@ def test_execute_prepared_function_stub_does_not_write_on_validation_failure(mon
     assert execution_artifact["execution_failure_category"] == "validation_failure"
     assert execution_artifact["execution_failure_reason"] == "validator_rejected_output"
     assert execution_artifact["provider_request_context"]["request_attempted"] is False
+    assert sorted(execution_artifact["execution_timing"].keys()) == [
+        "provider_duration_ms",
+        "total_model_path_duration_ms",
+        "validation_duration_ms",
+    ]
     assert "api_key" not in json.dumps(execution_artifact)
     assert "wrong_name" not in json.dumps(execution_artifact)
     assert execution_artifact.get("written_files") == []
@@ -688,6 +714,10 @@ def test_execute_prepared_function_stub_does_not_write_on_provider_config_failur
         "temperature": 0.0,
         "request_attempted": False,
     }
+    assert sorted(execution_artifact["execution_timing"].keys()) == [
+        "provider_duration_ms",
+        "total_model_path_duration_ms",
+    ]
     assert "secret-key" not in json.dumps(execution_artifact)
 
 
@@ -720,6 +750,10 @@ def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failu
     assert execution_artifact["execution_failure_category"] == "provider_failure"
     assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
     assert execution_artifact["provider_request_context"]["request_attempted"] is True
+    assert sorted(execution_artifact["execution_timing"].keys()) == [
+        "provider_duration_ms",
+        "total_model_path_duration_ms",
+    ]
     assert "secret-key" not in json.dumps(execution_artifact)
 
 
@@ -740,7 +774,10 @@ def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure
     execution_artifact = load_section_execution_artifact(project_root, "function-stub")
     assert execution_artifact["execution_failure_category"] == "provider_failure"
     assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
-    assert execution_artifact["provider_request_context"]["request_attempted"] is False
+    assert "provider_request_context" not in execution_artifact
+    assert sorted(execution_artifact["execution_timing"].keys()) == ["total_model_path_duration_ms"]
+    assert isinstance(execution_artifact["execution_timing"]["total_model_path_duration_ms"], (int, float))
+    assert float(execution_artifact["execution_timing"]["total_model_path_duration_ms"]) >= 0.0
 
 
 def test_execute_prepared_function_stub_records_deterministic_fingerprint_and_idempotence_on_repeat(monkeypatch):

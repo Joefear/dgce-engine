@@ -62,6 +62,7 @@ python -m pytest tests/test_model_execution_slice.py
 - guardrail failure: the run is blocked or routed for review before execution
 - preflight failure: the section is not execution-eligible and must not proceed
 - execution records may include bounded `provider_request_context`; it is audit-safe and excludes prompts, outputs, and secrets
+- execution records may include bounded `execution_timing` for the model path; this is not a full tracing or observability system
 
 ## What NOT to do
 

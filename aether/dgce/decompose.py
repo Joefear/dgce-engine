@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,7 @@ from aether.dgce.execution_failure import (
     build_execution_failure_metadata,
     classify_function_stub_execution_failure,
 )
+from aether.dgce.execution_timing import build_execution_timing, duration_ms
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
@@ -783,6 +785,7 @@ def run_section_with_workspace(
             )
     model_execution = None
     provider_request_context = None
+    execution_timing = None
     execution_content_fingerprint = None
     write_idempotence_status = None
     if require_preflight_pass and section.section_type == "function_stub":
@@ -790,26 +793,45 @@ def run_section_with_workspace(
         target_path = None
         model_config = None
         raw_output = None
+        total_model_path_start_ns = time.perf_counter_ns()
+        provider_duration_ms = None
+        validation_duration_ms = None
+        validation_start_ns = None
         try:
             structured_input, target_path = _build_function_stub_structured_input(section, file_plan)
+            parse_function_stub_spec(structured_input)
+            provider_start_ns = time.perf_counter_ns()
             model_config = get_model_execution_config()
             provider_request_context = build_provider_request_context(
                 model_config,
                 request_attempted=False,
             )
             raw_output = generate_function_stub(structured_input, model_config)
+            provider_duration_ms = duration_ms(provider_start_ns, time.perf_counter_ns())
             provider_request_context = build_provider_request_context(
                 model_config,
                 request_attempted=bool(model_config.get("provider") == "claude"),
             )
+            validation_start_ns = time.perf_counter_ns()
             validated_output = validate_function_stub(raw_output, structured_input)
+            validation_duration_ms = duration_ms(validation_start_ns, time.perf_counter_ns())
         except ValueError as exc:
+            total_model_path_duration_ms = duration_ms(total_model_path_start_ns, time.perf_counter_ns())
+            if validation_start_ns is not None and validation_duration_ms is None:
+                validation_duration_ms = duration_ms(validation_start_ns, time.perf_counter_ns())
+            if "provider_start_ns" in locals() and provider_duration_ms is None:
+                provider_duration_ms = duration_ms(provider_start_ns, time.perf_counter_ns())
             request_attempted = bool(getattr(exc, "request_attempted", False))
             if model_config is not None:
                 provider_request_context = build_provider_request_context(
                     model_config,
                     request_attempted=request_attempted or bool(raw_output is not None and model_config.get("provider") == "claude"),
                 )
+            execution_timing = build_execution_timing(
+                provider_duration_ms=provider_duration_ms,
+                validation_duration_ms=validation_duration_ms,
+                total_model_path_duration_ms=total_model_path_duration_ms,
+            )
             failure_metadata = build_execution_failure_metadata(
                 classify_function_stub_execution_failure(raw_output_obtained=raw_output is not None)
             )
@@ -823,10 +845,16 @@ def run_section_with_workspace(
                 write_transparency=write_transparency,
                 model_execution=build_model_execution_metadata(model_config) if model_config is not None else None,
                 provider_request_context=provider_request_context,
+                execution_timing=execution_timing,
                 execution_failure_category=failure_metadata["execution_failure_category"],
                 execution_failure_reason=failure_metadata["execution_failure_reason"],
             )
             raise
+        execution_timing = build_execution_timing(
+            provider_duration_ms=provider_duration_ms,
+            validation_duration_ms=validation_duration_ms,
+            total_model_path_duration_ms=duration_ms(total_model_path_start_ns, time.perf_counter_ns()),
+        )
         model_execution = build_model_execution_metadata(model_config)
         execution_content_fingerprint = build_function_stub_execution_fingerprint(
             structured_input,
@@ -899,6 +927,7 @@ def run_section_with_workspace(
         write_transparency=write_transparency,
         model_execution=model_execution,
         provider_request_context=provider_request_context,
+        execution_timing=execution_timing,
         execution_content_fingerprint=execution_content_fingerprint,
         write_idempotence_status=write_idempotence_status,
     )
@@ -1145,6 +1174,7 @@ def record_section_execution_stamp(
     write_transparency: dict[str, Any] | None = None,
     model_execution: dict[str, Any] | None = None,
     provider_request_context: dict[str, Any] | None = None,
+    execution_timing: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
     write_idempotence_status: str | None = None,
     execution_failure_category: str | None = None,
@@ -1163,6 +1193,7 @@ def record_section_execution_stamp(
         write_transparency=write_transparency or {},
         model_execution=model_execution,
         provider_request_context=provider_request_context,
+        execution_timing=execution_timing,
         execution_content_fingerprint=execution_content_fingerprint,
         write_idempotence_status=write_idempotence_status,
         execution_failure_category=execution_failure_category,
@@ -2103,6 +2134,17 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
             artifact_name,
             "provider_request_context.request_attempted",
         )
+    execution_timing = artifact.get("execution_timing")
+    if execution_timing is not None:
+        timing_payload = _expect_dict(execution_timing, artifact_name, "execution_timing")
+        for key in ("provider_duration_ms", "validation_duration_ms", "total_model_path_duration_ms"):
+            value = timing_payload.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                _schema_error(artifact_name, f"execution_timing.{key} must be a float")
+            if float(value) < 0:
+                _schema_error(artifact_name, f"execution_timing.{key} must be non-negative")
     execution_content_fingerprint = artifact.get("execution_content_fingerprint")
     if execution_content_fingerprint is not None:
         _expect_str(execution_content_fingerprint, artifact_name, "execution_content_fingerprint")
@@ -3681,6 +3723,7 @@ def _build_execution_stamp_artifact(
     write_transparency: dict[str, Any],
     model_execution: dict[str, Any] | None = None,
     provider_request_context: dict[str, Any] | None = None,
+    execution_timing: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
     write_idempotence_status: str | None = None,
     execution_failure_category: str | None = None,
@@ -3806,6 +3849,8 @@ def _build_execution_stamp_artifact(
         payload["model_execution"] = model_execution
     if provider_request_context is not None:
         payload["provider_request_context"] = provider_request_context
+    if execution_timing is not None:
+        payload["execution_timing"] = execution_timing
     if execution_content_fingerprint is not None:
         payload["execution_content_fingerprint"] = str(execution_content_fingerprint)
     if write_idempotence_status is not None:
