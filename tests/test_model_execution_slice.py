@@ -20,7 +20,14 @@ from aether.dgce.execution_fingerprint import (
 from aether.dgce.execution_failure import classify_function_stub_execution_failure
 from aether.dgce.execution_timing import build_execution_timing
 from aether.dgce.function_stub_canonicalizer import canonicalize_function_stub_output
-from aether.dgce.code_graph_context import parse_code_graph_context
+from aether.dgce.code_graph_context import (
+    CONTRACT_SCHEMA_ID,
+    VENDORED_CHECKSUM_PATH,
+    VENDORED_SCHEMA_PATH,
+    compute_schema_sha256,
+    parse_code_graph_context,
+    verify_vendored_code_graph_schema_checksum,
+)
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_execution_basis import (
     assert_function_stub_model_execution_basis_consistent,
@@ -43,39 +50,67 @@ def _valid_code_graph_context() -> dict:
     return {
         "contract_name": "DefiantCodeGraphFacts",
         "contract_version": "dcg.facts.v1",
+        "graph_id": "graph:payload-builder",
+        "workspace_id": "workspace:dgce",
+        "repo_id": "repo:dgce-engine",
+        "language": "python",
         "generated_at": "2026-04-04T10:15:30Z",
+        "source": "defiant-code-graph",
+        "target": {
+            "file_path": "src/function_stub.py",
+            "symbol_id": "sym:payload_builder",
+            "symbol_name": "build_payload",
+            "symbol_kind": "function",
+            "span": {"start_line": 10, "end_line": 12},
+        },
+        "intent_facts": {
+            "structural_scope": "file",
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": True,
+            "related_symbols": ["sym:serialize_payload"],
+            "related_files": ["src/serializer.py"],
+        },
+        "patch_facts": {
+            "touched_files": ["src/function_stub.py"],
+            "touched_symbols": ["sym:build_payload"],
+            "structural_scope_expanded": False,
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": True,
+            "claimed_intent_match": True,
+        },
         "placement_facts": {
-            "target_symbol_id": "sym:payload_builder",
-            "file_outline_summary": [
+            "insertion_candidates": [
                 {
+                    "file_path": "src/function_stub.py",
                     "symbol_id": "sym:existing_helper",
-                    "symbol_kind": "function",
-                    "span": {"start_line": 3, "end_line": 7},
-                }
-            ],
-            "insertion_point_hints": [
-                {
-                    "anchor_symbol_id": "sym:existing_helper",
-                    "position": "after",
+                    "symbol_name": "existing_helper",
+                    "strategy": "append_after_symbol",
                     "span": {"start_line": 7, "end_line": 7},
                 }
             ],
-            "collision_flags": [
-                {
-                    "symbol_id": "sym:build_payload",
-                    "reason": "existing_symbol",
-                }
-            ],
-            "ownership_boundary_markers": [
-                {
-                    "owner_id": "ownership:function_stub",
-                    "span": {"start_line": 1, "end_line": 20},
-                }
-            ],
+            "generation_collision_detected": True,
+            "recommended_edit_strategy": "bounded_insert",
         },
-        "related_symbols": ["sym:serialize_payload"],
-        "touched_symbols": ["sym:build_payload"],
-        "dependent_symbols": ["sym:payload_consumer"],
+        "impact_facts": {
+            "blast_radius": {"files": 1, "symbols": 2},
+            "dependency_crossings": ["module:serializer->module:function_stub"],
+            "dependent_symbols": ["sym:payload_consumer"],
+        },
+        "ownership_facts": {
+            "target_ownership": "governed",
+            "touched_ownership_classes": ["governed"],
+        },
+        "meta": {
+            "parser_family": "tree-sitter",
+            "snapshot_id": "snapshot:123",
+            "notes": ["read-only facts"],
+        },
     }
 
 
@@ -743,14 +778,38 @@ def test_parse_code_graph_context_accepts_valid_v1_payload():
     assert parse_code_graph_context(_valid_code_graph_context()) == _valid_code_graph_context()
 
 
+def test_vendored_code_graph_schema_checksum_matches_raw_bytes():
+    verify_vendored_code_graph_schema_checksum()
+    vendored_checksum = VENDORED_CHECKSUM_PATH.read_text(encoding="utf-8").strip().split()[0]
+    assert compute_schema_sha256(VENDORED_SCHEMA_PATH) == vendored_checksum
+
+
+def test_vendored_code_graph_schema_has_expected_id():
+    schema = json.loads(VENDORED_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert schema["$id"] == CONTRACT_SCHEMA_ID
+
+
+def test_vendored_code_graph_schema_checksum_drift_is_detected():
+    tmp_path = _workspace_dir("code_graph_schema_checksum_drift")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    schema_path = tmp_path / "dcg-facts-v1.schema.json"
+    checksum_path = tmp_path / "dcg-facts-v1.sha256"
+    schema_path.write_bytes(VENDORED_SCHEMA_PATH.read_bytes() + b"\n")
+    checksum_path.write_text(VENDORED_CHECKSUM_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Vendored Defiant Code Graph schema checksum mismatch"):
+        verify_vendored_code_graph_schema_checksum(schema_path, checksum_path)
+
+
 def test_parse_code_graph_context_preserves_symbol_id_field_meaning_exactly():
     payload = _valid_code_graph_context()
     parsed = parse_code_graph_context(payload)
 
-    assert parsed["placement_facts"]["target_symbol_id"] == "sym:payload_builder"
-    assert parsed["related_symbols"] == ["sym:serialize_payload"]
-    assert parsed["touched_symbols"] == ["sym:build_payload"]
-    assert parsed["dependent_symbols"] == ["sym:payload_consumer"]
+    assert parsed["target"]["symbol_id"] == "sym:payload_builder"
+    assert parsed["intent_facts"]["related_symbols"] == ["sym:serialize_payload"]
+    assert parsed["patch_facts"]["touched_symbols"] == ["sym:build_payload"]
+    assert parsed["impact_facts"]["dependent_symbols"] == ["sym:payload_consumer"]
+    assert parsed["placement_facts"]["insertion_candidates"][0]["symbol_id"] == "sym:existing_helper"
 
 
 def test_parse_function_stub_spec_accepts_optional_code_graph_context():
@@ -835,11 +894,11 @@ def test_parse_code_graph_context_rejects_extra_fields():
 
 def test_parse_code_graph_context_rejects_extra_nested_fields():
     payload = _valid_code_graph_context()
-    payload["placement_facts"]["file_outline_summary"][0]["extra"] = "value"
+    payload["placement_facts"]["insertion_candidates"][0]["extra"] = "value"
 
     with pytest.raises(
         ValueError,
-        match="function_stub.code_graph_context.placement_facts.file_outline_summary\\[0\\] must not include extra fields",
+        match="function_stub.code_graph_context.placement_facts.insertion_candidates\\[0\\] must not include extra fields",
     ):
         parse_code_graph_context(payload)
 
@@ -854,28 +913,28 @@ def test_parse_code_graph_context_rejects_invalid_generated_at():
 
 def test_parse_code_graph_context_rejects_invalid_span_invariant():
     payload = _valid_code_graph_context()
-    payload["placement_facts"]["file_outline_summary"][0]["span"] = {"start_line": 10, "end_line": 3}
+    payload["placement_facts"]["insertion_candidates"][0]["span"] = {"start_line": 10, "end_line": 3}
 
     with pytest.raises(
         ValueError,
-        match="function_stub.code_graph_context.placement_facts.file_outline_summary\\[0\\]\\.span.end_line must be greater than or equal to function_stub.code_graph_context.placement_facts.file_outline_summary\\[0\\]\\.span.start_line",
+        match="function_stub.code_graph_context.placement_facts.insertion_candidates\\[0\\]\\.span.end_line must be greater than or equal to function_stub.code_graph_context.placement_facts.insertion_candidates\\[0\\]\\.span.start_line",
     ):
         parse_code_graph_context(payload)
 
 
 def test_parse_code_graph_context_rejects_invalid_object_placement():
     payload = _valid_code_graph_context()
-    payload["related_symbols"] = {"symbol_id": "sym:serialize_payload"}
+    payload["intent_facts"]["related_symbols"] = {"symbol_id": "sym:serialize_payload"}
 
-    with pytest.raises(ValueError, match="function_stub.code_graph_context.related_symbols must be a list"):
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.intent_facts.related_symbols must be a list"):
         parse_code_graph_context(payload)
 
 
 def test_parse_code_graph_context_rejects_invalid_null_placement():
     payload = _valid_code_graph_context()
-    payload["placement_facts"]["collision_flags"] = [None]
+    payload["placement_facts"]["insertion_candidates"] = [None]
 
-    with pytest.raises(ValueError, match="function_stub.code_graph_context.placement_facts.collision_flags\\[0\\] must be a dict"):
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.placement_facts.insertion_candidates\\[0\\] must be a dict"):
         parse_code_graph_context(payload)
 
 

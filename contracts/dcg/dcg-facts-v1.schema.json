@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://defiantinds.com/schemas/dcg-facts-v1.schema.json",
+  "title": "DefiantCodeGraphFacts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_name", "contract_version", "graph_id"],
+  "properties": {
+    "contract_name": {
+      "type": "string",
+      "const": "DefiantCodeGraphFacts"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "dcg.facts.v1"
+    },
+    "graph_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_id": {
+      "type": ["string", "null"]
+    },
+    "repo_id": {
+      "type": ["string", "null"]
+    },
+    "language": {
+      "type": ["string", "null"]
+    },
+    "generated_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "source": {
+      "type": ["string", "null"]
+    },
+    "target": {
+      "anyOf": [
+        { "$ref": "#/$defs/Target" },
+        { "type": "null" }
+      ]
+    },
+    "intent_facts": {
+      "anyOf": [
+        { "$ref": "#/$defs/IntentFacts" },
+        { "type": "null" }
+      ]
+    },
+    "patch_facts": {
+      "anyOf": [
+        { "$ref": "#/$defs/PatchFacts" },
+        { "type": "null" }
+      ]
+    },
+    "placement_facts": {
+      "anyOf": [
+        { "$ref": "#/$defs/PlacementFacts" },
+        { "type": "null" }
+      ]
+    },
+    "impact_facts": {
+      "anyOf": [
+        { "$ref": "#/$defs/ImpactFacts" },
+        { "type": "null" }
+      ]
+    },
+    "ownership_facts": {
+      "anyOf": [
+        { "$ref": "#/$defs/OwnershipFacts" },
+        { "type": "null" }
+      ]
+    },
+    "meta": {
+      "anyOf": [
+        { "$ref": "#/$defs/Meta" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "NullableStringArray": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "Span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_line", "end_line"],
+      "properties": {
+        "start_line": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "end_line": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "Target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_path", "symbol_id", "symbol_name", "symbol_kind", "span"],
+      "properties": {
+        "file_path": { "type": ["string", "null"] },
+        "symbol_id": { "type": ["string", "null"] },
+        "symbol_name": { "type": ["string", "null"] },
+        "symbol_kind": { "type": ["string", "null"] },
+        "span": {
+          "anyOf": [
+            { "$ref": "#/$defs/Span" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "IntentFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "structural_scope",
+        "module_boundary_crossed",
+        "trust_boundary_crossed",
+        "ownership_boundary_crossed",
+        "protected_region_overlap",
+        "governed_region_overlap",
+        "related_symbols",
+        "related_files"
+      ],
+      "properties": {
+        "structural_scope": {
+          "type": ["string", "null"],
+          "enum": ["symbol", "file", "module", "package", "repo", null]
+        },
+        "module_boundary_crossed": { "type": ["boolean", "null"] },
+        "trust_boundary_crossed": { "type": ["boolean", "null"] },
+        "ownership_boundary_crossed": { "type": ["boolean", "null"] },
+        "protected_region_overlap": { "type": ["boolean", "null"] },
+        "governed_region_overlap": { "type": ["boolean", "null"] },
+        "related_symbols": {
+          "anyOf": [
+            { "$ref": "#/$defs/NullableStringArray" },
+            { "type": "null" }
+          ]
+        },
+        "related_files": {
+          "anyOf": [
+            { "$ref": "#/$defs/NullableStringArray" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "PatchFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "touched_files",
+        "touched_symbols",
+        "structural_scope_expanded",
+        "module_boundary_crossed",
+        "trust_boundary_crossed",
+        "ownership_boundary_crossed",
+        "protected_region_overlap",
+        "governed_region_overlap",
+        "claimed_intent_match"
+      ],
+      "properties": {
+        "touched_files": {
+          "anyOf": [
+            { "$ref": "#/$defs/NullableStringArray" },
+            { "type": "null" }
+          ]
+        },
+        "touched_symbols": {
+          "anyOf": [
+            { "$ref": "#/$defs/NullableStringArray" },
+            { "type": "null" }
+          ]
+        },
+        "structural_scope_expanded": { "type": ["boolean", "null"] },
+        "module_boundary_crossed": { "type": ["boolean", "null"] },
+        "trust_boundary_crossed": { "type": ["boolean", "null"] },
+        "ownership_boundary_crossed": { "type": ["boolean", "null"] },
+        "protected_region_overlap": { "type": ["boolean", "null"] },
+        "governed_region_overlap": { "type": ["boolean", "null"] },
+        "claimed_intent_match": { "type": ["boolean", "null"] }
+      }
+    },
+    "InsertionCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_path", "symbol_id", "symbol_name", "strategy", "span"],
+      "properties": {
+        "file_path": { "type": "string", "minLength": 1 },
+        "symbol_id": { "type": ["string", "null"] },
+        "symbol_name": { "type": ["string", "null"] },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "append_after_symbol",
+            "insert_before_symbol",
+            "inside_symbol",
+            "new_file",
+            "unknown"
+          ]
+        },
+        "span": {
+          "anyOf": [
+            { "$ref": "#/$defs/Span" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "PlacementFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "insertion_candidates",
+        "generation_collision_detected",
+        "recommended_edit_strategy"
+      ],
+      "properties": {
+        "insertion_candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/InsertionCandidate" }
+        },
+        "generation_collision_detected": { "type": ["boolean", "null"] },
+        "recommended_edit_strategy": {
+          "type": "string",
+          "enum": [
+            "surgical_edit",
+            "bounded_insert",
+            "new_file",
+            "rewrite_small_region",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "BlastRadius": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "symbols"],
+      "properties": {
+        "files": { "type": ["integer", "null"], "minimum": 0 },
+        "symbols": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "ImpactFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blast_radius", "dependency_crossings", "dependent_symbols"],
+      "properties": {
+        "blast_radius": {
+          "anyOf": [
+            { "$ref": "#/$defs/BlastRadius" },
+            { "type": "null" }
+          ]
+        },
+        "dependency_crossings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dependent_symbols": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "OwnershipFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_ownership", "touched_ownership_classes"],
+      "properties": {
+        "target_ownership": {
+          "type": ["string", "null"],
+          "enum": [
+            "manual",
+            "generated",
+            "locked",
+            "governed",
+            "critical",
+            "policy_sensitive",
+            "unknown",
+            null
+          ]
+        },
+        "touched_ownership_classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "generated",
+              "locked",
+              "governed",
+              "critical",
+              "policy_sensitive",
+              "unknown"
+            ]
+          }
+        }
+      }
+    },
+    "Meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parser_family", "snapshot_id", "notes"],
+      "properties": {
+        "parser_family": { "type": ["string", "null"] },
+        "snapshot_id": { "type": ["string", "null"] },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
