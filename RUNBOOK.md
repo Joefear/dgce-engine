@@ -57,6 +57,8 @@ python -m pytest tests/test_model_execution_slice.py
 ## Failure Modes
 
 - validation failure: execution output is rejected and no governed write should occur
+- provider-side execution failure: config, transport, or pre-output execution fails before raw model output is obtained
+- validation-side execution failure: raw model output is obtained but strict validation rejects it
 - guardrail failure: the run is blocked or routed for review before execution
 - preflight failure: the section is not execution-eligible and must not proceed
 

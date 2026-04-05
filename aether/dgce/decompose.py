@@ -27,6 +27,10 @@ from aether.dgce.execution_fingerprint import (
     build_function_stub_execution_fingerprint,
     determine_function_stub_write_idempotence_status,
 )
+from aether.dgce.execution_failure import (
+    build_execution_failure_metadata,
+    classify_function_stub_execution_failure,
+)
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
@@ -780,10 +784,32 @@ def run_section_with_workspace(
     execution_content_fingerprint = None
     write_idempotence_status = None
     if require_preflight_pass and section.section_type == "function_stub":
-        structured_input, target_path = _build_function_stub_structured_input(section, file_plan)
-        model_config = get_model_execution_config()
-        raw_output = generate_function_stub(structured_input, model_config)
-        validated_output = validate_function_stub(raw_output, structured_input)
+        structured_input = None
+        target_path = None
+        model_config = None
+        raw_output = None
+        try:
+            structured_input, target_path = _build_function_stub_structured_input(section, file_plan)
+            model_config = get_model_execution_config()
+            raw_output = generate_function_stub(structured_input, model_config)
+            validated_output = validate_function_stub(raw_output, structured_input)
+        except ValueError:
+            failure_metadata = build_execution_failure_metadata(
+                classify_function_stub_execution_failure(raw_output_obtained=raw_output is not None)
+            )
+            record_section_execution_stamp(
+                project_root,
+                section_id,
+                require_preflight_pass=True,
+                execution=SectionExecutionStampInput(execution_timestamp=execution_timestamp),
+                run_outcome_class=failure_metadata["execution_failure_category"],
+                execution_blocked=True,
+                write_transparency=write_transparency,
+                model_execution=build_model_execution_metadata(model_config) if model_config is not None else None,
+                execution_failure_category=failure_metadata["execution_failure_category"],
+                execution_failure_reason=failure_metadata["execution_failure_reason"],
+            )
+            raise
         model_execution = build_model_execution_metadata(model_config)
         execution_content_fingerprint = build_function_stub_execution_fingerprint(
             structured_input,
@@ -1102,6 +1128,8 @@ def record_section_execution_stamp(
     model_execution: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
     write_idempotence_status: str | None = None,
+    execution_failure_category: str | None = None,
+    execution_failure_reason: str | None = None,
 ) -> dict[str, Any]:
     """Persist a deterministic execution stamp and refresh workspace linkage."""
     workspace = _ensure_workspace(project_root)
@@ -1117,6 +1145,8 @@ def record_section_execution_stamp(
         model_execution=model_execution,
         execution_content_fingerprint=execution_content_fingerprint,
         write_idempotence_status=write_idempotence_status,
+        execution_failure_category=execution_failure_category,
+        execution_failure_reason=execution_failure_reason,
     )
     if execution_artifact["approval_consumed"]:
         _supersede_approval_artifact(workspace["root"], section_id)
@@ -2041,6 +2071,12 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
     write_idempotence_status = artifact.get("write_idempotence_status")
     if write_idempotence_status is not None:
         _expect_str(write_idempotence_status, artifact_name, "write_idempotence_status")
+    execution_failure_category = artifact.get("execution_failure_category")
+    if execution_failure_category is not None:
+        _expect_str(execution_failure_category, artifact_name, "execution_failure_category")
+    execution_failure_reason = artifact.get("execution_failure_reason")
+    if execution_failure_reason is not None:
+        _expect_str(execution_failure_reason, artifact_name, "execution_failure_reason")
     execution_record_summary = _expect_dict(_expect_required_field(artifact, "execution_record_summary", artifact_name), artifact_name, "execution_record_summary")
     for key in ("execution_status",):
         _expect_str(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
@@ -3608,6 +3644,8 @@ def _build_execution_stamp_artifact(
     model_execution: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
     write_idempotence_status: str | None = None,
+    execution_failure_category: str | None = None,
+    execution_failure_reason: str | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic execution-stamp artifact from current run facts and linked metadata."""
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
@@ -3731,6 +3769,10 @@ def _build_execution_stamp_artifact(
         payload["execution_content_fingerprint"] = str(execution_content_fingerprint)
     if write_idempotence_status is not None:
         payload["write_idempotence_status"] = str(write_idempotence_status)
+    if execution_failure_category is not None:
+        payload["execution_failure_category"] = str(execution_failure_category)
+    if execution_failure_reason is not None:
+        payload["execution_failure_reason"] = str(execution_failure_reason)
     return _with_artifact_metadata("execution_record", payload)
 
 

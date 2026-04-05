@@ -17,6 +17,7 @@ from aether.dgce.execution_fingerprint import (
     build_function_stub_execution_fingerprint,
     determine_function_stub_write_idempotence_status,
 )
+from aether.dgce.execution_failure import classify_function_stub_execution_failure
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
@@ -133,6 +134,8 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
     }
     assert isinstance(execution_artifact["execution_content_fingerprint"], str)
     assert execution_artifact["write_idempotence_status"] == "new_content"
+    assert "execution_failure_category" not in execution_artifact
+    assert "execution_failure_reason" not in execution_artifact
 
 
 def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
@@ -298,6 +301,17 @@ def test_determine_function_stub_write_idempotence_status_is_deterministic():
         "src/function_stub.py",
         "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
     ) == "existing_content_match"
+
+
+def test_classify_function_stub_execution_failure_is_bounded():
+    assert classify_function_stub_execution_failure(raw_output_obtained=False) == {
+        "execution_failure_category": "provider_failure",
+        "execution_failure_reason": "pre_output_failure",
+    }
+    assert classify_function_stub_execution_failure(raw_output_obtained=True) == {
+        "execution_failure_category": "validation_failure",
+        "execution_failure_reason": "validator_rejected_output",
+    }
 
 
 def test_parse_function_stub_spec_normalizes_valid_input_deterministically():
@@ -546,10 +560,10 @@ def test_execute_prepared_function_stub_does_not_write_on_validation_failure(mon
 
     assert not (project_root / "src/function_stub.py").exists()
     assert not (project_root / ".dce/outputs/function-stub.json").exists()
-    execution_path = project_root / ".dce/execution/function-stub.execution.json"
-    if execution_path.exists():
-        payload = json.loads(execution_path.read_text(encoding="utf-8"))
-        assert payload.get("written_files") == []
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "validation_failure"
+    assert execution_artifact["execution_failure_reason"] == "validator_rejected_output"
+    assert execution_artifact.get("written_files") == []
 
 
 def test_execute_prepared_function_stub_does_not_write_on_provider_config_failure(monkeypatch):
@@ -572,7 +586,9 @@ def test_execute_prepared_function_stub_does_not_write_on_provider_config_failur
 
     assert not (project_root / "src/function_stub.py").exists()
     assert not (project_root / ".dce/outputs/function-stub.json").exists()
-    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "provider_failure"
+    assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
 
 
 def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failure(monkeypatch):
@@ -600,7 +616,9 @@ def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failu
 
     assert not (project_root / "src/function_stub.py").exists()
     assert not (project_root / ".dce/outputs/function-stub.json").exists()
-    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "provider_failure"
+    assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
 
 
 def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure(monkeypatch):
@@ -617,7 +635,9 @@ def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure
 
     assert not (project_root / "src/function_stub.py").exists()
     assert not (project_root / ".dce/outputs/function-stub.json").exists()
-    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "provider_failure"
+    assert execution_artifact["execution_failure_reason"] == "pre_output_failure"
 
 
 def test_execute_prepared_function_stub_records_deterministic_fingerprint_and_idempotence_on_repeat(monkeypatch):
