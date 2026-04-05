@@ -20,6 +20,10 @@ from aether.dgce.execution_fingerprint import (
 from aether.dgce.execution_failure import classify_function_stub_execution_failure
 from aether.dgce.execution_timing import build_execution_timing
 from aether.dgce.function_stub_spec import parse_function_stub_spec
+from aether.dgce.model_execution_basis import (
+    assert_function_stub_model_execution_basis_consistent,
+    build_function_stub_model_execution_basis_fingerprint,
+)
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_provider import generate_response
 from aether.dgce.model_executor import generate_function_stub
@@ -137,6 +141,7 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
         "postprocess": "strict_function_stub_v1",
     }
     assert isinstance(execution_artifact["execution_content_fingerprint"], str)
+    assert isinstance(execution_artifact["model_execution_basis_fingerprint"], str)
     assert execution_artifact["write_idempotence_status"] == "new_content"
     assert "execution_failure_category" not in execution_artifact
     assert "execution_failure_reason" not in execution_artifact
@@ -279,6 +284,56 @@ def test_build_function_stub_execution_fingerprint_is_deterministic():
         "src/function_stub.py",
         "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
     )
+
+
+def test_build_function_stub_model_execution_basis_fingerprint_is_deterministic():
+    assert build_function_stub_model_execution_basis_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+    ) == build_function_stub_model_execution_basis_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+    )
+
+
+def test_build_function_stub_model_execution_basis_fingerprint_changes_with_spec():
+    first = build_function_stub_model_execution_basis_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+    )
+    second = build_function_stub_model_execution_basis_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}, {"name": "flag", "type": "bool"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+    )
+    assert first != second
+
+
+def test_build_function_stub_model_execution_basis_fingerprint_changes_with_execution_config():
+    first = build_function_stub_model_execution_basis_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+    )
+    second = build_function_stub_model_execution_basis_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "claude", "model_id": "claude-3-7-sonnet", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+    )
+    assert first != second
+
+
+def test_assert_function_stub_model_execution_basis_consistent_rejects_mismatch():
+    with pytest.raises(ValueError, match="function_stub model execution basis mismatch"):
+        assert_function_stub_model_execution_basis_consistent(
+            "not-the-right-fingerprint",
+            {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+            {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+            "src/function_stub.py",
+        )
 
 
 def test_build_function_stub_execution_fingerprint_changes_with_spec():
@@ -823,6 +878,26 @@ def test_execute_prepared_function_stub_does_not_write_if_fingerprint_logic_fail
     )
 
     with pytest.raises(ValueError, match="execution fingerprint failed"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+
+
+def test_execute_prepared_function_stub_does_not_write_if_model_execution_basis_is_inconsistent(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_basis_mismatch")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+
+    sequence = iter(["first-fingerprint", "second-fingerprint"])
+
+    monkeypatch.setattr(
+        "aether.dgce.decompose.build_function_stub_model_execution_basis_fingerprint",
+        lambda function_stub_spec, model_execution_metadata, target_path: next(sequence),
+    )
+
+    with pytest.raises(ValueError, match="function_stub model execution basis mismatch"):
         execute_prepared_section(project_root, "function-stub")
 
     assert not (project_root / "src/function_stub.py").exists()

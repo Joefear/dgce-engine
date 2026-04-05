@@ -63,6 +63,7 @@ python -m pytest tests/test_model_execution_slice.py
 - preflight failure: the section is not execution-eligible and must not proceed
 - execution records may include bounded `provider_request_context`; it is audit-safe and excludes prompts, outputs, and secrets
 - execution records may include bounded `execution_timing` for the model path; this is not a full tracing or observability system
+- function-stub execution records include a bounded `model_execution_basis_fingerprint`; it is a consistency trace for the governed model path, not a prompt or payload log
 
 ## What NOT to do
 

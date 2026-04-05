@@ -34,6 +34,10 @@ from aether.dgce.execution_failure import (
 )
 from aether.dgce.execution_timing import build_execution_timing, duration_ms
 from aether.dgce.function_stub_spec import parse_function_stub_spec
+from aether.dgce.model_execution_basis import (
+    assert_function_stub_model_execution_basis_consistent,
+    build_function_stub_model_execution_basis_fingerprint,
+)
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.model_validator import validate_function_stub
@@ -784,6 +788,7 @@ def run_section_with_workspace(
                 ownership_index=None,
             )
     model_execution = None
+    model_execution_basis_fingerprint = None
     provider_request_context = None
     execution_timing = None
     execution_content_fingerprint = None
@@ -856,6 +861,17 @@ def run_section_with_workspace(
             total_model_path_duration_ms=duration_ms(total_model_path_start_ns, time.perf_counter_ns()),
         )
         model_execution = build_model_execution_metadata(model_config)
+        model_execution_basis_fingerprint = build_function_stub_model_execution_basis_fingerprint(
+            structured_input,
+            model_execution,
+            target_path,
+        )
+        assert_function_stub_model_execution_basis_consistent(
+            model_execution_basis_fingerprint,
+            structured_input,
+            model_execution,
+            target_path,
+        )
         execution_content_fingerprint = build_function_stub_execution_fingerprint(
             structured_input,
             model_execution,
@@ -926,6 +942,7 @@ def run_section_with_workspace(
         execution_blocked=False,
         write_transparency=write_transparency,
         model_execution=model_execution,
+        model_execution_basis_fingerprint=model_execution_basis_fingerprint,
         provider_request_context=provider_request_context,
         execution_timing=execution_timing,
         execution_content_fingerprint=execution_content_fingerprint,
@@ -1173,6 +1190,7 @@ def record_section_execution_stamp(
     execution_blocked: bool = False,
     write_transparency: dict[str, Any] | None = None,
     model_execution: dict[str, Any] | None = None,
+    model_execution_basis_fingerprint: str | None = None,
     provider_request_context: dict[str, Any] | None = None,
     execution_timing: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
@@ -1192,6 +1210,7 @@ def record_section_execution_stamp(
         execution_blocked=execution_blocked,
         write_transparency=write_transparency or {},
         model_execution=model_execution,
+        model_execution_basis_fingerprint=model_execution_basis_fingerprint,
         provider_request_context=provider_request_context,
         execution_timing=execution_timing,
         execution_content_fingerprint=execution_content_fingerprint,
@@ -2116,6 +2135,9 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             _schema_error(artifact_name, "model_execution.temperature must be a float")
         _expect_str(_expect_required_field(model_payload, "postprocess", artifact_name), artifact_name, "model_execution.postprocess")
+    model_execution_basis_fingerprint = artifact.get("model_execution_basis_fingerprint")
+    if model_execution_basis_fingerprint is not None:
+        _expect_str(model_execution_basis_fingerprint, artifact_name, "model_execution_basis_fingerprint")
     provider_request_context = artifact.get("provider_request_context")
     if provider_request_context is not None:
         request_payload = _expect_dict(provider_request_context, artifact_name, "provider_request_context")
@@ -3722,6 +3744,7 @@ def _build_execution_stamp_artifact(
     execution_blocked: bool,
     write_transparency: dict[str, Any],
     model_execution: dict[str, Any] | None = None,
+    model_execution_basis_fingerprint: str | None = None,
     provider_request_context: dict[str, Any] | None = None,
     execution_timing: dict[str, Any] | None = None,
     execution_content_fingerprint: str | None = None,
@@ -3847,6 +3870,8 @@ def _build_execution_stamp_artifact(
     }
     if model_execution is not None:
         payload["model_execution"] = model_execution
+    if model_execution_basis_fingerprint is not None:
+        payload["model_execution_basis_fingerprint"] = str(model_execution_basis_fingerprint)
     if provider_request_context is not None:
         payload["provider_request_context"] = provider_request_context
     if execution_timing is not None:
