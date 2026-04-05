@@ -26,12 +26,17 @@ def build_function_stub_prompt(structured_input: dict[str, Any], template_versio
             for function_spec in spec["functions"]
         ]
     )
+    code_graph_context = spec.get("code_graph_context")
+    rendered_code_graph_context = ""
+    if code_graph_context is not None:
+        rendered_code_graph_context = f"CODE_GRAPH_CONTEXT: {json.dumps(code_graph_context, sort_keys=True)}\n"
     return (
         "Generate Python functions for one file with:\n"
         f"* template_version: {normalized_version}\n"
         f"* function_count: {len(spec['functions'])}\n"
         "* functions:\n"
         f"{rendered_functions}\n"
+        f"{rendered_code_graph_context}"
         f"FUNCTION_STUB_SPEC: {json.dumps(spec, sort_keys=True)}\n"
         "Return ONLY valid Python function code for that one file, containing exactly the requested functions and no extra text."
     )

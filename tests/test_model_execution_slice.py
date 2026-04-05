@@ -20,6 +20,7 @@ from aether.dgce.execution_fingerprint import (
 from aether.dgce.execution_failure import classify_function_stub_execution_failure
 from aether.dgce.execution_timing import build_execution_timing
 from aether.dgce.function_stub_canonicalizer import canonicalize_function_stub_output
+from aether.dgce.code_graph_context import parse_code_graph_context
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_execution_basis import (
     assert_function_stub_model_execution_basis_consistent,
@@ -300,6 +301,31 @@ def test_build_function_stub_prompt_uses_normalized_multi_function_spec():
     assert "* function_count: 2" in prompt
     assert "build_payload" in prompt
     assert "is_payload_empty" in prompt
+    assert "CODE_GRAPH_CONTEXT:" not in prompt
+
+
+def test_build_function_stub_prompt_accepts_optional_code_graph_context_deterministically():
+    structured_input = {
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            }
+        ],
+        "code_graph_context": {
+            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+            "file_outline_summary": [{"name": "existing_helper", "kind": "function"}],
+            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+        },
+    }
+
+    first = build_function_stub_prompt(structured_input, "v1")
+    second = build_function_stub_prompt(structured_input, "v1")
+
+    assert first == second
+    assert "CODE_GRAPH_CONTEXT:" in first
+    assert '"target_symbol"' in first
 
 
 def test_build_function_stub_prompt_rejects_unsupported_template_version():
@@ -677,6 +703,52 @@ def test_parse_function_stub_spec_accepts_multi_function_single_file_shape():
     }
 
 
+def test_parse_code_graph_context_accepts_bounded_optional_context():
+    assert parse_code_graph_context(
+        {
+            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+            "file_outline_summary": [{"name": "existing_helper", "kind": "function"}],
+            "insertion_point_hints": [{"anchor": "build_payload", "position": "after"}],
+            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+            "nearby_related_symbols": [{"name": "serialize_payload", "kind": "function"}],
+            "ownership_boundary_markers": [{"path": "src/function_stub.py", "owner": "function_stub"}],
+        }
+    ) == {
+        "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+        "file_outline_summary": [{"name": "existing_helper", "kind": "function"}],
+        "insertion_point_hints": [{"anchor": "build_payload", "position": "after"}],
+        "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+        "nearby_related_symbols": [{"name": "serialize_payload", "kind": "function"}],
+        "ownership_boundary_markers": [{"path": "src/function_stub.py", "owner": "function_stub"}],
+    }
+
+
+def test_parse_function_stub_spec_accepts_optional_code_graph_context():
+    assert parse_function_stub_spec(
+        {
+            "name": "build_payload",
+            "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+            "return_type": "dict[str, object]",
+            "code_graph_context": {
+                "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+                "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+            },
+        }
+    ) == {
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            }
+        ],
+        "code_graph_context": {
+            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+        },
+    }
+
+
 def test_parse_function_stub_spec_rejects_malformed_parameters():
     with pytest.raises(ValueError, match="function_stub.parameters\\[0\\]\\.type must be a non-empty string"):
         parse_function_stub_spec(
@@ -709,6 +781,29 @@ def test_parse_function_stub_spec_rejects_duplicate_function_names():
                         "return_type": "bool",
                     },
                 ]
+            }
+        )
+
+
+def test_parse_code_graph_context_rejects_malformed_context():
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.target_symbol.kind must be a non-empty string"):
+        parse_code_graph_context(
+            {
+                "target_symbol": {"name": "PayloadBuilder"},
+            }
+        )
+
+
+def test_parse_function_stub_spec_rejects_malformed_code_graph_context():
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.target_symbol.kind must be a non-empty string"):
+        parse_function_stub_spec(
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+                "code_graph_context": {
+                    "target_symbol": {"name": "PayloadBuilder"},
+                },
             }
         )
 
@@ -803,6 +898,59 @@ def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
     }
 
 
+def test_generate_function_stub_passes_optional_code_graph_context_through_prompt_module(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_build_function_stub_prompt(structured_input: dict, template_version: str) -> str:
+        captured["structured_input"] = structured_input
+        captured["template_version"] = template_version
+        return "built prompt"
+
+    def fake_generate_response(prompt: str, config: dict) -> dict:
+        captured["prompt"] = prompt
+        captured["config"] = dict(config)
+        return {"raw_text": "provider output", "request_attempted": False}
+
+    monkeypatch.setattr("aether.dgce.model_executor.build_function_stub_prompt", fake_build_function_stub_prompt)
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fake_generate_response)
+
+    raw_output = generate_function_stub(
+        {
+            "name": "build_payload",
+            "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+            "return_type": "dict[str, object]",
+            "code_graph_context": {
+                "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+                "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+            },
+        },
+        {
+            "provider": "stub",
+            "model_id": "stub-model-v1",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+        },
+    )
+
+    assert raw_output == "provider output"
+    assert captured["template_version"] == "v1"
+    assert captured["prompt"] == "built prompt"
+    assert captured["structured_input"] == {
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            }
+        ],
+        "code_graph_context": {
+            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
+            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
+        },
+    }
+
+
 def test_generate_function_stub_rejects_malformed_input_before_provider_call(monkeypatch):
     def fail_generate_response(prompt: str, config: dict) -> dict:
         raise AssertionError("provider should not be called")
@@ -812,6 +960,32 @@ def test_generate_function_stub_rejects_malformed_input_before_provider_call(mon
     with pytest.raises(ValueError, match="function_stub.parameters is required"):
         generate_function_stub(
             {"name": "build_payload", "return_type": "dict[str, object]"},
+            {
+                "provider": "stub",
+                "model_id": "stub-model-v1",
+                "temperature": 0.0,
+                "prompt_template_version": "v1",
+                "postprocess": "strict_function_stub_v1",
+            },
+        )
+
+
+def test_generate_function_stub_rejects_malformed_code_graph_context_before_provider_call(monkeypatch):
+    def fail_generate_response(prompt: str, config: dict) -> dict:
+        raise AssertionError("provider should not be called")
+
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fail_generate_response)
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.target_symbol.kind must be a non-empty string"):
+        generate_function_stub(
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+                "code_graph_context": {
+                    "target_symbol": {"name": "PayloadBuilder"},
+                },
+            },
             {
                 "provider": "stub",
                 "model_id": "stub-model-v1",

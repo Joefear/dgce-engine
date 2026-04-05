@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aether.dgce.code_graph_context import parse_code_graph_context
+
 
 def parse_function_stub_spec(structured_input: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize the bounded function-stub file spec."""
@@ -25,8 +27,10 @@ def parse_function_stub_spec(structured_input: dict[str, Any]) -> dict[str, Any]
                 raise ValueError(f"function_stub.functions[{index}].name must be unique")
             seen_names.add(function_name)
             functions.append(normalized_function)
-        return {"functions": functions}
-    return {"functions": [_parse_single_function_spec(structured_input, "function_stub")]}
+        normalized_spec = {"functions": functions}
+        return _attach_code_graph_context(normalized_spec, structured_input)
+    normalized_spec = {"functions": [_parse_single_function_spec(structured_input, "function_stub")]}
+    return _attach_code_graph_context(normalized_spec, structured_input)
 
 
 def _parse_single_function_spec(raw_spec: dict[str, Any], field_name: str) -> dict[str, Any]:
@@ -61,6 +65,13 @@ def _reject_ambiguous_single_function_fields(structured_input: dict[str, Any]) -
     present_fields = sorted(field for field in ambiguous_fields if field in structured_input)
     if present_fields:
         raise ValueError("function_stub.functions cannot be combined with top-level single-function fields")
+
+
+def _attach_code_graph_context(normalized_spec: dict[str, Any], structured_input: dict[str, Any]) -> dict[str, Any]:
+    if "code_graph_context" not in structured_input:
+        return normalized_spec
+    normalized_spec["code_graph_context"] = parse_code_graph_context(structured_input.get("code_graph_context"))
+    return normalized_spec
 
 
 def _require_non_empty_string(value: Any, field_name: str) -> str:
