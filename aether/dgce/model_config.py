@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+SUPPORTED_MODEL_PROVIDERS = {"stub", "claude"}
 
 MODEL_EXECUTION_CONFIG: dict[str, Any] = {
     "provider": "stub",
@@ -14,9 +15,22 @@ MODEL_EXECUTION_CONFIG: dict[str, Any] = {
 }
 
 
-def get_model_execution_config() -> dict[str, Any]:
-    """Return a copy of the fixed model execution config."""
-    return dict(MODEL_EXECUTION_CONFIG)
+def get_model_execution_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return validated model execution config with optional explicit overrides."""
+    config = dict(MODEL_EXECUTION_CONFIG)
+    if overrides is not None:
+        config.update(overrides)
+    provider = config.get("provider")
+    if not isinstance(provider, str) or provider.strip() not in SUPPORTED_MODEL_PROVIDERS:
+        raise ValueError(
+            "config.provider must be one of: claude, stub"
+        )
+    config["provider"] = provider.strip()
+    model_id = config.get("model_id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ValueError("config.model_id must be a non-empty string")
+    config["model_id"] = model_id.strip()
+    return config
 
 
 def build_model_execution_audit(config: dict[str, Any]) -> dict[str, Any]:

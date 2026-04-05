@@ -5,13 +5,21 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from aether.dgce.providers import claude_provider
+
 
 def generate_text(prompt: str, config: dict[str, Any]) -> str:
     """Return raw model text for the configured provider."""
     _require_non_empty_string(prompt, "prompt")
     provider = _require_non_empty_string(config.get("provider"), "config.provider")
-    if provider != "stub":
-        raise ValueError(f"Unsupported model provider: {provider}")
+    if provider == "stub":
+        return _generate_stub_text(prompt)
+    if provider == "claude":
+        return claude_provider.generate_text(prompt, config)
+    raise ValueError(f"Unsupported model provider: {provider}")
+
+
+def _generate_stub_text(prompt: str) -> str:
     spec = _parse_function_stub_spec(prompt)
     signature = ", ".join(f"{item['name']}: {item['type']}" for item in spec["inputs"])
     return "\n".join(

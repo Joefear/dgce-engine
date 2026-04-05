@@ -13,6 +13,7 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 from aether.dgce.execute_api import execute_prepared_section, load_section_execution_artifact
+from aether.dgce.model_config import get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.model_validator import validate_function_stub
@@ -161,6 +162,63 @@ def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
     }
 
 
+def test_get_model_execution_config_defaults_to_stub():
+    assert get_model_execution_config()["provider"] == "stub"
+
+
+def test_get_model_execution_config_rejects_unsupported_provider():
+    with pytest.raises(ValueError, match="config.provider must be one of: claude, stub"):
+        get_model_execution_config({"provider": "unknown"})
+
+
+def test_generate_function_stub_with_claude_provider_missing_config_fails_deterministically():
+    with pytest.raises(
+        ValueError,
+        match="Claude provider requires config.api_key or config.api_key_env with a populated environment variable",
+    ):
+        generate_function_stub(
+            {
+                "name": "build_payload",
+                "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+                "output": "dict[str, object]",
+            },
+            {
+                "provider": "claude",
+                "model_id": "claude-3-7-sonnet",
+                "temperature": 0.0,
+                "prompt_template_version": "v1",
+                "postprocess": "strict_function_stub_v1",
+            },
+        )
+
+
+def test_generate_function_stub_dispatches_to_claude_provider_boundary(monkeypatch):
+    def fake_generate_text(prompt: str, config: dict) -> str:
+        assert "FUNCTION_STUB_SPEC:" in prompt
+        assert config["provider"] == "claude"
+        return "claude output"
+
+    monkeypatch.setattr("aether.dgce.model_provider.claude_provider.generate_text", fake_generate_text)
+
+    raw_output = generate_function_stub(
+        {
+            "name": "build_payload",
+            "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+            "output": "dict[str, object]",
+        },
+        {
+            "provider": "claude",
+            "model_id": "claude-3-7-sonnet",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+            "api_key": "test-key",
+        },
+    )
+
+    assert raw_output == "claude output"
+
+
 def test_validate_function_stub_blocks_malformed_output():
     with pytest.raises(ValueError, match="valid Python syntax"):
         validate_function_stub("def broken(", {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"})
@@ -201,3 +259,29 @@ def test_execute_prepared_function_stub_does_not_write_on_validation_failure(mon
     if execution_path.exists():
         payload = json.loads(execution_path.read_text(encoding="utf-8"))
         assert payload.get("written_files") == []
+
+
+def test_execute_prepared_function_stub_does_not_write_on_provider_config_failure(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_provider_failure")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose.get_model_execution_config",
+        lambda: {
+            "provider": "claude",
+            "model_id": "claude-3-7-sonnet",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Claude provider requires config.api_key or config.api_key_env with a populated environment variable",
+    ):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
