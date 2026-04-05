@@ -6,6 +6,7 @@ from typing import Any
 
 
 MODEL_EXECUTION_CONFIG: dict[str, Any] = {
+    "provider": "stub",
     "model_id": "stub-model-v1",
     "temperature": 0.0,
     "prompt_template_version": "v1",
@@ -21,6 +22,7 @@ def get_model_execution_config() -> dict[str, Any]:
 def build_model_execution_audit(config: dict[str, Any]) -> dict[str, Any]:
     """Return the compact audit-safe model execution metadata."""
     return {
+        "provider": str(config["provider"]),
         "model_id": str(config["model_id"]),
         "prompt_template_version": str(config["prompt_template_version"]),
         "temperature": float(config["temperature"]),

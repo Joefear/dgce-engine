@@ -2014,6 +2014,7 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
     model_execution = artifact.get("model_execution")
     if model_execution is not None:
         model_payload = _expect_dict(model_execution, artifact_name, "model_execution")
+        _expect_str(_expect_required_field(model_payload, "provider", artifact_name), artifact_name, "model_execution.provider")
         _expect_str(_expect_required_field(model_payload, "model_id", artifact_name), artifact_name, "model_execution.model_id")
         _expect_str(
             _expect_required_field(model_payload, "prompt_template_version", artifact_name),

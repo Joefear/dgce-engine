@@ -13,6 +13,7 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 from aether.dgce.execute_api import execute_prepared_section, load_section_execution_artifact
+from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.model_validator import validate_function_stub
 from aether_core.enums import ArtifactStatus
@@ -116,9 +117,47 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
     )
     execution_artifact = load_section_execution_artifact(project_root, "function-stub")
     assert execution_artifact["model_execution"] == {
+        "provider": "stub",
         "model_id": "stub-model-v1",
         "prompt_template_version": "v1",
         "temperature": 0.0,
+    }
+
+
+def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_generate_text(prompt: str, config: dict) -> str:
+        captured["prompt"] = prompt
+        captured["config"] = dict(config)
+        return "provider output"
+
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_text", fake_generate_text)
+
+    raw_output = generate_function_stub(
+        {
+            "name": "build_payload",
+            "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+            "output": "dict[str, object]",
+        },
+        {
+            "provider": "stub",
+            "model_id": "stub-model-v1",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+        },
+    )
+
+    assert raw_output == "provider output"
+    assert "FUNCTION_STUB_SPEC:" in str(captured["prompt"])
+    assert "* provider: stub" in str(captured["prompt"])
+    assert captured["config"] == {
+        "provider": "stub",
+        "model_id": "stub-model-v1",
+        "temperature": 0.0,
+        "prompt_template_version": "v1",
+        "postprocess": "strict_function_stub_v1",
     }
 
 
