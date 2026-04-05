@@ -23,6 +23,10 @@ from aether.dgce.incremental import (
     scan_workspace_inventory,
 )
 from aether.dgce.file_writer import write_file_plan
+from aether.dgce.execution_fingerprint import (
+    build_function_stub_execution_fingerprint,
+    determine_function_stub_write_idempotence_status,
+)
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
@@ -773,11 +777,25 @@ def run_section_with_workspace(
                 ownership_index=None,
             )
     model_execution = None
+    execution_content_fingerprint = None
+    write_idempotence_status = None
     if require_preflight_pass and section.section_type == "function_stub":
         structured_input, target_path = _build_function_stub_structured_input(section, file_plan)
         model_config = get_model_execution_config()
         raw_output = generate_function_stub(structured_input, model_config)
         validated_output = validate_function_stub(raw_output, structured_input)
+        model_execution = build_model_execution_metadata(model_config)
+        execution_content_fingerprint = build_function_stub_execution_fingerprint(
+            structured_input,
+            model_execution,
+            target_path,
+            validated_output,
+        )
+        write_idempotence_status = determine_function_stub_write_idempotence_status(
+            project_root,
+            target_path,
+            validated_output,
+        )
         file_plan = _inject_function_stub_content(file_plan, target_path, validated_output)
         write_plan, write_transparency = build_write_transparency(
             file_plan,
@@ -786,7 +804,6 @@ def run_section_with_workspace(
             allow_modify_write=effective_allow_safe_modify,
             owned_paths=owned_paths,
         )
-        model_execution = build_model_execution_metadata(model_config)
     execution_outcome = _build_execution_outcome(
         section_id=section_id,
         stage=DGCEWorkspaceStage.WRITE,
@@ -838,6 +855,8 @@ def run_section_with_workspace(
         execution_blocked=False,
         write_transparency=write_transparency,
         model_execution=model_execution,
+        execution_content_fingerprint=execution_content_fingerprint,
+        write_idempotence_status=write_idempotence_status,
     )
     _refresh_workspace_views(workspace)
 
@@ -1081,6 +1100,8 @@ def record_section_execution_stamp(
     execution_blocked: bool = False,
     write_transparency: dict[str, Any] | None = None,
     model_execution: dict[str, Any] | None = None,
+    execution_content_fingerprint: str | None = None,
+    write_idempotence_status: str | None = None,
 ) -> dict[str, Any]:
     """Persist a deterministic execution stamp and refresh workspace linkage."""
     workspace = _ensure_workspace(project_root)
@@ -1094,6 +1115,8 @@ def record_section_execution_stamp(
         execution_blocked=execution_blocked,
         write_transparency=write_transparency or {},
         model_execution=model_execution,
+        execution_content_fingerprint=execution_content_fingerprint,
+        write_idempotence_status=write_idempotence_status,
     )
     if execution_artifact["approval_consumed"]:
         _supersede_approval_artifact(workspace["root"], section_id)
@@ -2012,6 +2035,12 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             _schema_error(artifact_name, "model_execution.temperature must be a float")
         _expect_str(_expect_required_field(model_payload, "postprocess", artifact_name), artifact_name, "model_execution.postprocess")
+    execution_content_fingerprint = artifact.get("execution_content_fingerprint")
+    if execution_content_fingerprint is not None:
+        _expect_str(execution_content_fingerprint, artifact_name, "execution_content_fingerprint")
+    write_idempotence_status = artifact.get("write_idempotence_status")
+    if write_idempotence_status is not None:
+        _expect_str(write_idempotence_status, artifact_name, "write_idempotence_status")
     execution_record_summary = _expect_dict(_expect_required_field(artifact, "execution_record_summary", artifact_name), artifact_name, "execution_record_summary")
     for key in ("execution_status",):
         _expect_str(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")
@@ -3577,6 +3606,8 @@ def _build_execution_stamp_artifact(
     execution_blocked: bool,
     write_transparency: dict[str, Any],
     model_execution: dict[str, Any] | None = None,
+    execution_content_fingerprint: str | None = None,
+    write_idempotence_status: str | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic execution-stamp artifact from current run facts and linked metadata."""
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
@@ -3696,6 +3727,10 @@ def _build_execution_stamp_artifact(
     }
     if model_execution is not None:
         payload["model_execution"] = model_execution
+    if execution_content_fingerprint is not None:
+        payload["execution_content_fingerprint"] = str(execution_content_fingerprint)
+    if write_idempotence_status is not None:
+        payload["write_idempotence_status"] = str(write_idempotence_status)
     return _with_artifact_metadata("execution_record", payload)
 
 

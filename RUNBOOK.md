@@ -30,6 +30,7 @@ In practice, governed generation means:
 - validation happens before any write
 - outputs are recorded as artifacts, not ad hoc edits
 - `stub` remains the default provider path; `claude` may be used only when explicitly configured
+- function-stub writes are trace-bound with a bounded execution fingerprint; this is not a cross-run cache or deduplication system
 
 ## How to Run Tests
 

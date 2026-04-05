@@ -13,6 +13,10 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 from aether.dgce.execute_api import execute_prepared_section, load_section_execution_artifact
+from aether.dgce.execution_fingerprint import (
+    build_function_stub_execution_fingerprint,
+    determine_function_stub_write_idempotence_status,
+)
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
@@ -127,6 +131,8 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
         "temperature": 0.0,
         "postprocess": "strict_function_stub_v1",
     }
+    assert isinstance(execution_artifact["execution_content_fingerprint"], str)
+    assert execution_artifact["write_idempotence_status"] == "new_content"
 
 
 def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
@@ -226,6 +232,72 @@ def test_build_model_execution_metadata_is_audit_safe_and_bounded():
         "prompt_template_version": "v1",
         "postprocess": "strict_function_stub_v1",
     }
+
+
+def test_build_function_stub_execution_fingerprint_is_deterministic():
+    assert build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    ) == build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    )
+
+
+def test_build_function_stub_execution_fingerprint_changes_with_spec():
+    first = build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    )
+    second = build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}, {"name": "flag", "type": "bool"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object], flag: bool) -> dict[str, object]:\n    return {}\n",
+    )
+    assert first != second
+
+
+def test_build_function_stub_execution_fingerprint_changes_with_execution_config():
+    first = build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "stub", "model_id": "stub-model-v1", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    )
+    second = build_function_stub_execution_fingerprint(
+        {"name": "build_payload", "parameters": [{"name": "payload", "type": "dict[str, object]"}], "return_type": "dict[str, object]"},
+        {"provider": "claude", "model_id": "claude-3-7-sonnet", "temperature": 0.0, "prompt_template_version": "v1", "postprocess": "strict_function_stub_v1"},
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    )
+    assert first != second
+
+
+def test_determine_function_stub_write_idempotence_status_is_deterministic():
+    tmp_path = _workspace_dir("function_stub_idempotence_status")
+    assert determine_function_stub_write_idempotence_status(
+        tmp_path,
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    ) == "new_content"
+    target_path = tmp_path / "src" / "function_stub.py"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+        encoding="utf-8",
+    )
+    assert determine_function_stub_write_idempotence_status(
+        tmp_path,
+        "src/function_stub.py",
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    ) == "existing_content_match"
 
 
 def test_parse_function_stub_spec_normalizes_valid_input_deterministically():
@@ -541,6 +613,56 @@ def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure
     )
 
     with pytest.raises(ValueError, match="function_stub.parameters is required"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+
+
+def test_execute_prepared_function_stub_records_deterministic_fingerprint_and_idempotence_on_repeat(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_repeat_fingerprint")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+
+    first_result = execute_prepared_section(project_root, "function-stub")
+    assert first_result["status"] == "ok"
+    first_artifact = load_section_execution_artifact(project_root, "function-stub")
+    first_fingerprint = first_artifact["execution_content_fingerprint"]
+    validated_content = (project_root / "src/function_stub.py").read_text(encoding="utf-8")
+    second_fingerprint = build_function_stub_execution_fingerprint(
+        parse_function_stub_spec(
+            {
+                "name": "build_payload",
+                "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+                "output": "dict[str, object]",
+            }
+        ),
+        first_artifact["model_execution"],
+        "src/function_stub.py",
+        validated_content,
+    )
+
+    assert second_fingerprint == first_fingerprint
+    assert determine_function_stub_write_idempotence_status(
+        project_root,
+        "src/function_stub.py",
+        validated_content,
+    ) == "existing_content_match"
+
+
+def test_execute_prepared_function_stub_does_not_write_if_fingerprint_logic_fails(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_fingerprint_failure")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose.build_function_stub_execution_fingerprint",
+        lambda function_stub_spec, model_execution_metadata, target_path, validated_content: (_ for _ in ()).throw(
+            ValueError("execution fingerprint failed")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="execution fingerprint failed"):
         execute_prepared_section(project_root, "function-stub")
 
     assert not (project_root / "src/function_stub.py").exists()
