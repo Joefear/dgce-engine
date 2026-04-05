@@ -15,6 +15,7 @@ from aether.dgce import (
 from aether.dgce.execute_api import execute_prepared_section, load_section_execution_artifact
 from aether.dgce.model_config import get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
+from aether.dgce.providers import claude_provider
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.model_validator import validate_function_stub
 from aether_core.enums import ArtifactStatus
@@ -172,10 +173,7 @@ def test_get_model_execution_config_rejects_unsupported_provider():
 
 
 def test_generate_function_stub_with_claude_provider_missing_config_fails_deterministically():
-    with pytest.raises(
-        ValueError,
-        match="Claude provider requires config.api_key or config.api_key_env with a populated environment variable",
-    ):
+    with pytest.raises(ValueError, match="Claude provider requires config.api_key"):
         generate_function_stub(
             {
                 "name": "build_payload",
@@ -217,6 +215,77 @@ def test_generate_function_stub_dispatches_to_claude_provider_boundary(monkeypat
     )
 
     assert raw_output == "claude output"
+
+
+class _MockClaudeResponse:
+    def __init__(self, payload: object):
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def test_claude_provider_returns_raw_text_on_valid_response(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return _MockClaudeResponse({"content": [{"type": "text", "text": "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n"}]})
+
+    monkeypatch.setattr("aether.dgce.providers.claude_provider.urlopen", fake_urlopen)
+
+    raw_output = claude_provider.generate_text(
+        "prompt text",
+        {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key", "temperature": 0.0},
+    )
+
+    assert raw_output.startswith("def build_payload")
+    assert captured["url"] == claude_provider.DEFAULT_API_BASE_URL
+    assert captured["method"] == "POST"
+    assert captured["timeout"] == 30
+    assert captured["body"] == {
+        "model": "claude-3-7-sonnet",
+        "max_tokens": claude_provider.DEFAULT_MAX_TOKENS,
+        "messages": [{"role": "user", "content": "prompt text"}],
+        "temperature": 0.0,
+    }
+    assert captured["headers"]["X-api-key"] == "secret-key"
+    assert captured["headers"]["Anthropic-version"] == "2023-06-01"
+
+
+def test_claude_provider_malformed_response_fails_deterministically(monkeypatch):
+    monkeypatch.setattr(
+        "aether.dgce.providers.claude_provider.urlopen",
+        lambda request, timeout: _MockClaudeResponse({"content": [{"type": "tool_use", "name": "ignored"}]}),
+    )
+
+    with pytest.raises(ValueError, match="Claude provider response missing text content"):
+        claude_provider.generate_text("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key"})
+
+
+def test_claude_provider_request_failure_fails_deterministically(monkeypatch):
+    def fail_urlopen(request, timeout):
+        raise OSError("network down")
+
+    monkeypatch.setattr("aether.dgce.providers.claude_provider.urlopen", fail_urlopen)
+
+    with pytest.raises(ValueError, match="Claude provider request failed"):
+        claude_provider.generate_text("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key"})
+
+
+def test_claude_provider_missing_api_key_fails_deterministically():
+    with pytest.raises(ValueError, match="Claude provider requires config.api_key"):
+        claude_provider.generate_text("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet"})
 
 
 def test_validate_function_stub_blocks_malformed_output():
@@ -276,10 +345,35 @@ def test_execute_prepared_function_stub_does_not_write_on_provider_config_failur
         },
     )
 
-    with pytest.raises(
-        ValueError,
-        match="Claude provider requires config.api_key or config.api_key_env with a populated environment variable",
-    ):
+    with pytest.raises(ValueError, match="Claude provider requires config.api_key"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+
+
+def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failure(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_claude_transport_failure")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose.get_model_execution_config",
+        lambda: {
+            "provider": "claude",
+            "model_id": "claude-3-7-sonnet",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+            "api_key": "secret-key",
+        },
+    )
+    monkeypatch.setattr(
+        "aether.dgce.providers.claude_provider.urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(OSError("network down")),
+    )
+
+    with pytest.raises(ValueError, match="Claude provider request failed"):
         execute_prepared_section(project_root, "function-stub")
 
     assert not (project_root / "src/function_stub.py").exists()

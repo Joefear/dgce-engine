@@ -1,21 +1,74 @@
-"""Scaffolded Claude provider boundary for DGCE model execution."""
+"""Minimal Claude provider boundary for DGCE model execution."""
 
 from __future__ import annotations
 
+import json
 import os
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from typing import Any
+
+DEFAULT_API_BASE_URL = "https://api.anthropic.com/v1/messages"
+DEFAULT_MAX_TOKENS = 512
 
 
 def generate_text(prompt: str, config: dict[str, Any]) -> str:
-    """Validate Claude provider config and stop before live execution."""
+    """Validate Claude provider config and return raw text from one Claude response."""
     _require_non_empty_string(prompt, "prompt")
     model_id = _require_non_empty_string(config.get("model_id"), "config.model_id")
     api_key = _resolve_api_key(config)
     if api_key is None:
-        raise ValueError(
-            "Claude provider requires config.api_key or config.api_key_env with a populated environment variable"
-        )
-    raise ValueError(f"Claude provider live execution is not configured for model_id={model_id}")
+        raise ValueError("Claude provider requires config.api_key")
+    request = _build_request(prompt, config, model_id, api_key)
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Claude provider request failed") from exc
+    return _extract_text(payload)
+
+
+def _build_request(prompt: str, config: dict[str, Any], model_id: str, api_key: str) -> Request:
+    api_base_url = str(config.get("api_base_url", DEFAULT_API_BASE_URL)).strip() or DEFAULT_API_BASE_URL
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "max_tokens": DEFAULT_MAX_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    temperature = config.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        payload["temperature"] = float(temperature)
+    body = json.dumps(payload).encode("utf-8")
+    return Request(
+        api_base_url,
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+
+
+def _extract_text(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        raise ValueError("Claude provider response missing text content")
+    content = payload.get("content")
+    if not isinstance(content, list) or not content:
+        raise ValueError("Claude provider response missing text content")
+    text_segments: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "text":
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            text_segments.append(text)
+    if not text_segments:
+        raise ValueError("Claude provider response missing text content")
+    return "".join(text_segments)
 
 
 def _resolve_api_key(config: dict[str, Any]) -> str | None:

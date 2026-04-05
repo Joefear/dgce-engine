@@ -29,6 +29,7 @@ In practice, governed generation means:
 - Aether controls routing and execution.
 - validation happens before any write
 - outputs are recorded as artifacts, not ad hoc edits
+- `stub` remains the default provider path; `claude` may be used only when explicitly configured
 
 ## How to Run Tests
 
