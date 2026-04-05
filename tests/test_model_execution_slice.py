@@ -20,9 +20,11 @@ from aether.dgce.execution_fingerprint import (
 from aether.dgce.execution_failure import classify_function_stub_execution_failure
 from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
+from aether.dgce.model_provider import generate_response
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.prompt_templates import build_function_stub_prompt
 from aether.dgce.provider_request_context import build_provider_request_context
+from aether.dgce.provider_response import build_provider_response, normalize_provider_response
 from aether.dgce.providers import claude_provider
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.model_validator import validate_function_stub
@@ -149,12 +151,12 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
 def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_generate_text(prompt: str, config: dict) -> str:
+    def fake_generate_response(prompt: str, config: dict) -> dict:
         captured["prompt"] = prompt
         captured["config"] = dict(config)
-        return "provider output"
+        return {"raw_text": "provider output", "request_attempted": False}
 
-    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_text", fake_generate_text)
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fake_generate_response)
 
     raw_output = generate_function_stub(
         {
@@ -242,6 +244,17 @@ def test_build_model_execution_metadata_is_audit_safe_and_bounded():
         "temperature": 0.0,
         "prompt_template_version": "v1",
         "postprocess": "strict_function_stub_v1",
+    }
+
+
+def test_provider_response_helpers_are_bounded():
+    assert build_provider_response("output", request_attempted=True) == {
+        "raw_text": "output",
+        "request_attempted": True,
+    }
+    assert normalize_provider_response({"raw_text": "output", "request_attempted": False}) == {
+        "raw_text": "output",
+        "request_attempted": False,
     }
 
 
@@ -400,12 +413,12 @@ def test_generate_function_stub_with_claude_provider_missing_config_fails_determ
 
 
 def test_generate_function_stub_dispatches_to_claude_provider_boundary(monkeypatch):
-    def fake_generate_text(prompt: str, config: dict) -> str:
+    def fake_generate_response(prompt: str, config: dict) -> dict:
         assert "FUNCTION_STUB_SPEC:" in prompt
         assert config["provider"] == "claude"
-        return "claude output"
+        return {"raw_text": "claude output", "request_attempted": True}
 
-    monkeypatch.setattr("aether.dgce.model_provider.claude_provider.generate_text", fake_generate_text)
+    monkeypatch.setattr("aether.dgce.model_provider.claude_provider.generate_response", fake_generate_response)
 
     raw_output = generate_function_stub(
         {
@@ -434,13 +447,13 @@ def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
         captured["template_version"] = template_version
         return "built prompt"
 
-    def fake_generate_text(prompt: str, config: dict) -> str:
+    def fake_generate_response(prompt: str, config: dict) -> dict:
         captured["prompt"] = prompt
         captured["config"] = dict(config)
-        return "provider output"
+        return {"raw_text": "provider output", "request_attempted": False}
 
     monkeypatch.setattr("aether.dgce.model_executor.build_function_stub_prompt", fake_build_function_stub_prompt)
-    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_text", fake_generate_text)
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fake_generate_response)
 
     raw_output = generate_function_stub(
         {
@@ -463,10 +476,10 @@ def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
 
 
 def test_generate_function_stub_rejects_malformed_input_before_provider_call(monkeypatch):
-    def fail_generate_text(prompt: str, config: dict) -> str:
+    def fail_generate_response(prompt: str, config: dict) -> dict:
         raise AssertionError("provider should not be called")
 
-    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_text", fail_generate_text)
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fail_generate_response)
 
     with pytest.raises(ValueError, match="function_stub.parameters is required"):
         generate_function_stub(
@@ -495,6 +508,22 @@ class _MockClaudeResponse:
         return None
 
 
+def test_stub_provider_returns_normalized_response_contract():
+    assert generate_response(
+        "Generate a Python function with:\n* template_version: v1\n* name: build_payload\n* inputs: payload: dict[str, object]\n* output: dict[str, object]\nFUNCTION_STUB_SPEC: {\"name\": \"build_payload\", \"parameters\": [{\"name\": \"payload\", \"type\": \"dict[str, object]\"}], \"return_type\": \"dict[str, object]\"}\nReturn ONLY valid Python function code.",
+        {
+            "provider": "stub",
+            "model_id": "stub-model-v1",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+        },
+    ) == {
+        "raw_text": "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+        "request_attempted": False,
+    }
+
+
 def test_claude_provider_returns_raw_text_on_valid_response(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -508,12 +537,15 @@ def test_claude_provider_returns_raw_text_on_valid_response(monkeypatch):
 
     monkeypatch.setattr("aether.dgce.providers.claude_provider.urlopen", fake_urlopen)
 
-    raw_output = claude_provider.generate_text(
+    normalized = claude_provider.generate_response(
         "prompt text",
         {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key", "temperature": 0.0},
     )
 
-    assert raw_output.startswith("def build_payload")
+    assert normalized == {
+        "raw_text": "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+        "request_attempted": True,
+    }
     assert captured["url"] == claude_provider.DEFAULT_API_BASE_URL
     assert captured["method"] == "POST"
     assert captured["timeout"] == 30
@@ -534,7 +566,7 @@ def test_claude_provider_malformed_response_fails_deterministically(monkeypatch)
     )
 
     with pytest.raises(ValueError, match="Claude provider response missing text content"):
-        claude_provider.generate_text("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key"})
+        claude_provider.generate_response("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key"})
 
 
 def test_claude_provider_request_failure_fails_deterministically(monkeypatch):
@@ -544,12 +576,41 @@ def test_claude_provider_request_failure_fails_deterministically(monkeypatch):
     monkeypatch.setattr("aether.dgce.providers.claude_provider.urlopen", fail_urlopen)
 
     with pytest.raises(ValueError, match="Claude provider request failed"):
-        claude_provider.generate_text("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key"})
+        claude_provider.generate_response("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet", "api_key": "secret-key"})
 
 
 def test_claude_provider_missing_api_key_fails_deterministically():
     with pytest.raises(ValueError, match="Claude provider requires config.api_key"):
-        claude_provider.generate_text("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet"})
+        claude_provider.generate_response("prompt text", {"provider": "claude", "model_id": "claude-3-7-sonnet"})
+
+
+def test_executor_extracts_only_normalized_raw_text(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_generate_response(prompt: str, config: dict) -> dict:
+        captured["prompt"] = prompt
+        captured["config"] = dict(config)
+        return {"raw_text": "normalized raw text", "request_attempted": True}
+
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fake_generate_response)
+
+    raw_output = generate_function_stub(
+        {
+            "name": "build_payload",
+            "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+            "return_type": "dict[str, object]",
+        },
+        {
+            "provider": "claude",
+            "model_id": "claude-3-7-sonnet",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+            "api_key": "test-key",
+        },
+    )
+
+    assert raw_output == "normalized raw text"
 
 
 def test_validate_function_stub_blocks_malformed_output():

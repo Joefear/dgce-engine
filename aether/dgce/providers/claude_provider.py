@@ -8,6 +8,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from typing import Any
 
+from aether.dgce.provider_response import build_provider_response
+
 DEFAULT_API_BASE_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_MAX_TOKENS = 512
 
@@ -20,8 +22,8 @@ class ClaudeProviderError(ValueError):
         self.request_attempted = request_attempted
 
 
-def generate_text(prompt: str, config: dict[str, Any]) -> str:
-    """Validate Claude provider config and return raw text from one Claude response."""
+def generate_response(prompt: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Validate Claude provider config and return normalized response from one Claude request."""
     _require_non_empty_string(prompt, "prompt")
     model_id = _require_non_empty_string(config.get("model_id"), "config.model_id")
     api_key = _resolve_api_key(config)
@@ -31,11 +33,16 @@ def generate_text(prompt: str, config: dict[str, Any]) -> str:
     try:
         with urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return _extract_text(payload)
+        return build_provider_response(_extract_text(payload), request_attempted=True)
     except ClaudeProviderError:
         raise
     except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise ClaudeProviderError("Claude provider request failed", request_attempted=True) from exc
+
+
+def generate_text(prompt: str, config: dict[str, Any]) -> str:
+    """Backward-compatible raw-text accessor for Claude responses."""
+    return generate_response(prompt, config)["raw_text"]
 
 
 def _build_request(prompt: str, config: dict[str, Any], model_id: str, api_key: str) -> Request:

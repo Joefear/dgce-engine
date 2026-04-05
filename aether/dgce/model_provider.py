@@ -5,29 +5,38 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from aether.dgce.provider_response import build_provider_response, normalize_provider_response
 from aether.dgce.providers import claude_provider
 
 
-def generate_text(prompt: str, config: dict[str, Any]) -> str:
-    """Return raw model text for the configured provider."""
+def generate_response(prompt: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Return normalized provider response for the configured provider."""
     _require_non_empty_string(prompt, "prompt")
     provider = _require_non_empty_string(config.get("provider"), "config.provider")
     if provider == "stub":
-        return _generate_stub_text(prompt)
+        return normalize_provider_response(_generate_stub_response(prompt))
     if provider == "claude":
-        return claude_provider.generate_text(prompt, config)
+        return normalize_provider_response(claude_provider.generate_response(prompt, config))
     raise ValueError(f"Unsupported model provider: {provider}")
 
 
-def _generate_stub_text(prompt: str) -> str:
+def generate_text(prompt: str, config: dict[str, Any]) -> str:
+    """Backward-compatible raw-text accessor for the configured provider."""
+    return generate_response(prompt, config)["raw_text"]
+
+
+def _generate_stub_response(prompt: str) -> dict[str, Any]:
     spec = _parse_function_stub_spec(prompt)
     signature = ", ".join(f"{item['name']}: {item['type']}" for item in spec["parameters"])
-    return "\n".join(
-        [
-            f"def {spec['name']}({signature}) -> {spec['return_type']}:",
-            f"    return {_stub_return_expression(spec['return_type'])}",
-            "",
-        ]
+    return build_provider_response(
+        "\n".join(
+            [
+                f"def {spec['name']}({signature}) -> {spec['return_type']}:",
+                f"    return {_stub_return_expression(spec['return_type'])}",
+                "",
+            ]
+        ),
+        request_attempted=False,
     )
 
 
