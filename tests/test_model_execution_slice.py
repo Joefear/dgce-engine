@@ -39,6 +39,46 @@ from aether_core.enums import ArtifactStatus
 from aether_core.router.executors import ExecutionResult
 
 
+def _valid_code_graph_context() -> dict:
+    return {
+        "contract_name": "DefiantCodeGraphFacts",
+        "contract_version": "dcg.facts.v1",
+        "generated_at": "2026-04-04T10:15:30Z",
+        "placement_facts": {
+            "target_symbol_id": "sym:payload_builder",
+            "file_outline_summary": [
+                {
+                    "symbol_id": "sym:existing_helper",
+                    "symbol_kind": "function",
+                    "span": {"start_line": 3, "end_line": 7},
+                }
+            ],
+            "insertion_point_hints": [
+                {
+                    "anchor_symbol_id": "sym:existing_helper",
+                    "position": "after",
+                    "span": {"start_line": 7, "end_line": 7},
+                }
+            ],
+            "collision_flags": [
+                {
+                    "symbol_id": "sym:build_payload",
+                    "reason": "existing_symbol",
+                }
+            ],
+            "ownership_boundary_markers": [
+                {
+                    "owner_id": "ownership:function_stub",
+                    "span": {"start_line": 1, "end_line": 20},
+                }
+            ],
+        },
+        "related_symbols": ["sym:serialize_payload"],
+        "touched_symbols": ["sym:build_payload"],
+        "dependent_symbols": ["sym:payload_consumer"],
+    }
+
+
 def _workspace_dir(name: str) -> Path:
     base = Path("tests/.tmp") / name
     if base.exists():
@@ -313,11 +353,7 @@ def test_build_function_stub_prompt_accepts_optional_code_graph_context_determin
                 "return_type": "dict[str, object]",
             }
         ],
-        "code_graph_context": {
-            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-            "file_outline_summary": [{"name": "existing_helper", "kind": "function"}],
-            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-        },
+        "code_graph_context": _valid_code_graph_context(),
     }
 
     first = build_function_stub_prompt(structured_input, "v1")
@@ -325,7 +361,7 @@ def test_build_function_stub_prompt_accepts_optional_code_graph_context_determin
 
     assert first == second
     assert "CODE_GRAPH_CONTEXT:" in first
-    assert '"target_symbol"' in first
+    assert '"contract_name": "DefiantCodeGraphFacts"' in first
 
 
 def test_build_function_stub_prompt_rejects_unsupported_template_version():
@@ -703,24 +739,18 @@ def test_parse_function_stub_spec_accepts_multi_function_single_file_shape():
     }
 
 
-def test_parse_code_graph_context_accepts_bounded_optional_context():
-    assert parse_code_graph_context(
-        {
-            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-            "file_outline_summary": [{"name": "existing_helper", "kind": "function"}],
-            "insertion_point_hints": [{"anchor": "build_payload", "position": "after"}],
-            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-            "nearby_related_symbols": [{"name": "serialize_payload", "kind": "function"}],
-            "ownership_boundary_markers": [{"path": "src/function_stub.py", "owner": "function_stub"}],
-        }
-    ) == {
-        "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-        "file_outline_summary": [{"name": "existing_helper", "kind": "function"}],
-        "insertion_point_hints": [{"anchor": "build_payload", "position": "after"}],
-        "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-        "nearby_related_symbols": [{"name": "serialize_payload", "kind": "function"}],
-        "ownership_boundary_markers": [{"path": "src/function_stub.py", "owner": "function_stub"}],
-    }
+def test_parse_code_graph_context_accepts_valid_v1_payload():
+    assert parse_code_graph_context(_valid_code_graph_context()) == _valid_code_graph_context()
+
+
+def test_parse_code_graph_context_preserves_symbol_id_field_meaning_exactly():
+    payload = _valid_code_graph_context()
+    parsed = parse_code_graph_context(payload)
+
+    assert parsed["placement_facts"]["target_symbol_id"] == "sym:payload_builder"
+    assert parsed["related_symbols"] == ["sym:serialize_payload"]
+    assert parsed["touched_symbols"] == ["sym:build_payload"]
+    assert parsed["dependent_symbols"] == ["sym:payload_consumer"]
 
 
 def test_parse_function_stub_spec_accepts_optional_code_graph_context():
@@ -729,10 +759,7 @@ def test_parse_function_stub_spec_accepts_optional_code_graph_context():
             "name": "build_payload",
             "parameters": [{"name": "payload", "type": "dict[str, object]"}],
             "return_type": "dict[str, object]",
-            "code_graph_context": {
-                "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-                "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-            },
+            "code_graph_context": _valid_code_graph_context(),
         }
     ) == {
         "functions": [
@@ -742,10 +769,7 @@ def test_parse_function_stub_spec_accepts_optional_code_graph_context():
                 "return_type": "dict[str, object]",
             }
         ],
-        "code_graph_context": {
-            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-        },
+        "code_graph_context": _valid_code_graph_context(),
     }
 
 
@@ -785,25 +809,87 @@ def test_parse_function_stub_spec_rejects_duplicate_function_names():
         )
 
 
-def test_parse_code_graph_context_rejects_malformed_context():
-    with pytest.raises(ValueError, match="function_stub.code_graph_context.target_symbol.kind must be a non-empty string"):
-        parse_code_graph_context(
-            {
-                "target_symbol": {"name": "PayloadBuilder"},
-            }
-        )
+def test_parse_code_graph_context_rejects_wrong_contract_name():
+    payload = _valid_code_graph_context()
+    payload["contract_name"] = "WrongContract"
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.contract_name must be DefiantCodeGraphFacts"):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_wrong_contract_version():
+    payload = _valid_code_graph_context()
+    payload["contract_version"] = "dcg.facts.v2"
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.contract_version must be dcg.facts.v1"):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_extra_fields():
+    payload = _valid_code_graph_context()
+    payload["unexpected"] = "value"
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context must not include extra fields"):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_extra_nested_fields():
+    payload = _valid_code_graph_context()
+    payload["placement_facts"]["file_outline_summary"][0]["extra"] = "value"
+
+    with pytest.raises(
+        ValueError,
+        match="function_stub.code_graph_context.placement_facts.file_outline_summary\\[0\\] must not include extra fields",
+    ):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_invalid_generated_at():
+    payload = _valid_code_graph_context()
+    payload["generated_at"] = "2026-04-04 10:15:30"
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.generated_at must be RFC 3339 when provided"):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_invalid_span_invariant():
+    payload = _valid_code_graph_context()
+    payload["placement_facts"]["file_outline_summary"][0]["span"] = {"start_line": 10, "end_line": 3}
+
+    with pytest.raises(
+        ValueError,
+        match="function_stub.code_graph_context.placement_facts.file_outline_summary\\[0\\]\\.span.end_line must be greater than or equal to function_stub.code_graph_context.placement_facts.file_outline_summary\\[0\\]\\.span.start_line",
+    ):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_invalid_object_placement():
+    payload = _valid_code_graph_context()
+    payload["related_symbols"] = {"symbol_id": "sym:serialize_payload"}
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.related_symbols must be a list"):
+        parse_code_graph_context(payload)
+
+
+def test_parse_code_graph_context_rejects_invalid_null_placement():
+    payload = _valid_code_graph_context()
+    payload["placement_facts"]["collision_flags"] = [None]
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.placement_facts.collision_flags\\[0\\] must be a dict"):
+        parse_code_graph_context(payload)
 
 
 def test_parse_function_stub_spec_rejects_malformed_code_graph_context():
-    with pytest.raises(ValueError, match="function_stub.code_graph_context.target_symbol.kind must be a non-empty string"):
+    payload = _valid_code_graph_context()
+    payload["contract_version"] = "dcg.facts.v2"
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.contract_version must be dcg.facts.v1"):
         parse_function_stub_spec(
             {
                 "name": "build_payload",
                 "parameters": [{"name": "payload", "type": "dict[str, object]"}],
                 "return_type": "dict[str, object]",
-                "code_graph_context": {
-                    "target_symbol": {"name": "PayloadBuilder"},
-                },
+                "code_graph_context": payload,
             }
         )
 
@@ -919,10 +1005,7 @@ def test_generate_function_stub_passes_optional_code_graph_context_through_promp
             "name": "build_payload",
             "parameters": [{"name": "payload", "type": "dict[str, object]"}],
             "return_type": "dict[str, object]",
-            "code_graph_context": {
-                "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-                "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-            },
+            "code_graph_context": _valid_code_graph_context(),
         },
         {
             "provider": "stub",
@@ -944,10 +1027,7 @@ def test_generate_function_stub_passes_optional_code_graph_context_through_promp
                 "return_type": "dict[str, object]",
             }
         ],
-        "code_graph_context": {
-            "target_symbol": {"name": "PayloadBuilder", "kind": "class"},
-            "collision_flags": [{"symbol": "build_payload", "reason": "existing_symbol"}],
-        },
+        "code_graph_context": _valid_code_graph_context(),
     }
 
 
@@ -976,15 +1056,16 @@ def test_generate_function_stub_rejects_malformed_code_graph_context_before_prov
 
     monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_response", fail_generate_response)
 
-    with pytest.raises(ValueError, match="function_stub.code_graph_context.target_symbol.kind must be a non-empty string"):
+    malformed_payload = _valid_code_graph_context()
+    malformed_payload["generated_at"] = "2026-04-04 10:15:30"
+
+    with pytest.raises(ValueError, match="function_stub.code_graph_context.generated_at must be RFC 3339 when provided"):
         generate_function_stub(
             {
                 "name": "build_payload",
                 "parameters": [{"name": "payload", "type": "dict[str, object]"}],
                 "return_type": "dict[str, object]",
-                "code_graph_context": {
-                    "target_symbol": {"name": "PayloadBuilder"},
-                },
+                "code_graph_context": malformed_payload,
             },
             {
                 "provider": "stub",
