@@ -13,6 +13,7 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 from aether.dgce.execute_api import execute_prepared_section, load_section_execution_artifact
+from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.prompt_templates import build_function_stub_prompt
@@ -187,8 +188,8 @@ def test_get_model_execution_config_rejects_unsupported_postprocess():
 def test_build_function_stub_prompt_is_deterministic():
     structured_input = {
         "name": "build_payload",
-        "inputs": [{"name": "payload", "type": "dict[str, object]"}],
-        "output": "dict[str, object]",
+        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+        "return_type": "dict[str, object]",
     }
     assert build_function_stub_prompt(structured_input, "v1") == build_function_stub_prompt(structured_input, "v1")
 
@@ -198,8 +199,8 @@ def test_build_function_stub_prompt_rejects_unsupported_template_version():
         build_function_stub_prompt(
             {
                 "name": "build_payload",
-                "inputs": [{"name": "payload", "type": "dict[str, object]"}],
-                "output": "dict[str, object]",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
             },
             "v2",
         )
@@ -225,6 +226,45 @@ def test_build_model_execution_metadata_is_audit_safe_and_bounded():
         "prompt_template_version": "v1",
         "postprocess": "strict_function_stub_v1",
     }
+
+
+def test_parse_function_stub_spec_normalizes_valid_input_deterministically():
+    assert parse_function_stub_spec(
+        {
+            "name": " build_payload ",
+            "parameters": [{"name": " payload ", "type": " dict[str, object] "}],
+            "return_type": " dict[str, object] ",
+        }
+    ) == {
+        "name": "build_payload",
+        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+        "return_type": "dict[str, object]",
+    }
+
+
+def test_parse_function_stub_spec_supports_compatibility_aliases():
+    assert parse_function_stub_spec(
+        {
+            "name": "build_payload",
+            "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+            "output": "dict[str, object]",
+        }
+    ) == {
+        "name": "build_payload",
+        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+        "return_type": "dict[str, object]",
+    }
+
+
+def test_parse_function_stub_spec_rejects_malformed_parameters():
+    with pytest.raises(ValueError, match="function_stub.parameters\\[0\\]\\.type must be a non-empty string"):
+        parse_function_stub_spec(
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload"}],
+                "return_type": "dict[str, object]",
+            }
+        )
 
 
 def test_generate_function_stub_with_claude_provider_missing_config_fails_deterministically():
@@ -256,8 +296,8 @@ def test_generate_function_stub_dispatches_to_claude_provider_boundary(monkeypat
     raw_output = generate_function_stub(
         {
             "name": "build_payload",
-            "inputs": [{"name": "payload", "type": "dict[str, object]"}],
-            "output": "dict[str, object]",
+            "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+            "return_type": "dict[str, object]",
         },
         {
             "provider": "claude",
@@ -291,8 +331,8 @@ def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
     raw_output = generate_function_stub(
         {
             "name": "build_payload",
-            "inputs": [{"name": "payload", "type": "dict[str, object]"}],
-            "output": "dict[str, object]",
+            "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+            "return_type": "dict[str, object]",
         },
         {
             "provider": "stub",
@@ -306,6 +346,25 @@ def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
     assert raw_output == "provider output"
     assert captured["template_version"] == "v1"
     assert captured["prompt"] == "built prompt"
+
+
+def test_generate_function_stub_rejects_malformed_input_before_provider_call(monkeypatch):
+    def fail_generate_text(prompt: str, config: dict) -> str:
+        raise AssertionError("provider should not be called")
+
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_text", fail_generate_text)
+
+    with pytest.raises(ValueError, match="function_stub.parameters is required"):
+        generate_function_stub(
+            {"name": "build_payload", "return_type": "dict[str, object]"},
+            {
+                "provider": "stub",
+                "model_id": "stub-model-v1",
+                "temperature": 0.0,
+                "prompt_template_version": "v1",
+                "postprocess": "strict_function_stub_v1",
+            },
+        )
 
 
 class _MockClaudeResponse:
@@ -465,6 +524,23 @@ def test_execute_prepared_function_stub_does_not_write_on_claude_transport_failu
     )
 
     with pytest.raises(ValueError, match="Claude provider request failed"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    assert not (project_root / ".dce/execution/function-stub.execution.json").exists()
+
+
+def test_execute_prepared_function_stub_does_not_write_on_input_contract_failure(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_input_contract_failure")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose._build_function_stub_structured_input",
+        lambda section, file_plan: ({"name": "build_payload", "return_type": "dict[str, object]"}, "src/function_stub.py"),
+    )
+
+    with pytest.raises(ValueError, match="function_stub.parameters is required"):
         execute_prepared_section(project_root, "function-stub")
 
     assert not (project_root / "src/function_stub.py").exists()

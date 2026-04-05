@@ -21,11 +21,11 @@ def generate_text(prompt: str, config: dict[str, Any]) -> str:
 
 def _generate_stub_text(prompt: str) -> str:
     spec = _parse_function_stub_spec(prompt)
-    signature = ", ".join(f"{item['name']}: {item['type']}" for item in spec["inputs"])
+    signature = ", ".join(f"{item['name']}: {item['type']}" for item in spec["parameters"])
     return "\n".join(
         [
-            f"def {spec['name']}({signature}) -> {spec['output']}:",
-            f"    return {_stub_return_expression(spec['output'])}",
+            f"def {spec['name']}({signature}) -> {spec['return_type']}:",
+            f"    return {_stub_return_expression(spec['return_type'])}",
             "",
         ]
     )

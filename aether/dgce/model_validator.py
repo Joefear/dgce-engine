@@ -8,9 +8,12 @@ import token
 import tokenize
 from typing import Any
 
+from aether.dgce.function_stub_spec import parse_function_stub_spec
+
 
 def validate_function_stub(output: str, expected: dict) -> str:
     """Validate one generated function stub and return a cleaned function string."""
+    normalized_expected = parse_function_stub_spec(expected)
     if not isinstance(output, str) or not output.strip():
         raise ValueError("Model output must be a non-empty string")
     try:
@@ -20,13 +23,13 @@ def validate_function_stub(output: str, expected: dict) -> str:
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise ValueError("Model output must contain exactly one function")
     function_node = module.body[0]
-    expected_name = _require_non_empty_string(expected.get("name"), "expected.name")
+    expected_name = _require_non_empty_string(normalized_expected.get("name"), "expected.name")
     if function_node.name != expected_name:
         raise ValueError(f"Model output function name mismatch: expected {expected_name}")
     if function_node.decorator_list:
         raise ValueError("Model output must not include decorators")
     _validate_external_tokens(output, function_node)
-    _validate_signature(function_node, expected)
+    _validate_signature(function_node, normalized_expected)
     cleaned = ast.unparse(function_node).strip()
     if not cleaned:
         raise ValueError("Model output must contain a function body")
@@ -34,24 +37,24 @@ def validate_function_stub(output: str, expected: dict) -> str:
 
 
 def _validate_signature(function_node: ast.FunctionDef, expected: dict[str, Any]) -> None:
-    expected_inputs = expected.get("inputs")
+    expected_inputs = expected.get("parameters")
     if not isinstance(expected_inputs, list) or not expected_inputs:
-        raise ValueError("expected.inputs must be a non-empty list")
+        raise ValueError("expected.parameters must be a non-empty list")
     actual_args = function_node.args.args
     if len(actual_args) != len(expected_inputs):
         raise ValueError("Model output function signature mismatch")
     for index, expected_input in enumerate(expected_inputs):
         if not isinstance(expected_input, dict):
-            raise ValueError(f"expected.inputs[{index}] must be a dict")
-        expected_name = _require_non_empty_string(expected_input.get("name"), f"expected.inputs[{index}].name")
-        expected_type = _require_non_empty_string(expected_input.get("type"), f"expected.inputs[{index}].type")
+            raise ValueError(f"expected.parameters[{index}] must be a dict")
+        expected_name = _require_non_empty_string(expected_input.get("name"), f"expected.parameters[{index}].name")
+        expected_type = _require_non_empty_string(expected_input.get("type"), f"expected.parameters[{index}].type")
         actual_arg = actual_args[index]
         if actual_arg.arg != expected_name:
             raise ValueError("Model output function signature mismatch")
         actual_annotation = ast.unparse(actual_arg.annotation).strip() if actual_arg.annotation is not None else ""
         if actual_annotation != expected_type:
             raise ValueError("Model output function signature mismatch")
-    expected_output = _require_non_empty_string(expected.get("output"), "expected.output")
+    expected_output = _require_non_empty_string(expected.get("return_type"), "expected.return_type")
     actual_return = ast.unparse(function_node.returns).strip() if function_node.returns is not None else ""
     if actual_return != expected_output:
         raise ValueError("Model output function return annotation mismatch")

@@ -23,6 +23,7 @@ from aether.dgce.incremental import (
     scan_workspace_inventory,
 )
 from aether.dgce.file_writer import write_file_plan
+from aether.dgce.function_stub_spec import parse_function_stub_spec
 from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.model_validator import validate_function_stub
@@ -890,25 +891,11 @@ def _build_function_stub_structured_input(section: DGCESection, file_plan: FileP
     planned_path = str(file_plan.files[0].get("path", "")).strip()
     if not target_path or target_path != planned_path:
         raise ValueError("function_stub execution requires expected_target path to match the governed file plan")
-    name = str(target.get("name", "")).strip()
-    output_type = str(target.get("output", "")).strip()
-    raw_inputs = target.get("inputs")
-    if not name:
-        raise ValueError("function_stub execution requires expected_target.name")
-    if not output_type:
-        raise ValueError("function_stub execution requires expected_target.output")
-    if not isinstance(raw_inputs, list) or not raw_inputs:
-        raise ValueError("function_stub execution requires expected_target.inputs")
-    inputs: list[dict[str, str]] = []
-    for index, raw_input in enumerate(raw_inputs):
-        if not isinstance(raw_input, dict):
-            raise ValueError(f"function_stub execution requires dict inputs: index {index}")
-        input_name = str(raw_input.get("name", "")).strip()
-        input_type = str(raw_input.get("type", "")).strip()
-        if not input_name or not input_type:
-            raise ValueError(f"function_stub execution requires named typed inputs: index {index}")
-        inputs.append({"name": input_name, "type": input_type})
-    return {"name": name, "inputs": inputs, "output": output_type}, target_path
+    try:
+        normalized_spec = parse_function_stub_spec(target)
+    except ValueError as exc:
+        raise ValueError(f"function_stub execution requires valid structured spec: {exc}") from exc
+    return normalized_spec, target_path
 
 
 def _inject_function_stub_content(file_plan: FilePlan, target_path: str, content: str) -> FilePlan:

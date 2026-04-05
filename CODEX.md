@@ -32,3 +32,4 @@ DGCE is the governed generation layer inside DCE for deterministic creation task
 - Keep model execution separate from policy, lifecycle, and artifact persistence.
 - Use versioned prompt templates only. Do not introduce silent prompt variants.
 - Keep execution metadata audit-safe and bounded to fixed execution configuration.
+- Use the strict `function_stub` structured input contract. Malformed input must fail before provider execution.
