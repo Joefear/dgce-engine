@@ -19,8 +19,8 @@ DGCE is the governed generation layer inside DCE for deterministic creation task
 
 ## Phase 4 Constraint
 
-- single-function
-- single-file
+- single-file only
+- one or more functions inside that file only
 - validated output only
 
 ## Implementation Rules

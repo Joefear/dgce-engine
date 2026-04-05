@@ -27,16 +27,23 @@ def generate_text(prompt: str, config: dict[str, Any]) -> str:
 
 def _generate_stub_response(prompt: str) -> dict[str, Any]:
     spec = _parse_function_stub_spec(prompt)
-    signature = ", ".join(f"{item['name']}: {item['type']}" for item in spec["parameters"])
+    rendered_functions = [
+        _render_stub_function(function_spec)
+        for function_spec in spec["functions"]
+    ]
     return build_provider_response(
-        "\n".join(
-            [
-                f"def {spec['name']}({signature}) -> {spec['return_type']}:",
-                f"    return {_stub_return_expression(spec['return_type'])}",
-                "",
-            ]
-        ),
+        "\n\n".join(rendered_functions) + "\n",
         request_attempted=False,
+    )
+
+
+def _render_stub_function(function_spec: dict[str, Any]) -> str:
+    signature = ", ".join(f"{item['name']}: {item['type']}" for item in function_spec["parameters"])
+    return "\n".join(
+        [
+            f"def {function_spec['name']}({signature}) -> {function_spec['return_type']}:",
+            f"    return {_stub_return_expression(function_spec['return_type'])}",
+        ]
     )
 
 

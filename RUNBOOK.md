@@ -30,6 +30,7 @@ In practice, governed generation means:
 - validation happens before any write
 - outputs are recorded as artifacts, not ad hoc edits
 - `stub` remains the default provider path; `claude` may be used only when explicitly configured
+- the current `function_stub` slice may generate one or more validated functions, but only within one governed file
 - function-stub writes are trace-bound with a bounded execution fingerprint; this is not a cross-run cache or deduplication system
 
 ## How to Run Tests
@@ -65,6 +66,7 @@ python -m pytest tests/test_model_execution_slice.py
 - execution records may include bounded `execution_timing` for the model path; this is not a full tracing or observability system
 - function-stub execution records include a bounded `model_execution_basis_fingerprint`; it is a consistency trace for the governed model path, not a prompt or payload log
 - validated function-stub output is canonicalized in a bounded way before fingerprinting and write; this is formatting normalization only, not semantic rewriting
+- partial or malformed multi-function output is rejected during validation and must not produce a write
 
 ## What NOT to do
 

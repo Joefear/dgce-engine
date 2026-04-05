@@ -90,7 +90,37 @@ def _function_stub_section() -> DGCESection:
     )
 
 
-def _build_function_workspace(monkeypatch, name: str) -> Path:
+def _multi_function_stub_section() -> DGCESection:
+    return DGCESection(
+        section_id="function-stub",
+        section_type="function_stub",
+        title="Function Stub",
+        description="Generate deterministic Python function stubs for one governed file during execution.",
+        requirements=["produce exactly the required functions in one file"],
+        constraints=["single file only", "no autonomous writes"],
+        expected_targets=[
+            {
+                "path": "src/function_stub.py",
+                "purpose": "Deterministic function stub file",
+                "source": "expected_targets",
+                "functions": [
+                    {
+                        "name": "build_payload",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "dict[str, object]",
+                    },
+                    {
+                        "name": "is_payload_empty",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "bool",
+                    },
+                ],
+            }
+        ],
+    )
+
+
+def _build_function_workspace(monkeypatch, name: str, section: DGCESection | None = None) -> Path:
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir(name)
 
@@ -98,7 +128,7 @@ def _build_function_workspace(monkeypatch, name: str) -> Path:
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_function_stub_section(), project_root, incremental_mode="incremental_v2_2")
+    run_section_with_workspace(section or _function_stub_section(), project_root, incremental_mode="incremental_v2_2")
     return project_root
 
 
@@ -163,6 +193,25 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
         assert float(value) >= 0.0
 
 
+def test_execute_prepared_multi_function_stub_writes_validated_output_for_one_file(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_multi_function_valid", _multi_function_stub_section())
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+
+    result = execute_prepared_section(project_root, "function-stub")
+
+    assert result["status"] == "ok"
+    assert (project_root / "src/function_stub.py").read_text(encoding="utf-8") == (
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+        "    return {}\n\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\n"
+        "    return False\n"
+    )
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["model_execution"]["provider"] == "stub"
+    assert execution_artifact["write_idempotence_status"] == "new_content"
+
+
 def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -191,6 +240,7 @@ def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
     assert raw_output == "provider output"
     assert "FUNCTION_STUB_SPEC:" in str(captured["prompt"])
     assert "* template_version: v1" in str(captured["prompt"])
+    assert "* function_count: 1" in str(captured["prompt"])
     assert captured["config"] == {
         "provider": "stub",
         "model_id": "stub-model-v1",
@@ -226,6 +276,30 @@ def test_build_function_stub_prompt_is_deterministic():
         "return_type": "dict[str, object]",
     }
     assert build_function_stub_prompt(structured_input, "v1") == build_function_stub_prompt(structured_input, "v1")
+
+
+def test_build_function_stub_prompt_uses_normalized_multi_function_spec():
+    prompt = build_function_stub_prompt(
+        {
+            "functions": [
+                {
+                    "name": "build_payload",
+                    "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                    "return_type": "dict[str, object]",
+                },
+                {
+                    "name": "is_payload_empty",
+                    "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                    "return_type": "bool",
+                },
+            ]
+        },
+        "v1",
+    )
+
+    assert "* function_count: 2" in prompt
+    assert "build_payload" in prompt
+    assert "is_payload_empty" in prompt
 
 
 def test_build_function_stub_prompt_rejects_unsupported_template_version():
@@ -410,6 +484,56 @@ def test_execution_fingerprinting_and_idempotence_use_canonical_content():
     )
 
 
+def test_multi_function_execution_fingerprinting_uses_canonical_content():
+    spec = parse_function_stub_spec(
+        {
+            "functions": [
+                {
+                    "name": "build_payload",
+                    "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                    "return_type": "dict[str, object]",
+                },
+                {
+                    "name": "is_payload_empty",
+                    "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                    "return_type": "bool",
+                },
+            ]
+        }
+    )
+    metadata = {
+        "provider": "stub",
+        "model_id": "stub-model-v1",
+        "temperature": 0.0,
+        "prompt_template_version": "v1",
+        "postprocess": "strict_function_stub_v1",
+    }
+    canonical = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+        "    return {}\n\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\n"
+        "    return False\n"
+    )
+    variant = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\r\n"
+        "    return {}   \r\n\r\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\r\n"
+        "    return False   \r\n\r\n"
+    )
+
+    assert build_function_stub_execution_fingerprint(
+        spec,
+        metadata,
+        "src/function_stub.py",
+        canonical,
+    ) == build_function_stub_execution_fingerprint(
+        spec,
+        metadata,
+        "src/function_stub.py",
+        variant,
+    )
+
+
 def test_classify_function_stub_execution_failure_is_bounded():
     assert classify_function_stub_execution_failure(raw_output_obtained=False) == {
         "execution_failure_category": "provider_failure",
@@ -469,6 +593,22 @@ def test_harmless_formatting_differences_normalize_to_same_canonical_content():
     assert first == second
 
 
+def test_multi_function_harmless_formatting_differences_normalize_to_same_canonical_content():
+    first = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+        "    return {}\n\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\n"
+        "    return False\n"
+    )
+    second = canonicalize_function_stub_output(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\r\n"
+        "    return {}   \r\n\r\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\r\n"
+        "    return False   \r\n\r\n\r\n"
+    )
+    assert first == second
+
+
 def test_parse_function_stub_spec_normalizes_valid_input_deterministically():
     assert parse_function_stub_spec(
         {
@@ -477,9 +617,13 @@ def test_parse_function_stub_spec_normalizes_valid_input_deterministically():
             "return_type": " dict[str, object] ",
         }
     ) == {
-        "name": "build_payload",
-        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
-        "return_type": "dict[str, object]",
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            }
+        ],
     }
 
 
@@ -491,9 +635,45 @@ def test_parse_function_stub_spec_supports_compatibility_aliases():
             "output": "dict[str, object]",
         }
     ) == {
-        "name": "build_payload",
-        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
-        "return_type": "dict[str, object]",
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            }
+        ],
+    }
+
+
+def test_parse_function_stub_spec_accepts_multi_function_single_file_shape():
+    assert parse_function_stub_spec(
+        {
+            "functions": [
+                {
+                    "name": " build_payload ",
+                    "parameters": [{"name": " payload ", "type": " dict[str, object] "}],
+                    "return_type": " dict[str, object] ",
+                },
+                {
+                    "name": " is_payload_empty ",
+                    "parameters": [{"name": " payload ", "type": " dict[str, object] "}],
+                    "return_type": " bool ",
+                },
+            ]
+        }
+    ) == {
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            },
+            {
+                "name": "is_payload_empty",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "bool",
+            },
+        ]
     }
 
 
@@ -504,6 +684,31 @@ def test_parse_function_stub_spec_rejects_malformed_parameters():
                 "name": "build_payload",
                 "parameters": [{"name": "payload"}],
                 "return_type": "dict[str, object]",
+            }
+        )
+
+
+def test_parse_function_stub_spec_rejects_empty_multi_function_input():
+    with pytest.raises(ValueError, match="function_stub.functions must be a non-empty list"):
+        parse_function_stub_spec({"functions": []})
+
+
+def test_parse_function_stub_spec_rejects_duplicate_function_names():
+    with pytest.raises(ValueError, match="function_stub.functions\\[1\\]\\.name must be unique"):
+        parse_function_stub_spec(
+            {
+                "functions": [
+                    {
+                        "name": "build_payload",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "dict[str, object]",
+                    },
+                    {
+                        "name": "build_payload",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "bool",
+                    },
+                ]
             }
         )
 
@@ -587,6 +792,15 @@ def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
     assert raw_output == "provider output"
     assert captured["template_version"] == "v1"
     assert captured["prompt"] == "built prompt"
+    assert captured["structured_input"] == {
+        "functions": [
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            }
+        ]
+    }
 
 
 def test_generate_function_stub_rejects_malformed_input_before_provider_call(monkeypatch):
@@ -624,7 +838,14 @@ class _MockClaudeResponse:
 
 def test_stub_provider_returns_normalized_response_contract():
     assert generate_response(
-        "Generate a Python function with:\n* template_version: v1\n* name: build_payload\n* inputs: payload: dict[str, object]\n* output: dict[str, object]\nFUNCTION_STUB_SPEC: {\"name\": \"build_payload\", \"parameters\": [{\"name\": \"payload\", \"type\": \"dict[str, object]\"}], \"return_type\": \"dict[str, object]\"}\nReturn ONLY valid Python function code.",
+        build_function_stub_prompt(
+            {
+                "name": "build_payload",
+                "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                "return_type": "dict[str, object]",
+            },
+            "v1",
+        ),
         {
             "provider": "stub",
             "model_id": "stub-model-v1",
@@ -634,6 +855,43 @@ def test_stub_provider_returns_normalized_response_contract():
         },
     ) == {
         "raw_text": "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+        "request_attempted": False,
+    }
+
+
+def test_stub_provider_returns_multi_function_single_file_response_contract():
+    assert generate_response(
+        build_function_stub_prompt(
+            {
+                "functions": [
+                    {
+                        "name": "build_payload",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "dict[str, object]",
+                    },
+                    {
+                        "name": "is_payload_empty",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "bool",
+                    },
+                ]
+            },
+            "v1",
+        ),
+        {
+            "provider": "stub",
+            "model_id": "stub-model-v1",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+        },
+    ) == {
+        "raw_text": (
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+            "    return {}\n\n"
+            "def is_payload_empty(payload: dict[str, object]) -> bool:\n"
+            "    return False\n"
+        ),
         "request_attempted": False,
     }
 
@@ -732,12 +990,50 @@ def test_validate_function_stub_blocks_malformed_output():
         validate_function_stub("def broken(", {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"})
 
 
-def test_validate_function_stub_blocks_multiple_functions():
-    with pytest.raises(ValueError, match="exactly one function"):
+def test_validate_function_stub_accepts_valid_multi_function_single_file_output():
+    assert validate_function_stub(
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\n    return False\n",
+        {
+            "functions": [
+                {
+                    "name": "build_payload",
+                    "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                    "return_type": "dict[str, object]",
+                },
+                {
+                    "name": "is_payload_empty",
+                    "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                    "return_type": "bool",
+                },
+            ]
+        },
+    ) == (
+        "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+        "    return {}\n\n"
+        "def is_payload_empty(payload: dict[str, object]) -> bool:\n"
+        "    return False\n"
+    )
+
+
+def test_validate_function_stub_blocks_partial_multi_function_output():
+    with pytest.raises(ValueError, match="exactly the required functions"):
         validate_function_stub(
-            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n\n"
-            "def second(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
-            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {
+                "functions": [
+                    {
+                        "name": "build_payload",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "dict[str, object]",
+                    },
+                    {
+                        "name": "is_payload_empty",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "bool",
+                    },
+                ]
+            },
         )
 
 
@@ -745,6 +1041,15 @@ def test_validate_function_stub_blocks_wrong_function_name():
     with pytest.raises(ValueError, match="function name mismatch"):
         validate_function_stub(
             "def wrong_name(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_non_function_top_level_output():
+    with pytest.raises(ValueError, match="exactly the required functions"):
+        validate_function_stub(
+            "import os\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
             {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
         )
 
@@ -775,6 +1080,26 @@ def test_execute_prepared_function_stub_does_not_write_on_validation_failure(mon
     assert "api_key" not in json.dumps(execution_artifact)
     assert "wrong_name" not in json.dumps(execution_artifact)
     assert execution_artifact.get("written_files") == []
+
+
+def test_execute_prepared_multi_function_stub_does_not_write_on_partial_output(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_multi_function_no_write_on_partial_output", _multi_function_stub_section())
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose.generate_function_stub",
+        lambda structured_input, config: "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+    )
+
+    with pytest.raises(ValueError, match="exactly the required functions"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "validation_failure"
+    assert execution_artifact["execution_failure_reason"] == "validator_rejected_output"
+    assert execution_artifact["provider_request_context"]["request_attempted"] is False
 
 
 def test_execute_prepared_function_stub_does_not_write_on_provider_config_failure(monkeypatch):

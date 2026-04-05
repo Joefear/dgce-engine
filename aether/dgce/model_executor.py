@@ -1,4 +1,4 @@
-"""Deterministic DGCE model executor for single-function stubs."""
+"""Deterministic DGCE model executor for bounded function-stub files."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from aether.dgce.prompt_templates import build_function_stub_prompt
 
 
 def generate_function_stub(structured_input: dict, config: dict) -> str:
-    """Generate one deterministic Python function stub from validated structured input."""
+    """Generate deterministic Python function-stub file output from validated structured input."""
     normalized_spec = parse_function_stub_spec(structured_input)
     execution_config = get_model_execution_config(config)
     prompt = build_function_stub_prompt(normalized_spec, execution_config["prompt_template_version"])

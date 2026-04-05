@@ -12,7 +12,7 @@ from aether.dgce.function_stub_spec import parse_function_stub_spec
 
 
 def validate_function_stub(output: str, expected: dict) -> str:
-    """Validate one generated function stub and return a cleaned function string."""
+    """Validate generated function-stub file output and return cleaned Python code."""
     normalized_expected = parse_function_stub_spec(expected)
     if not isinstance(output, str) or not output.strip():
         raise ValueError("Model output must be a non-empty string")
@@ -20,34 +20,47 @@ def validate_function_stub(output: str, expected: dict) -> str:
         module = ast.parse(output)
     except SyntaxError as exc:
         raise ValueError("Model output must be valid Python syntax") from exc
-    if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
-        raise ValueError("Model output must contain exactly one function")
-    function_node = module.body[0]
-    expected_name = _require_non_empty_string(normalized_expected.get("name"), "expected.name")
-    if function_node.name != expected_name:
-        raise ValueError(f"Model output function name mismatch: expected {expected_name}")
-    if function_node.decorator_list:
-        raise ValueError("Model output must not include decorators")
-    _validate_external_tokens(output, function_node)
-    _validate_signature(function_node, normalized_expected)
-    cleaned = ast.unparse(function_node).strip()
+    expected_functions = normalized_expected.get("functions")
+    if not isinstance(expected_functions, list) or not expected_functions:
+        raise ValueError("expected.functions must be a non-empty list")
+    function_nodes = module.body
+    if len(function_nodes) != len(expected_functions) or any(
+        not isinstance(node, ast.FunctionDef) for node in function_nodes
+    ):
+        raise ValueError("Model output must contain exactly the required functions")
+    _validate_external_tokens(output, function_nodes)
+    for index, expected_function in enumerate(expected_functions):
+        function_node = function_nodes[index]
+        expected_name = _require_non_empty_string(expected_function.get("name"), f"expected.functions[{index}].name")
+        if function_node.name != expected_name:
+            raise ValueError(f"Model output function name mismatch: expected {expected_name}")
+        if function_node.decorator_list:
+            raise ValueError("Model output must not include decorators")
+        _validate_signature(function_node, expected_function, index)
+    cleaned = ast.unparse(module).strip()
     if not cleaned:
-        raise ValueError("Model output must contain a function body")
+        raise ValueError("Model output must contain function content")
     return f"{cleaned}\n"
 
 
-def _validate_signature(function_node: ast.FunctionDef, expected: dict[str, Any]) -> None:
+def _validate_signature(function_node: ast.FunctionDef, expected: dict[str, Any], function_index: int) -> None:
     expected_inputs = expected.get("parameters")
     if not isinstance(expected_inputs, list) or not expected_inputs:
-        raise ValueError("expected.parameters must be a non-empty list")
+        raise ValueError(f"expected.functions[{function_index}].parameters must be a non-empty list")
     actual_args = function_node.args.args
     if len(actual_args) != len(expected_inputs):
         raise ValueError("Model output function signature mismatch")
     for index, expected_input in enumerate(expected_inputs):
         if not isinstance(expected_input, dict):
-            raise ValueError(f"expected.parameters[{index}] must be a dict")
-        expected_name = _require_non_empty_string(expected_input.get("name"), f"expected.parameters[{index}].name")
-        expected_type = _require_non_empty_string(expected_input.get("type"), f"expected.parameters[{index}].type")
+            raise ValueError(f"expected.functions[{function_index}].parameters[{index}] must be a dict")
+        expected_name = _require_non_empty_string(
+            expected_input.get("name"),
+            f"expected.functions[{function_index}].parameters[{index}].name",
+        )
+        expected_type = _require_non_empty_string(
+            expected_input.get("type"),
+            f"expected.functions[{function_index}].parameters[{index}].type",
+        )
         actual_arg = actual_args[index]
         if actual_arg.arg != expected_name:
             raise ValueError("Model output function signature mismatch")
@@ -60,9 +73,11 @@ def _validate_signature(function_node: ast.FunctionDef, expected: dict[str, Any]
         raise ValueError("Model output function return annotation mismatch")
 
 
-def _validate_external_tokens(output: str, function_node: ast.FunctionDef) -> None:
-    start_line = int(function_node.lineno)
-    end_line = int(function_node.end_lineno or function_node.lineno)
+def _validate_external_tokens(output: str, function_nodes: list[ast.FunctionDef]) -> None:
+    line_ranges = [
+        (int(function_node.lineno), int(function_node.end_lineno or function_node.lineno))
+        for function_node in function_nodes
+    ]
     token_stream = tokenize.generate_tokens(io.StringIO(output).readline)
     allowed_tokens = {
         token.ENCODING,
@@ -75,7 +90,7 @@ def _validate_external_tokens(output: str, function_node: ast.FunctionDef) -> No
     for current in token_stream:
         if current.type in allowed_tokens:
             continue
-        if current.start[0] < start_line or current.start[0] > end_line:
+        if not any(start_line <= current.start[0] <= end_line for start_line, end_line in line_ranges):
             raise ValueError("Model output must not include extra text outside the function")
 
 

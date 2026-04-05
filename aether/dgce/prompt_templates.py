@@ -16,15 +16,24 @@ def build_function_stub_prompt(structured_input: dict[str, Any], template_versio
     if normalized_version not in SUPPORTED_PROMPT_TEMPLATE_VERSIONS:
         raise ValueError("template_version must be one of: v1")
     spec = parse_function_stub_spec(structured_input)
-    rendered_inputs = ", ".join(f"{item['name']}: {item['type']}" for item in spec["parameters"])
+    rendered_functions = "\n".join(
+        [
+            (
+                f"  - name: {function_spec['name']}; "
+                f"inputs: {', '.join(f'{item['name']}: {item['type']}' for item in function_spec['parameters'])}; "
+                f"output: {function_spec['return_type']}"
+            )
+            for function_spec in spec["functions"]
+        ]
+    )
     return (
-        "Generate a Python function with:\n"
+        "Generate Python functions for one file with:\n"
         f"* template_version: {normalized_version}\n"
-        f"* name: {spec['name']}\n"
-        f"* inputs: {rendered_inputs}\n"
-        f"* output: {spec['return_type']}\n"
+        f"* function_count: {len(spec['functions'])}\n"
+        "* functions:\n"
+        f"{rendered_functions}\n"
         f"FUNCTION_STUB_SPEC: {json.dumps(spec, sort_keys=True)}\n"
-        "Return ONLY valid Python function code."
+        "Return ONLY valid Python function code for that one file, containing exactly the requested functions and no extra text."
     )
 
 
