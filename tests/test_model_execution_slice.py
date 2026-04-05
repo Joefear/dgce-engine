@@ -1046,11 +1046,124 @@ def test_validate_function_stub_blocks_wrong_function_name():
 
 
 def test_validate_function_stub_blocks_non_function_top_level_output():
-    with pytest.raises(ValueError, match="exactly the required functions"):
+    with pytest.raises(ValueError, match="only the required top-level functions"):
         validate_function_stub(
             "import os\n\n"
             "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
             {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_top_level_print_statement():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "print('debug')\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_top_level_assignment():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "value = {}\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_top_level_class_definition():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "class Helper:\n    pass\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_if_main_guard():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "if __name__ == '__main__':\n    print('debug')\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_async_top_level_function():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "async def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_top_level_try_statement():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "try:\n    pass\nexcept Exception:\n    pass\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_top_level_with_statement():
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        validate_function_stub(
+            "with open('x') as handle:\n    handle.read()\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_extra_helper_function():
+    with pytest.raises(ValueError, match="exactly the required functions"):
+        validate_function_stub(
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n\n"
+            "def helper(payload: dict[str, object]) -> dict[str, object]:\n    return payload\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_decorated_function():
+    with pytest.raises(ValueError, match="must not include decorators"):
+        validate_function_stub(
+            "@staticmethod\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_nested_function_definition():
+    with pytest.raises(ValueError, match="must not include nested definitions"):
+        validate_function_stub(
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+            "    def helper() -> dict[str, object]:\n"
+            "        return {}\n"
+            "    return helper()\n",
+            {"name": "build_payload", "inputs": [{"name": "payload", "type": "dict[str, object]"}], "output": "dict[str, object]"},
+        )
+
+
+def test_validate_function_stub_blocks_wrong_ordered_function_set():
+    with pytest.raises(ValueError, match="function name mismatch"):
+        validate_function_stub(
+            "def is_payload_empty(payload: dict[str, object]) -> bool:\n    return False\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n    return {}\n",
+            {
+                "functions": [
+                    {
+                        "name": "build_payload",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "dict[str, object]",
+                    },
+                    {
+                        "name": "is_payload_empty",
+                        "parameters": [{"name": "payload", "type": "dict[str, object]"}],
+                        "return_type": "bool",
+                    },
+                ]
+            },
         )
 
 
@@ -1100,6 +1213,29 @@ def test_execute_prepared_multi_function_stub_does_not_write_on_partial_output(m
     assert execution_artifact["execution_failure_category"] == "validation_failure"
     assert execution_artifact["execution_failure_reason"] == "validator_rejected_output"
     assert execution_artifact["provider_request_context"]["request_attempted"] is False
+
+
+def test_execute_prepared_function_stub_does_not_write_on_structurally_disallowed_output(monkeypatch):
+    project_root = _build_function_workspace(monkeypatch, "model_execution_no_write_on_structural_failure")
+    _mark_section_ready(project_root)
+    prepare_section_execution(project_root, "function-stub")
+    monkeypatch.setattr(
+        "aether.dgce.decompose.generate_function_stub",
+        lambda structured_input, config: (
+            "value = {}\n\n"
+            "def build_payload(payload: dict[str, object]) -> dict[str, object]:\n"
+            "    return {}\n"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="only the required top-level functions"):
+        execute_prepared_section(project_root, "function-stub")
+
+    assert not (project_root / "src/function_stub.py").exists()
+    assert not (project_root / ".dce/outputs/function-stub.json").exists()
+    execution_artifact = load_section_execution_artifact(project_root, "function-stub")
+    assert execution_artifact["execution_failure_category"] == "validation_failure"
+    assert execution_artifact["execution_failure_reason"] == "validator_rejected_output"
 
 
 def test_execute_prepared_function_stub_does_not_write_on_provider_config_failure(monkeypatch):

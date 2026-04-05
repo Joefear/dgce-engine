@@ -23,11 +23,7 @@ def validate_function_stub(output: str, expected: dict) -> str:
     expected_functions = normalized_expected.get("functions")
     if not isinstance(expected_functions, list) or not expected_functions:
         raise ValueError("expected.functions must be a non-empty list")
-    function_nodes = module.body
-    if len(function_nodes) != len(expected_functions) or any(
-        not isinstance(node, ast.FunctionDef) for node in function_nodes
-    ):
-        raise ValueError("Model output must contain exactly the required functions")
+    function_nodes = _validate_module_structure(module, len(expected_functions))
     _validate_external_tokens(output, function_nodes)
     for index, expected_function in enumerate(expected_functions):
         function_node = function_nodes[index]
@@ -37,10 +33,23 @@ def validate_function_stub(output: str, expected: dict) -> str:
         if function_node.decorator_list:
             raise ValueError("Model output must not include decorators")
         _validate_signature(function_node, expected_function, index)
+        _validate_nested_structure(function_node)
     cleaned = ast.unparse(module).strip()
     if not cleaned:
         raise ValueError("Model output must contain function content")
     return f"{cleaned}\n"
+
+
+def _validate_module_structure(module: ast.Module, expected_function_count: int) -> list[ast.FunctionDef]:
+    function_nodes: list[ast.FunctionDef] = []
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef):
+            function_nodes.append(node)
+            continue
+        raise ValueError("Model output must contain only the required top-level functions")
+    if len(function_nodes) != expected_function_count:
+        raise ValueError("Model output must contain exactly the required functions")
+    return function_nodes
 
 
 def _validate_signature(function_node: ast.FunctionDef, expected: dict[str, Any], function_index: int) -> None:
@@ -75,7 +84,10 @@ def _validate_signature(function_node: ast.FunctionDef, expected: dict[str, Any]
 
 def _validate_external_tokens(output: str, function_nodes: list[ast.FunctionDef]) -> None:
     line_ranges = [
-        (int(function_node.lineno), int(function_node.end_lineno or function_node.lineno))
+        (
+            int(min([function_node.lineno] + [decorator.lineno for decorator in function_node.decorator_list])),
+            int(function_node.end_lineno or function_node.lineno),
+        )
         for function_node in function_nodes
     ]
     token_stream = tokenize.generate_tokens(io.StringIO(output).readline)
@@ -92,6 +104,14 @@ def _validate_external_tokens(output: str, function_nodes: list[ast.FunctionDef]
             continue
         if not any(start_line <= current.start[0] <= end_line for start_line, end_line in line_ranges):
             raise ValueError("Model output must not include extra text outside the function")
+
+
+def _validate_nested_structure(function_node: ast.FunctionDef) -> None:
+    for node in ast.walk(function_node):
+        if node is function_node:
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            raise ValueError("Model output must not include nested definitions")
 
 
 def _require_non_empty_string(value: Any, field_name: str) -> str:
