@@ -30,3 +30,5 @@ DGCE is the governed generation layer inside DCE for deterministic creation task
 - Do not perform direct file writes from generation code.
 - Always validate before write.
 - Keep model execution separate from policy, lifecycle, and artifact persistence.
+- Use versioned prompt templates only. Do not introduce silent prompt variants.
+- Keep execution metadata audit-safe and bounded to fixed execution configuration.

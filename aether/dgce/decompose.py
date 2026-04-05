@@ -23,7 +23,7 @@ from aether.dgce.incremental import (
     scan_workspace_inventory,
 )
 from aether.dgce.file_writer import write_file_plan
-from aether.dgce.model_config import build_model_execution_audit, get_model_execution_config
+from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
 from aether.dgce.model_validator import validate_function_stub
 from aether_core.classifier.rules import ClassifierRules
@@ -785,7 +785,7 @@ def run_section_with_workspace(
             allow_modify_write=effective_allow_safe_modify,
             owned_paths=owned_paths,
         )
-        model_execution = build_model_execution_audit(model_config)
+        model_execution = build_model_execution_metadata(model_config)
     execution_outcome = _build_execution_outcome(
         section_id=section_id,
         stage=DGCEWorkspaceStage.WRITE,
@@ -2024,6 +2024,7 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
         temperature = _expect_required_field(model_payload, "temperature", artifact_name)
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             _schema_error(artifact_name, "model_execution.temperature must be a float")
+        _expect_str(_expect_required_field(model_payload, "postprocess", artifact_name), artifact_name, "model_execution.postprocess")
     execution_record_summary = _expect_dict(_expect_required_field(artifact, "execution_record_summary", artifact_name), artifact_name, "execution_record_summary")
     for key in ("execution_status",):
         _expect_str(_expect_required_field(execution_record_summary, key, artifact_name), artifact_name, f"execution_record_summary.{key}")

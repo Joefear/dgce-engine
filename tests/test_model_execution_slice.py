@@ -13,8 +13,9 @@ from aether.dgce import (
     run_section_with_workspace,
 )
 from aether.dgce.execute_api import execute_prepared_section, load_section_execution_artifact
-from aether.dgce.model_config import get_model_execution_config
+from aether.dgce.model_config import build_model_execution_metadata, get_model_execution_config
 from aether.dgce.model_executor import generate_function_stub
+from aether.dgce.prompt_templates import build_function_stub_prompt
 from aether.dgce.providers import claude_provider
 from aether.dgce.prepare_api import prepare_section_execution
 from aether.dgce.model_validator import validate_function_stub
@@ -123,6 +124,7 @@ def test_execute_prepared_function_stub_writes_validated_output_and_model_audit(
         "model_id": "stub-model-v1",
         "prompt_template_version": "v1",
         "temperature": 0.0,
+        "postprocess": "strict_function_stub_v1",
     }
 
 
@@ -153,7 +155,7 @@ def test_generate_function_stub_uses_model_provider_boundary(monkeypatch):
 
     assert raw_output == "provider output"
     assert "FUNCTION_STUB_SPEC:" in str(captured["prompt"])
-    assert "* provider: stub" in str(captured["prompt"])
+    assert "* template_version: v1" in str(captured["prompt"])
     assert captured["config"] == {
         "provider": "stub",
         "model_id": "stub-model-v1",
@@ -170,6 +172,59 @@ def test_get_model_execution_config_defaults_to_stub():
 def test_get_model_execution_config_rejects_unsupported_provider():
     with pytest.raises(ValueError, match="config.provider must be one of: claude, stub"):
         get_model_execution_config({"provider": "unknown"})
+
+
+def test_get_model_execution_config_rejects_unsupported_prompt_template_version():
+    with pytest.raises(ValueError, match="config.prompt_template_version must be one of: v1"):
+        get_model_execution_config({"prompt_template_version": "v2"})
+
+
+def test_get_model_execution_config_rejects_unsupported_postprocess():
+    with pytest.raises(ValueError, match="config.postprocess must be one of: strict_function_stub_v1"):
+        get_model_execution_config({"postprocess": "invalid"})
+
+
+def test_build_function_stub_prompt_is_deterministic():
+    structured_input = {
+        "name": "build_payload",
+        "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+        "output": "dict[str, object]",
+    }
+    assert build_function_stub_prompt(structured_input, "v1") == build_function_stub_prompt(structured_input, "v1")
+
+
+def test_build_function_stub_prompt_rejects_unsupported_template_version():
+    with pytest.raises(ValueError, match="template_version must be one of: v1"):
+        build_function_stub_prompt(
+            {
+                "name": "build_payload",
+                "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+                "output": "dict[str, object]",
+            },
+            "v2",
+        )
+
+
+def test_build_model_execution_metadata_is_audit_safe_and_bounded():
+    metadata = build_model_execution_metadata(
+        {
+            "provider": "claude",
+            "model_id": "claude-3-7-sonnet",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+            "api_key": "secret-key",
+            "raw_prompt": "ignored",
+        }
+    )
+
+    assert metadata == {
+        "provider": "claude",
+        "model_id": "claude-3-7-sonnet",
+        "temperature": 0.0,
+        "prompt_template_version": "v1",
+        "postprocess": "strict_function_stub_v1",
+    }
 
 
 def test_generate_function_stub_with_claude_provider_missing_config_fails_deterministically():
@@ -215,6 +270,42 @@ def test_generate_function_stub_dispatches_to_claude_provider_boundary(monkeypat
     )
 
     assert raw_output == "claude output"
+
+
+def test_generate_function_stub_uses_prompt_template_module(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_build_function_stub_prompt(structured_input: dict, template_version: str) -> str:
+        captured["structured_input"] = structured_input
+        captured["template_version"] = template_version
+        return "built prompt"
+
+    def fake_generate_text(prompt: str, config: dict) -> str:
+        captured["prompt"] = prompt
+        captured["config"] = dict(config)
+        return "provider output"
+
+    monkeypatch.setattr("aether.dgce.model_executor.build_function_stub_prompt", fake_build_function_stub_prompt)
+    monkeypatch.setattr("aether.dgce.model_executor.model_provider.generate_text", fake_generate_text)
+
+    raw_output = generate_function_stub(
+        {
+            "name": "build_payload",
+            "inputs": [{"name": "payload", "type": "dict[str, object]"}],
+            "output": "dict[str, object]",
+        },
+        {
+            "provider": "stub",
+            "model_id": "stub-model-v1",
+            "temperature": 0.0,
+            "prompt_template_version": "v1",
+            "postprocess": "strict_function_stub_v1",
+        },
+    )
+
+    assert raw_output == "provider output"
+    assert captured["template_version"] == "v1"
+    assert captured["prompt"] == "built prompt"
 
 
 class _MockClaudeResponse:
