@@ -279,7 +279,7 @@ def build_incremental_preview_artifact(
 ) -> dict[str, Any]:
     """Build a deterministic metadata-only preview artifact for one section target set."""
     actions_by_path = classify_section_targets(file_plan, change_plan, project_root)
-    code_graph_guidance = _build_preview_code_graph_guidance(code_graph_context)
+    code_graph_guidance, planning_context = _build_preview_code_graph_guidance(code_graph_context)
 
     previews: list[dict[str, Any]] = []
     for file_entry in file_plan.files:
@@ -322,6 +322,7 @@ def build_incremental_preview_artifact(
         "preview_outcome_class": preview_outcome_class,
         "recommended_mode": recommended_mode,
         "previews": previews,
+        **({"planning_context": planning_context} if planning_context is not None else {}),
     }
 
 
@@ -394,21 +395,36 @@ def render_incremental_review_markdown(preview_artifact: dict[str, Any]) -> str:
         f"- Mode: {mode}",
         f"- Preview outcome: {preview_outcome_class}",
         f"- Recommended mode: {recommended_mode}",
-        "",
-        "## Summary",
-        f"- Total targets: {int(summary.get('total_targets', 0))}",
-        f"- Create: {int(summary.get('total_create', 0))}",
-        f"- Modify: {int(summary.get('total_modify', 0))}",
-        f"- Ignore: {int(summary.get('total_ignore', 0))}",
-        f"- Write: {int(summary.get('total_write', 0))}",
-        f"- Skip: {int(summary.get('total_skip', 0))}",
-        f"- Eligible: {int(summary.get('total_eligible', 0))}",
-        f"- Blocked: {int(summary.get('total_blocked', 0))}",
-        f"- Identical: {int(summary.get('total_identical', 0))}",
-        f"- Blocked (ownership): {int(summary.get('total_blocked_ownership', 0))}",
-        f"- Blocked (modify disabled): {int(summary.get('total_blocked_modify_disabled', 0))}",
-        f"- Blocked (ignore): {int(summary.get('total_blocked_ignore', 0))}",
     ]
+    planning_context = preview_artifact.get("planning_context")
+    if isinstance(planning_context, dict):
+        lines.extend(
+            [
+                f"- Planning basis: {planning_context.get('guidance_source', '')}",
+                f"- Planning note: {planning_context.get('reasoning_summary', '')}",
+            ]
+        )
+        if planning_context.get("fallback_reason") is not None:
+            lines.append(f"- Planning fallback: {planning_context.get('fallback_reason', '')}")
+
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            f"- Total targets: {int(summary.get('total_targets', 0))}",
+            f"- Create: {int(summary.get('total_create', 0))}",
+            f"- Modify: {int(summary.get('total_modify', 0))}",
+            f"- Ignore: {int(summary.get('total_ignore', 0))}",
+            f"- Write: {int(summary.get('total_write', 0))}",
+            f"- Skip: {int(summary.get('total_skip', 0))}",
+            f"- Eligible: {int(summary.get('total_eligible', 0))}",
+            f"- Blocked: {int(summary.get('total_blocked', 0))}",
+            f"- Identical: {int(summary.get('total_identical', 0))}",
+            f"- Blocked (ownership): {int(summary.get('total_blocked_ownership', 0))}",
+            f"- Blocked (modify disabled): {int(summary.get('total_blocked_modify_disabled', 0))}",
+            f"- Blocked (ignore): {int(summary.get('total_blocked_ignore', 0))}",
+        ]
+    )
 
     for heading, entries in groups.items():
         if not entries and heading == "Other":
@@ -426,6 +442,7 @@ def render_incremental_review_markdown(preview_artifact: dict[str, Any]) -> str:
                 f" / existing: {int(entry.get('existing_bytes', 0))}"
                 f" / generated: {int(entry.get('generated_bytes', 0))}"
                 f" / delta: {int(entry.get('approximate_line_delta', 0))}"
+                f"{_render_preview_reasoning_suffix(entry)}"
             )
 
     return "\n".join(lines) + "\n"
@@ -644,19 +661,33 @@ def _recommended_mode(previews: List[Dict[str, Any]], summary: dict[str, int]) -
     return "review_required"
 
 
-def _build_preview_code_graph_guidance(raw_context: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    """Return per-path preview-only structural guidance from optional Code Graph facts."""
+def _build_preview_code_graph_guidance(
+    raw_context: dict[str, Any] | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    """Return per-path preview-only structural guidance plus additive planning context."""
     if raw_context is None:
-        return {}
+        return {}, None
 
     try:
         parsed_context = parse_code_graph_context(raw_context)
     except ValueError:
-        return {}
+        return {}, {
+            "guidance_source": "code_graph_fallback",
+            "fallback_reason": "facts_malformed",
+            "reasoning_summary": "Code Graph facts were provided but malformed, so Preview used baseline planning.",
+        }
 
     placement_facts = parsed_context.get("placement_facts")
     if placement_facts is None:
-        return {}
+        return {}, {
+            "guidance_source": "code_graph_fallback",
+            "fallback_reason": "placement_facts_missing",
+            "reasoning_summary": "Code Graph facts did not include usable placement facts, so Preview used baseline planning.",
+        }
+
+    target = parsed_context.get("target")
+    target_path = _normalize_code_graph_guidance_path(target.get("file_path")) if isinstance(target, dict) else None
+    target_span = target.get("span") if isinstance(target, dict) else None
 
     guidance_by_path: dict[str, dict[str, Any]] = {}
     insertion_candidates = placement_facts.get("insertion_candidates") or []
@@ -664,14 +695,12 @@ def _build_preview_code_graph_guidance(raw_context: dict[str, Any] | None) -> di
         normalized_path = _normalize_code_graph_guidance_path(candidate.get("file_path"))
         if normalized_path is None:
             continue
-        guidance_by_path.setdefault(normalized_path, {"insertion_candidates": []})["insertion_candidates"].append(candidate)
+        candidate_entry = dict(candidate)
+        guidance_by_path.setdefault(normalized_path, {"insertion_candidates": []})["insertion_candidates"].append(candidate_entry)
 
     relevant_paths: set[str] = set(guidance_by_path)
-    target = parsed_context.get("target")
-    if target is not None:
-        normalized_target_path = _normalize_code_graph_guidance_path(target.get("file_path"))
-        if normalized_target_path is not None:
-            relevant_paths.add(normalized_target_path)
+    if target_path is not None:
+        relevant_paths.add(target_path)
 
     patch_facts = parsed_context.get("patch_facts")
     if patch_facts is not None:
@@ -680,19 +709,62 @@ def _build_preview_code_graph_guidance(raw_context: dict[str, Any] | None) -> di
             if normalized_touched_path is not None:
                 relevant_paths.add(normalized_touched_path)
 
+    if not relevant_paths:
+        return {}, {
+            "guidance_source": "code_graph_fallback",
+            "fallback_reason": "no_relevant_paths",
+            "reasoning_summary": "Code Graph placement facts did not map to any Preview targets, so Preview used baseline planning.",
+        }
+
     for normalized_path in sorted(relevant_paths):
         path_guidance = guidance_by_path.setdefault(normalized_path, {})
-        if placement_facts.get("generation_collision_detected") is not None:
-            path_guidance["generation_collision_detected"] = placement_facts.get("generation_collision_detected")
         if placement_facts.get("recommended_edit_strategy") is not None:
             path_guidance["recommended_edit_strategy"] = placement_facts.get("recommended_edit_strategy")
         if "insertion_candidates" in path_guidance:
             path_guidance["insertion_candidates"] = sorted(
                 path_guidance["insertion_candidates"],
-                key=_code_graph_insertion_candidate_sort_key,
+                key=lambda candidate: _code_graph_insertion_candidate_sort_key(
+                    candidate,
+                    target_path=target_path,
+                    target_span=target_span,
+                    generation_collision_detected=placement_facts.get("generation_collision_detected"),
+                ),
+            )
+            selected_candidate = path_guidance["insertion_candidates"][0] if path_guidance["insertion_candidates"] else None
+        else:
+            selected_candidate = None
+        collision_assessment = _assess_preview_collision(
+            generation_collision_detected=placement_facts.get("generation_collision_detected"),
+            selected_candidate=selected_candidate,
+        )
+        preview_edit_strategy = _select_preview_edit_strategy(
+            contract_strategy=placement_facts.get("recommended_edit_strategy"),
+            collision_assessment=collision_assessment,
+            selected_candidate=selected_candidate,
+        )
+        if placement_facts.get("generation_collision_detected") is not None:
+            path_guidance["generation_collision_detected"] = placement_facts.get("generation_collision_detected")
+        path_guidance["collision_assessment"] = collision_assessment
+        path_guidance["preview_planning_basis"] = "code_graph_guided" if selected_candidate is not None else "code_graph_fallback"
+        path_guidance["preview_edit_strategy"] = preview_edit_strategy
+        if selected_candidate is not None:
+            path_guidance["selected_insertion_candidate"] = selected_candidate
+            path_guidance["preview_reasoning"] = _build_preview_reasoning(
+                collision_assessment=collision_assessment,
+                preview_edit_strategy=preview_edit_strategy,
+                selected_candidate=selected_candidate,
+                contract_strategy=placement_facts.get("recommended_edit_strategy"),
+            )
+        else:
+            path_guidance["preview_reasoning"] = (
+                "Code Graph facts did not provide usable insertion candidates for this path, so Preview kept baseline planning."
             )
 
-    return guidance_by_path
+    return guidance_by_path, {
+        "guidance_source": "code_graph_guided",
+        "fallback_reason": None,
+        "reasoning_summary": "Preview ranked Code Graph insertion candidates, interpreted collision risk, and selected Preview-only guidance.",
+    }
 
 
 def _normalize_code_graph_guidance_path(path_value: Any) -> str | None:
@@ -705,17 +777,133 @@ def _normalize_code_graph_guidance_path(path_value: Any) -> str | None:
         return None
 
 
-def _code_graph_insertion_candidate_sort_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+def _code_graph_insertion_candidate_sort_key(
+    candidate: dict[str, Any],
+    *,
+    target_path: str | None,
+    target_span: dict[str, Any] | None,
+    generation_collision_detected: bool | None,
+) -> tuple[Any, ...]:
     """Return a deterministic ordering key for preview-side insertion candidates."""
     span = candidate.get("span")
+    candidate_path = _normalize_code_graph_guidance_path(candidate.get("file_path"))
+    target_distance = _candidate_target_distance(span, target_span) if candidate_path == target_path else 10**9
+    strategy = str(candidate.get("strategy") or "")
     return (
-        str(candidate.get("file_path", "")),
+        0 if candidate_path == target_path else 1,
+        _candidate_collision_penalty(strategy, generation_collision_detected),
+        _candidate_invasiveness_rank(strategy),
+        target_distance,
+        1 if candidate.get("symbol_id") is None else 0,
+        _span_size(span),
         str(candidate.get("symbol_id") or ""),
         str(candidate.get("symbol_name") or ""),
-        str(candidate.get("strategy") or ""),
+        strategy,
         -1 if not isinstance(span, dict) or span.get("start_line") is None else int(span.get("start_line")),
         -1 if not isinstance(span, dict) or span.get("end_line") is None else int(span.get("end_line")),
     )
+
+
+def _candidate_invasiveness_rank(strategy: str) -> int:
+    return {
+        "append_after_symbol": 0,
+        "insert_before_symbol": 1,
+        "inside_symbol": 2,
+        "new_file": 3,
+        "unknown": 4,
+    }.get(strategy, 5)
+
+
+def _candidate_collision_penalty(strategy: str, generation_collision_detected: bool | None) -> int:
+    if generation_collision_detected is not True:
+        return 0
+    return 1 if strategy == "inside_symbol" else 0
+
+
+def _candidate_target_distance(candidate_span: dict[str, Any] | None, target_span: dict[str, Any] | None) -> int:
+    if not isinstance(candidate_span, dict) or not isinstance(target_span, dict):
+        return 10**6
+    candidate_start = candidate_span.get("start_line")
+    target_start = target_span.get("start_line")
+    if candidate_start is None or target_start is None:
+        return 10**6
+    return abs(int(candidate_start) - int(target_start))
+
+
+def _span_size(span: dict[str, Any] | None) -> int:
+    if not isinstance(span, dict):
+        return 10**6
+    start_line = span.get("start_line")
+    end_line = span.get("end_line")
+    if start_line is None or end_line is None:
+        return 10**6
+    return max(0, int(end_line) - int(start_line))
+
+
+def _assess_preview_collision(
+    *,
+    generation_collision_detected: bool | None,
+    selected_candidate: dict[str, Any] | None,
+) -> str:
+    strategy = str(selected_candidate.get("strategy") or "") if isinstance(selected_candidate, dict) else ""
+    if generation_collision_detected is not True:
+        if strategy in {"append_after_symbol", "insert_before_symbol", "new_file"}:
+            return "likely_safe_extension"
+        return "ambiguous_overlap"
+    if strategy in {"append_after_symbol", "insert_before_symbol"}:
+        return "ambiguous_overlap"
+    return "probable_conflict"
+
+
+def _select_preview_edit_strategy(
+    *,
+    contract_strategy: Any,
+    collision_assessment: str,
+    selected_candidate: dict[str, Any] | None,
+) -> str:
+    raw_strategy = str(contract_strategy or "unknown")
+    candidate_strategy = str(selected_candidate.get("strategy") or "") if isinstance(selected_candidate, dict) else ""
+    if candidate_strategy == "new_file":
+        return "new_file"
+    if candidate_strategy in {"append_after_symbol", "insert_before_symbol"}:
+        return "bounded_insert"
+    if candidate_strategy == "inside_symbol":
+        return "surgical_edit" if collision_assessment == "probable_conflict" else (
+            raw_strategy if raw_strategy in {"surgical_edit", "bounded_insert"} else "surgical_edit"
+        )
+    return raw_strategy
+
+
+def _build_preview_reasoning(
+    *,
+    collision_assessment: str,
+    preview_edit_strategy: str,
+    selected_candidate: dict[str, Any],
+    contract_strategy: Any,
+) -> str:
+    selected_strategy = str(selected_candidate.get("strategy") or "unknown")
+    contract_strategy_value = str(contract_strategy or "unknown")
+    if preview_edit_strategy != contract_strategy_value:
+        strategy_note = f"Preview preferred {preview_edit_strategy} over contract guidance {contract_strategy_value}."
+    else:
+        strategy_note = f"Preview kept contract guidance {contract_strategy_value}."
+    return (
+        f"Ranked insertion candidate {selected_strategy} as the least invasive structurally local option; "
+        f"collision assessment is {collision_assessment}. {strategy_note}"
+    )
+
+
+def _render_preview_reasoning_suffix(entry: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if entry.get("preview_planning_basis") is not None:
+        parts.append(f"planning: {entry.get('preview_planning_basis', '')}")
+    if entry.get("preview_edit_strategy") is not None:
+        parts.append(f"strategy: {entry.get('preview_edit_strategy', '')}")
+    if entry.get("collision_assessment") is not None:
+        parts.append(f"collision: {entry.get('collision_assessment', '')}")
+    if entry.get("preview_reasoning") is not None:
+        parts.append(f"note: {entry.get('preview_reasoning', '')}")
+    return "" if not parts else " / " + " / ".join(parts)
 
 
 def build_change_plan(

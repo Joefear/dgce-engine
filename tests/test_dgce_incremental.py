@@ -116,6 +116,52 @@ def _valid_code_graph_context(file_path: str = "mission_board/service.py") -> di
     }
 
 
+def _ranked_code_graph_context() -> dict:
+    payload = _valid_code_graph_context()
+    payload["placement_facts"]["recommended_edit_strategy"] = "rewrite_small_region"
+    payload["placement_facts"]["generation_collision_detected"] = False
+    payload["placement_facts"]["insertion_candidates"] = [
+        {
+            "file_path": "mission_board/service.py",
+            "symbol_id": "sym:inside_target",
+            "symbol_name": "MissionBoardService",
+            "strategy": "inside_symbol",
+            "span": {"start_line": 6, "end_line": 20},
+        },
+        {
+            "file_path": "mission_board/service.py",
+            "symbol_id": "sym:append_local",
+            "symbol_name": "existing_helper",
+            "strategy": "append_after_symbol",
+            "span": {"start_line": 7, "end_line": 7},
+        },
+        {
+            "file_path": "mission_board/service.py",
+            "symbol_id": "sym:before_local",
+            "symbol_name": "existing_helper",
+            "strategy": "insert_before_symbol",
+            "span": {"start_line": 8, "end_line": 8},
+        },
+    ]
+    return payload
+
+
+def _ambiguous_code_graph_context() -> dict:
+    payload = _valid_code_graph_context()
+    payload["placement_facts"]["generation_collision_detected"] = True
+    payload["placement_facts"]["recommended_edit_strategy"] = "rewrite_small_region"
+    payload["placement_facts"]["insertion_candidates"] = [
+        {
+            "file_path": "mission_board/service.py",
+            "symbol_id": "sym:existing_helper",
+            "symbol_name": "existing_helper",
+            "strategy": "append_after_symbol",
+            "span": {"start_line": 7, "end_line": 7},
+        }
+    ]
+    return payload
+
+
 def _workspace_dir(name: str) -> Path:
     base = Path("tests/.tmp") / name
     if base.exists():
@@ -3584,8 +3630,18 @@ def test_build_incremental_preview_artifact_uses_valid_code_graph_facts_as_previ
 
     assert preview["previews"][0]["preview_decision"] == "skip"
     assert preview["previews"][0]["preview_reason"] == "ownership"
+    assert preview["planning_context"] == {
+        "guidance_source": "code_graph_guided",
+        "fallback_reason": None,
+        "reasoning_summary": "Preview ranked Code Graph insertion candidates, interpreted collision risk, and selected Preview-only guidance.",
+    }
+    assert preview["previews"][0]["preview_planning_basis"] == "code_graph_guided"
     assert preview["previews"][0]["recommended_edit_strategy"] == "bounded_insert"
+    assert preview["previews"][0]["preview_edit_strategy"] == "bounded_insert"
     assert preview["previews"][0]["generation_collision_detected"] is True
+    assert preview["previews"][0]["collision_assessment"] == "ambiguous_overlap"
+    assert preview["previews"][0]["selected_insertion_candidate"]["symbol_id"] == "sym:existing_helper"
+    assert "collision assessment is ambiguous_overlap" in preview["previews"][0]["preview_reasoning"]
     assert preview["previews"][0]["insertion_candidates"] == [
         {
             "file_path": "mission_board/service.py",
@@ -3616,6 +3672,11 @@ def test_build_incremental_preview_artifact_ignores_malformed_code_graph_facts()
         code_graph_context={"contract_name": "DefiantCodeGraphFacts", "contract_version": "wrong", "graph_id": "graph:bad"},
     )
 
+    assert preview["planning_context"] == {
+        "guidance_source": "code_graph_fallback",
+        "fallback_reason": "facts_malformed",
+        "reasoning_summary": "Code Graph facts were provided but malformed, so Preview used baseline planning.",
+    }
     assert preview["previews"] == [
         {
             "path": "mission_board/service.py",
@@ -3630,6 +3691,64 @@ def test_build_incremental_preview_artifact_ignores_malformed_code_graph_facts()
             "approximate_line_delta": _changed_lines_estimate(b"existing", render_file_entry_bytes(modify_entry)),
         }
     ]
+
+
+def test_build_incremental_preview_artifact_ranks_candidates_deterministically_and_prefers_lower_invasiveness():
+    project_root = _workspace_dir("dgce_incremental_v2_code_graph_ranking")
+    modify_entry = {"path": "mission_board/service.py", "purpose": "Modify", "source": "service"}
+    modify_path = project_root / "mission_board" / "service.py"
+    modify_path.parent.mkdir(parents=True, exist_ok=True)
+    modify_path.write_text("existing", encoding="utf-8")
+    file_plan = FilePlan(project_name="DGCE", files=[modify_entry])
+    change_plan = [
+        {"section_id": "mission-board", "path": "mission_board/service.py", "action": "modify", "reason": "target_present_in_workspace"},
+    ]
+
+    preview = build_incremental_preview_artifact(
+        "mission-board",
+        file_plan,
+        change_plan,
+        project_root,
+        code_graph_context=_ranked_code_graph_context(),
+    )
+
+    preview_entry = preview["previews"][0]
+
+    assert [candidate["symbol_id"] for candidate in preview_entry["insertion_candidates"]] == [
+        "sym:append_local",
+        "sym:before_local",
+        "sym:inside_target",
+    ]
+    assert preview_entry["selected_insertion_candidate"]["symbol_id"] == "sym:append_local"
+    assert preview_entry["recommended_edit_strategy"] == "rewrite_small_region"
+    assert preview_entry["preview_edit_strategy"] == "bounded_insert"
+    assert preview_entry["collision_assessment"] == "likely_safe_extension"
+    assert "preferred bounded_insert over contract guidance rewrite_small_region" in preview_entry["preview_reasoning"]
+
+
+def test_build_incremental_preview_artifact_marks_ambiguous_overlap_without_changing_preview_decision():
+    project_root = _workspace_dir("dgce_incremental_v2_code_graph_ambiguous")
+    modify_entry = {"path": "mission_board/service.py", "purpose": "Modify", "source": "service"}
+    modify_path = project_root / "mission_board" / "service.py"
+    modify_path.parent.mkdir(parents=True, exist_ok=True)
+    modify_path.write_text("existing", encoding="utf-8")
+    file_plan = FilePlan(project_name="DGCE", files=[modify_entry])
+    change_plan = [
+        {"section_id": "mission-board", "path": "mission_board/service.py", "action": "modify", "reason": "target_present_in_workspace"},
+    ]
+
+    preview = build_incremental_preview_artifact(
+        "mission-board",
+        file_plan,
+        change_plan,
+        project_root,
+        code_graph_context=_ambiguous_code_graph_context(),
+    )
+
+    assert preview["previews"][0]["preview_decision"] == "skip"
+    assert preview["previews"][0]["preview_reason"] == "ownership"
+    assert preview["previews"][0]["collision_assessment"] == "ambiguous_overlap"
+    assert preview["previews"][0]["preview_edit_strategy"] == "bounded_insert"
 
 
 def test_build_incremental_change_plan_keeps_create_for_truly_missing_target():
@@ -4297,6 +4416,7 @@ def test_run_section_with_workspace_incremental_v2_writes_preview_under_dce_only
         "models/mission.py",
     ]
     assert all(entry["path"] != "docs/readme.md" for entry in preview["previews"])
+    assert "planning_context" not in preview
     assert "# Generated by Aether" not in json.dumps(preview)
 
 
@@ -4362,8 +4482,11 @@ def test_run_section_with_workspace_incremental_v2_2_persists_code_graph_preview
     guided_preview = next(entry for entry in preview["previews"] if entry["path"] == "mission_board/service.py")
 
     assert preview_result.run_outcome_class == "review_incremental_v2_2"
+    assert preview["planning_context"]["guidance_source"] == "code_graph_guided"
     assert guided_preview["recommended_edit_strategy"] == "bounded_insert"
+    assert guided_preview["preview_edit_strategy"] == "bounded_insert"
     assert guided_preview["generation_collision_detected"] is True
+    assert guided_preview["collision_assessment"] == "ambiguous_overlap"
     assert guided_preview["insertion_candidates"][0]["symbol_id"] == "sym:existing_helper"
     assert governed_result.status == "success"
     assert governed_result.run_outcome_class == baseline_governed_result.run_outcome_class
@@ -4425,6 +4548,45 @@ def test_run_section_with_workspace_incremental_v2_2_writes_review_under_dce_onl
     assert "## Blocked candidates" in review
     assert "# Generated by Aether" not in review
     assert "existing-service" not in review
+
+
+def test_run_section_with_workspace_incremental_v2_2_review_explains_code_graph_guidance_and_fallback(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    guided_root = _workspace_dir("dgce_incremental_v2_2_review_guided_reasoning")
+    _write_text(guided_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(guided_root, [])
+    run_section_with_workspace(
+        _section().model_copy(update={"code_graph_context": _ranked_code_graph_context()}),
+        guided_root,
+        incremental_mode="incremental_v2_2",
+    )
+    guided_review = (guided_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+
+    fallback_root = _workspace_dir("dgce_incremental_v2_2_review_fallback_reasoning")
+    _write_text(fallback_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(fallback_root, [])
+    run_section_with_workspace(
+        _section().model_copy(
+            update={"code_graph_context": {"contract_name": "DefiantCodeGraphFacts", "contract_version": "wrong", "graph_id": "graph:bad"}}
+        ),
+        fallback_root,
+        incremental_mode="incremental_v2_2",
+    )
+    fallback_review = (fallback_root / ".dce" / "reviews" / "mission-board.review.md").read_text(encoding="utf-8")
+
+    assert "- Planning basis: code_graph_guided" in guided_review
+    assert "strategy: bounded_insert" in guided_review
+    assert "collision: likely_safe_extension" in guided_review
+    assert "preferred bounded_insert over contract guidance rewrite_small_region" in guided_review
+    assert "- Planning basis: code_graph_fallback" in fallback_review
+    assert "- Planning fallback: facts_malformed" in fallback_review
+    assert "baseline planning" in fallback_review
 
 
 def test_run_section_with_workspace_incremental_v2_2_review_is_deterministic(monkeypatch):
