@@ -5,8 +5,9 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -164,6 +165,7 @@ class SectionSimulationTriggerInput(BaseModel):
     """Deterministic Stage 7.5 trigger input for explicit simulation-gate control."""
 
     simulation_triggered: bool = False
+    simulation_provider: str = "workspace_artifact"
     trigger_source: str = "manual"
     simulation_trigger_timestamp: str = "1970-01-01T00:00:00Z"
 
@@ -171,9 +173,33 @@ class SectionSimulationTriggerInput(BaseModel):
 class SectionSimulationInput(BaseModel):
     """Deterministic Stage 7.5 simulation result input produced outside DGCE."""
 
-    simulation_status: str
+    simulation_status: Literal["pass", "fail", "indeterminate"]
+    findings: List[str] = Field(default_factory=list)
+    indeterminate_reason: str | None = None
+    provider_name: str | None = None
     simulation_source: str = "external"
     simulation_timestamp: str = "1970-01-01T00:00:00Z"
+
+
+class Stage75SimulationProviderRequest(BaseModel):
+    """Minimal deterministic request passed to a Stage 7.5 simulation provider."""
+
+    section_id: str
+    require_preflight_pass: bool
+    simulation_provider: str
+    simulation_trigger_timestamp: str
+    trigger_source: str
+
+
+class Stage75SimulationProviderResponse(BaseModel):
+    """Strict Stage 7.5 provider response contract."""
+
+    simulation_status: Literal["pass", "fail", "indeterminate"]
+    findings: List[str] = Field(default_factory=list)
+    indeterminate_reason: str | None = None
+
+
+SimulationProviderCallable = Callable[[Stage75SimulationProviderRequest], Stage75SimulationProviderResponse | dict[str, Any]]
 
 
 class SectionExecutionStampInput(BaseModel):
@@ -813,7 +839,7 @@ def run_section_with_workspace(
                 write_transparency=None,
                 ownership_index=None,
             )
-        simulation_trigger_artifact = record_section_simulation_trigger(
+        simulation_gate = execute_reserved_simulation_gate(
             project_root,
             section_id,
             require_preflight_pass=True,
@@ -822,7 +848,6 @@ def run_section_with_workspace(
                 simulation_trigger_timestamp=simulation_trigger_timestamp,
             ),
         )
-        simulation_gate = _evaluate_simulation_gate(workspace["root"], section_id, simulation_trigger_artifact)
         if simulation_gate["simulation_blocked"]:
             execution_artifact = record_section_execution_stamp(
                 project_root,
@@ -2376,6 +2401,82 @@ def _validate_execution_stamp_schema(payload: Any) -> None:
             _schema_error(artifact_name, "prepared_plan_cross_link.prepared_plan_fingerprint must match prepared_plan_audit_manifest.prepared_plan_fingerprint")
 
 
+def _validate_simulation_trigger_schema(payload: Any) -> None:
+    artifact_name = "simulation_trigger"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "simulation_trigger_record")
+    _expect_str(_expect_required_field(artifact, "contract_version", artifact_name), artifact_name, "contract_version")
+    _expect_str(_expect_required_field(artifact, "section_id", artifact_name), artifact_name, "section_id")
+    _expect_bool(_expect_required_field(artifact, "require_preflight_pass", artifact_name), artifact_name, "require_preflight_pass")
+    _expect_str(_expect_required_field(artifact, "simulation_provider", artifact_name), artifact_name, "simulation_provider")
+    _expect_bool(_expect_required_field(artifact, "simulation_triggered", artifact_name), artifact_name, "simulation_triggered")
+    _expect_str(
+        _expect_required_field(artifact, "simulation_stage_status", artifact_name),
+        artifact_name,
+        "simulation_stage_status",
+    )
+    _expect_str(
+        _expect_required_field(artifact, "simulation_trigger_timestamp", artifact_name),
+        artifact_name,
+        "simulation_trigger_timestamp",
+    )
+    _expect_str(_expect_required_field(artifact, "trigger_source", artifact_name), artifact_name, "trigger_source")
+    _expect_optional_str(_expect_required_field(artifact, "alignment_path", artifact_name), artifact_name, "alignment_path")
+    _expect_str(
+        _expect_required_field(artifact, "simulation_trigger_fingerprint", artifact_name),
+        artifact_name,
+        "simulation_trigger_fingerprint",
+    )
+    if artifact["contract_version"] != "dgce.simulation_trigger_record.v1":
+        _schema_error(artifact_name, "contract_version must be dgce.simulation_trigger_record.v1")
+    if _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(artifact["simulation_provider"]) is None:
+        _schema_error(artifact_name, "simulation_provider must be a valid Stage 7.5 provider identifier")
+    if artifact["simulation_stage_status"] not in _ALLOWED_SIMULATION_TRIGGER_STAGE_STATUSES:
+        _schema_error(artifact_name, "simulation_stage_status must be a supported Stage 7.5 trigger status")
+    if artifact["simulation_triggered"] and artifact["simulation_stage_status"] != "simulation_required":
+        _schema_error(artifact_name, "simulation_stage_status must be simulation_required when simulation_triggered is true")
+    if not artifact["simulation_triggered"] and artifact["simulation_stage_status"] != "simulation_skipped":
+        _schema_error(artifact_name, "simulation_stage_status must be simulation_skipped when simulation_triggered is false")
+
+
+def _validate_simulation_record_schema(payload: Any) -> None:
+    artifact_name = "simulation_record"
+    artifact = _expect_dict(payload, artifact_name, artifact_name)
+    _validate_artifact_metadata(artifact, artifact_name, "simulation_record")
+    _expect_str(_expect_required_field(artifact, "contract_version", artifact_name), artifact_name, "contract_version")
+    _expect_str(_expect_required_field(artifact, "section_id", artifact_name), artifact_name, "section_id")
+    findings = _expect_list(_expect_required_field(artifact, "findings", artifact_name), artifact_name, "findings")
+    for index, finding in enumerate(findings):
+        _expect_str(finding, artifact_name, f"findings[{index}]")
+        if not str(finding).strip():
+            _schema_error(artifact_name, f"findings[{index}] must not be empty")
+    _expect_optional_str(_expect_required_field(artifact, "indeterminate_reason", artifact_name), artifact_name, "indeterminate_reason")
+    _expect_optional_str(_expect_required_field(artifact, "provider_name", artifact_name), artifact_name, "provider_name")
+    _expect_str(_expect_required_field(artifact, "simulation_status", artifact_name), artifact_name, "simulation_status")
+    _expect_str(_expect_required_field(artifact, "simulation_source", artifact_name), artifact_name, "simulation_source")
+    _expect_str(_expect_required_field(artifact, "simulation_timestamp", artifact_name), artifact_name, "simulation_timestamp")
+    _expect_str(_expect_required_field(artifact, "simulation_fingerprint", artifact_name), artifact_name, "simulation_fingerprint")
+    if artifact["contract_version"] != "dgce.simulation_record.v1":
+        _schema_error(artifact_name, "contract_version must be dgce.simulation_record.v1")
+    if artifact["simulation_status"] not in _ALLOWED_SIMULATION_STATUSES:
+        _schema_error(artifact_name, "simulation_status must be pass, fail, or indeterminate")
+    if artifact["simulation_status"] == "pass":
+        if findings:
+            _schema_error(artifact_name, "findings must be empty when simulation_status is pass")
+        if artifact["indeterminate_reason"] is not None:
+            _schema_error(artifact_name, "indeterminate_reason must be null when simulation_status is pass")
+    elif artifact["simulation_status"] == "fail":
+        if not findings:
+            _schema_error(artifact_name, "findings must be present when simulation_status is fail")
+        if artifact["indeterminate_reason"] is not None:
+            _schema_error(artifact_name, "indeterminate_reason must be null when simulation_status is fail")
+    else:
+        if findings:
+            _schema_error(artifact_name, "findings must be empty when simulation_status is indeterminate")
+        if artifact["indeterminate_reason"] not in _ALLOWED_SIMULATION_INDETERMINATE_REASONS:
+            _schema_error(artifact_name, "indeterminate_reason must explain the indeterminate outcome")
+
+
 def _validate_artifact_manifest_schema(payload: Any) -> None:
     artifact_name = "artifact_manifest.json"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
@@ -2479,6 +2580,16 @@ def _artifact_path_matches_execution_json(path: Path) -> bool:
     return len(parts) >= 3 and tuple(parts[-3:-1]) == (".dce", "execution") and parts[-1].endswith(".execution.json")
 
 
+def _artifact_path_matches_simulation_trigger_json(path: Path) -> bool:
+    parts = _normalized_path_parts(path)
+    return len(parts) >= 4 and tuple(parts[-4:-1]) == (".dce", "execution", "simulation") and parts[-1].endswith(".simulation_trigger.json")
+
+
+def _artifact_path_matches_simulation_json(path: Path) -> bool:
+    parts = _normalized_path_parts(path)
+    return len(parts) >= 4 and tuple(parts[-4:-1]) == (".dce", "execution", "simulation") and parts[-1].endswith(".simulation.json") and not parts[-1].endswith(".simulation_trigger.json")
+
+
 def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
     if _artifact_path_matches(path, (".dce", "reviews", "index.json")):
         _validate_review_index_schema(payload)
@@ -2500,6 +2611,10 @@ def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
         _validate_execution_output_schema(payload)
     elif _artifact_path_matches_execution_json(path):
         _validate_execution_stamp_schema(payload)
+    elif _artifact_path_matches_simulation_trigger_json(path):
+        _validate_simulation_trigger_schema(payload)
+    elif _artifact_path_matches_simulation_json(path):
+        _validate_simulation_record_schema(payload)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -5043,6 +5158,38 @@ def _ordered_alignment_drift_findings(findings: list[str]) -> list[str]:
 
 
 _ALLOWED_SIMULATION_STATUSES = {"pass", "fail", "indeterminate"}
+_ALLOWED_SIMULATION_TRIGGER_STAGE_STATUSES = {"simulation_required", "simulation_skipped"}
+_ALLOWED_SIMULATION_RESOLUTION_STATUSES = {"not_applicable", "resolved", "required_unavailable"}
+_ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
+    "invalid_provider_response",
+    "provider_exception",
+    "provider_unavailable",
+    "simulation_result_missing",
+}
+_SIMULATION_PROVIDER_REGISTRY: dict[str, SimulationProviderCallable] = {}
+_SIMULATION_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+
+
+def _default_workspace_artifact_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
+    return {
+        "findings": [],
+        "indeterminate_reason": "simulation_result_missing",
+        "simulation_status": "indeterminate",
+    }
+
+
+def register_stage75_simulation_provider(name: str, provider: SimulationProviderCallable) -> None:
+    normalized_name = str(name).strip()
+    if not normalized_name or _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(normalized_name) is None:
+        raise ValueError(f"Unsupported Stage 7.5 simulation provider: {name}")
+    _SIMULATION_PROVIDER_REGISTRY[normalized_name] = provider
+
+
+def unregister_stage75_simulation_provider(name: str) -> None:
+    _SIMULATION_PROVIDER_REGISTRY.pop(str(name).strip(), None)
+
+
+_SIMULATION_PROVIDER_REGISTRY["workspace_artifact"] = _default_workspace_artifact_provider
 
 
 def _build_simulation_trigger_artifact(
@@ -5059,6 +5206,7 @@ def _build_simulation_trigger_artifact(
             "contract_version": "dgce.simulation_trigger_record.v1",
             "section_id": section_id,
             "require_preflight_pass": require_preflight_pass,
+            "simulation_provider": str(simulation_trigger_input.simulation_provider),
             "simulation_triggered": bool(simulation_trigger_input.simulation_triggered),
             "simulation_stage_status": (
                 "simulation_required" if simulation_trigger_input.simulation_triggered else "simulation_skipped"
@@ -5081,11 +5229,35 @@ def _build_simulation_artifact(
     simulation_status = str(simulation_input.simulation_status).strip().lower()
     if simulation_status not in _ALLOWED_SIMULATION_STATUSES:
         raise ValueError(f"Unsupported simulation status: {simulation_input.simulation_status}")
+    findings = [str(finding).strip() for finding in simulation_input.findings if str(finding).strip()]
+    indeterminate_reason = (
+        None if simulation_input.indeterminate_reason is None else str(simulation_input.indeterminate_reason).strip()
+    )
+    if simulation_status == "pass":
+        if findings:
+            raise ValueError("Pass simulation record must not include findings")
+        if indeterminate_reason is not None:
+            raise ValueError("Pass simulation record must not include indeterminate_reason")
+    elif simulation_status == "fail":
+        if not findings:
+            raise ValueError("Fail simulation record requires findings")
+        if indeterminate_reason is not None:
+            raise ValueError("Fail simulation record must not include indeterminate_reason")
+    else:
+        if findings:
+            raise ValueError("Indeterminate simulation record must not include findings")
+        if indeterminate_reason not in _ALLOWED_SIMULATION_INDETERMINATE_REASONS:
+            raise ValueError(f"Unsupported indeterminate simulation reason: {simulation_input.indeterminate_reason}")
     payload = _with_artifact_metadata(
         "simulation_record",
         {
             "contract_version": "dgce.simulation_record.v1",
             "section_id": section_id,
+            "findings": findings,
+            "indeterminate_reason": indeterminate_reason,
+            "provider_name": (
+                None if simulation_input.provider_name is None else str(simulation_input.provider_name).strip() or None
+            ),
             "simulation_status": simulation_status,
             "simulation_source": str(simulation_input.simulation_source),
             "simulation_timestamp": str(simulation_input.simulation_timestamp),
@@ -5113,36 +5285,218 @@ def _load_valid_simulation_artifact(workspace_root: Path, section_id: str) -> di
         return None
     if str(payload.get("section_id")) != section_id:
         return None
-    if str(payload.get("simulation_status")) not in _ALLOWED_SIMULATION_STATUSES:
+    simulation_status = str(payload.get("simulation_status"))
+    if simulation_status not in _ALLOWED_SIMULATION_STATUSES:
+        return None
+    findings = payload.get("findings")
+    if not isinstance(findings, list) or any(not isinstance(entry, str) or not entry.strip() for entry in findings):
+        return None
+    indeterminate_reason = payload.get("indeterminate_reason")
+    if indeterminate_reason is not None and not isinstance(indeterminate_reason, str):
+        return None
+    if payload.get("provider_name") is not None and not isinstance(payload.get("provider_name"), str):
+        return None
+    if simulation_status == "pass" and (findings or indeterminate_reason is not None):
+        return None
+    if simulation_status == "fail" and (not findings or indeterminate_reason is not None):
+        return None
+    if simulation_status == "indeterminate" and (
+        findings or indeterminate_reason not in _ALLOWED_SIMULATION_INDETERMINATE_REASONS
+    ):
         return None
     return payload
 
 
-def _evaluate_simulation_gate(
+def _build_simulation_provider_request(
+    section_id: str,
+    *,
+    require_preflight_pass: bool,
+    simulation_trigger_artifact: dict[str, Any],
+) -> Stage75SimulationProviderRequest:
+    return Stage75SimulationProviderRequest(
+        section_id=section_id,
+        require_preflight_pass=require_preflight_pass,
+        simulation_provider=str(simulation_trigger_artifact.get("simulation_provider") or "workspace_artifact"),
+        simulation_trigger_timestamp=str(simulation_trigger_artifact.get("simulation_trigger_timestamp")),
+        trigger_source=str(simulation_trigger_artifact.get("trigger_source")),
+    )
+
+
+def _resolve_stage75_simulation_provider(
+    simulation_trigger_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(simulation_trigger_artifact.get("simulation_triggered")):
+        return {
+            "provider": None,
+            "provider_name": None,
+            "resolution_reason": "simulation_not_triggered",
+            "resolution_status": "not_applicable",
+        }
+    provider_name = str(simulation_trigger_artifact.get("simulation_provider") or "workspace_artifact").strip()
+    provider = _SIMULATION_PROVIDER_REGISTRY.get(provider_name)
+    if provider is None:
+        return {
+            "provider": None,
+            "provider_name": provider_name,
+            "resolution_reason": "provider_unavailable",
+            "resolution_status": "required_unavailable",
+        }
+    return {
+        "provider": provider,
+        "provider_name": provider_name,
+        "resolution_reason": "provider_resolved",
+        "resolution_status": "resolved",
+    }
+
+
+def _load_simulation_provider_response_from_workspace_artifact(
     workspace_root: Path,
     section_id: str,
+) -> dict[str, Any]:
+    simulation_artifact = _load_valid_simulation_artifact(workspace_root, section_id)
+    if simulation_artifact is None:
+        return {
+            "findings": [],
+            "indeterminate_reason": "simulation_result_missing",
+            "simulation_status": "indeterminate",
+        }
+    return {
+        "findings": list(simulation_artifact.get("findings", [])),
+        "indeterminate_reason": simulation_artifact.get("indeterminate_reason"),
+        "simulation_status": simulation_artifact["simulation_status"],
+    }
+
+
+def _execute_stage75_simulation_provider(
+    workspace_root: Path,
+    section_id: str,
+    *,
+    require_preflight_pass: bool,
     simulation_trigger_artifact: dict[str, Any],
 ) -> dict[str, Any]:
     simulation_triggered = bool(simulation_trigger_artifact.get("simulation_triggered"))
     if not simulation_triggered:
         return {
-            "simulation_triggered": False,
-            "simulation_status": "skipped",
-            "simulation_reason": "simulation_skipped",
+            "provider_name": None,
+            "provider_request": None,
+            "provider_resolution_status": "not_applicable",
+            "simulation_artifact": None,
             "simulation_blocked": False,
+            "simulation_reason": "simulation_skipped",
+            "simulation_status": "skipped",
+            "simulation_triggered": False,
+            "trigger_artifact": simulation_trigger_artifact,
         }
-    simulation_artifact = _load_valid_simulation_artifact(workspace_root, section_id)
-    if simulation_artifact is None:
+
+    provider_request = _build_simulation_provider_request(
+        section_id,
+        require_preflight_pass=require_preflight_pass,
+        simulation_trigger_artifact=simulation_trigger_artifact,
+    )
+    provider_resolution = _resolve_stage75_simulation_provider(simulation_trigger_artifact)
+    provider_name = provider_resolution["provider_name"]
+    if provider_resolution["resolution_status"] == "required_unavailable":
+        simulation_artifact = _write_json_with_artifact_fingerprint(
+            workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
+            _build_simulation_artifact(
+                workspace_root,
+                section_id,
+                simulation_input=SectionSimulationInput(
+                    simulation_status="indeterminate",
+                    indeterminate_reason="provider_unavailable",
+                    provider_name=provider_name,
+                    simulation_source="provider_registry",
+                    simulation_timestamp=provider_request.simulation_trigger_timestamp,
+                ),
+            ),
+        )
         return {
-            "simulation_triggered": True,
-            "simulation_status": "indeterminate",
-            "simulation_reason": "simulation_result_missing",
+            "provider_name": provider_name,
+            "provider_request": provider_request.model_dump(),
+            "provider_resolution_status": "required_unavailable",
+            "simulation_artifact": simulation_artifact,
             "simulation_blocked": True,
+            "simulation_reason": "simulation_indeterminate",
+            "simulation_status": "indeterminate",
+            "simulation_triggered": True,
+            "trigger_artifact": simulation_trigger_artifact,
         }
+
+    provider = provider_resolution["provider"]
+    try:
+        provider_raw_response: Stage75SimulationProviderResponse | dict[str, Any]
+        if provider is _default_workspace_artifact_provider:
+            provider_response_payload = _load_simulation_provider_response_from_workspace_artifact(workspace_root, section_id)
+        else:
+            provider_raw_response = provider(provider_request)
+    except Exception:
+        simulation_artifact = _write_json_with_artifact_fingerprint(
+            workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
+            _build_simulation_artifact(
+                workspace_root,
+                section_id,
+                simulation_input=SectionSimulationInput(
+                    simulation_status="indeterminate",
+                    indeterminate_reason="provider_exception",
+                    provider_name=provider_name,
+                    simulation_source="provider_execution",
+                    simulation_timestamp=provider_request.simulation_trigger_timestamp,
+                ),
+            ),
+        )
+        return {
+            "provider_name": provider_name,
+            "provider_request": provider_request.model_dump(),
+            "provider_resolution_status": "resolved",
+            "simulation_artifact": simulation_artifact,
+            "simulation_blocked": True,
+            "simulation_reason": "simulation_indeterminate",
+            "simulation_status": "indeterminate",
+            "simulation_triggered": True,
+            "trigger_artifact": simulation_trigger_artifact,
+        }
+
+    try:
+        if provider is not _default_workspace_artifact_provider:
+            provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
+        simulation_artifact = _write_json_with_artifact_fingerprint(
+            workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
+            _build_simulation_artifact(
+                workspace_root,
+                section_id,
+                simulation_input=SectionSimulationInput(
+                    simulation_status=provider_response_payload["simulation_status"],
+                    findings=list(provider_response_payload.get("findings", [])),
+                    indeterminate_reason=provider_response_payload.get("indeterminate_reason"),
+                    provider_name=provider_name,
+                    simulation_source="provider_execution",
+                    simulation_timestamp=provider_request.simulation_trigger_timestamp,
+                ),
+            ),
+        )
+    except Exception:
+        simulation_artifact = _write_json_with_artifact_fingerprint(
+            workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
+            _build_simulation_artifact(
+                workspace_root,
+                section_id,
+                simulation_input=SectionSimulationInput(
+                    simulation_status="indeterminate",
+                    indeterminate_reason="invalid_provider_response",
+                    provider_name=provider_name,
+                    simulation_source="provider_execution",
+                    simulation_timestamp=provider_request.simulation_trigger_timestamp,
+                ),
+            ),
+        )
+
     simulation_status = str(simulation_artifact.get("simulation_status"))
     return {
-        "simulation_triggered": True,
-        "simulation_status": simulation_status,
+        "provider_name": provider_name,
+        "provider_request": provider_request.model_dump(),
+        "provider_resolution_status": "resolved",
+        "simulation_artifact": simulation_artifact,
+        "simulation_blocked": simulation_status != "pass",
         "simulation_reason": (
             "simulation_pass"
             if simulation_status == "pass"
@@ -5150,8 +5504,34 @@ def _evaluate_simulation_gate(
             if simulation_status == "fail"
             else "simulation_indeterminate"
         ),
-        "simulation_blocked": simulation_status != "pass",
+        "simulation_status": simulation_status,
+        "simulation_triggered": True,
+        "trigger_artifact": simulation_trigger_artifact,
     }
+
+
+def execute_reserved_simulation_gate(
+    project_root: Path,
+    section_id: str,
+    *,
+    require_preflight_pass: bool,
+    simulation_trigger: SectionSimulationTriggerInput | None = None,
+) -> dict[str, Any]:
+    workspace = _ensure_workspace(project_root)
+    simulation_trigger_artifact = record_section_simulation_trigger(
+        project_root,
+        section_id,
+        require_preflight_pass=require_preflight_pass,
+        simulation_trigger=simulation_trigger,
+    )
+    simulation_gate = _execute_stage75_simulation_provider(
+        workspace["root"],
+        section_id,
+        require_preflight_pass=require_preflight_pass,
+        simulation_trigger_artifact=simulation_trigger_artifact,
+    )
+    _refresh_workspace_views(workspace)
+    return simulation_gate
 
 
 def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
