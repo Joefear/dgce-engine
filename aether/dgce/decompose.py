@@ -65,6 +65,7 @@ class DGCESection(BaseModel):
     constraints: List[str] = Field(default_factory=list)
     dependencies: List[str] = Field(default_factory=list)
     expected_targets: List[Any] = Field(default_factory=list)
+    code_graph_context: dict[str, Any] | None = None
 
 
 class ResponseEnvelope(BaseModel):
@@ -693,6 +694,7 @@ def run_section_with_workspace(
             allow_modify_write=effective_allow_safe_modify,
             owned_paths=load_owned_paths(ownership_index_path),
             mode=incremental_mode,
+            code_graph_context=section.code_graph_context,
         )
         preview_artifact = _write_json_with_artifact_fingerprint(preview_path, preview_artifact)
         if incremental_mode == "incremental_v2_2":

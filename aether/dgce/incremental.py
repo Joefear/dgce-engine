@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 
+from aether.dgce.code_graph_context import parse_code_graph_context
 from aether.dgce.file_plan import FilePlan
 from aether.dgce.file_writer import render_file_entry_bytes
 
@@ -274,9 +275,11 @@ def build_incremental_preview_artifact(
     allow_modify_write: bool = False,
     owned_paths: set[str] | None = None,
     mode: str = "incremental_v2",
+    code_graph_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic metadata-only preview artifact for one section target set."""
     actions_by_path = classify_section_targets(file_plan, change_plan, project_root)
+    code_graph_guidance = _build_preview_code_graph_guidance(code_graph_context)
 
     previews: list[dict[str, Any]] = []
     for file_entry in file_plan.files:
@@ -307,6 +310,8 @@ def build_incremental_preview_artifact(
                 "approximate_line_delta": _approximate_line_delta(existing_bytes, generated_bytes),
             }
         )
+        if normalized_path in code_graph_guidance:
+            previews[-1].update(code_graph_guidance[normalized_path])
 
     previews = sorted(previews, key=lambda entry: str(entry["path"]))
     summary, preview_outcome_class, recommended_mode = summarize_incremental_preview(previews)
@@ -637,6 +642,80 @@ def _recommended_mode(previews: List[Dict[str, Any]], summary: dict[str, int]) -
     if summary["total_blocked_modify_disabled"] > 0:
         return "review_required"
     return "review_required"
+
+
+def _build_preview_code_graph_guidance(raw_context: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Return per-path preview-only structural guidance from optional Code Graph facts."""
+    if raw_context is None:
+        return {}
+
+    try:
+        parsed_context = parse_code_graph_context(raw_context)
+    except ValueError:
+        return {}
+
+    placement_facts = parsed_context.get("placement_facts")
+    if placement_facts is None:
+        return {}
+
+    guidance_by_path: dict[str, dict[str, Any]] = {}
+    insertion_candidates = placement_facts.get("insertion_candidates") or []
+    for candidate in insertion_candidates:
+        normalized_path = _normalize_code_graph_guidance_path(candidate.get("file_path"))
+        if normalized_path is None:
+            continue
+        guidance_by_path.setdefault(normalized_path, {"insertion_candidates": []})["insertion_candidates"].append(candidate)
+
+    relevant_paths: set[str] = set(guidance_by_path)
+    target = parsed_context.get("target")
+    if target is not None:
+        normalized_target_path = _normalize_code_graph_guidance_path(target.get("file_path"))
+        if normalized_target_path is not None:
+            relevant_paths.add(normalized_target_path)
+
+    patch_facts = parsed_context.get("patch_facts")
+    if patch_facts is not None:
+        for touched_file in patch_facts.get("touched_files") or []:
+            normalized_touched_path = _normalize_code_graph_guidance_path(touched_file)
+            if normalized_touched_path is not None:
+                relevant_paths.add(normalized_touched_path)
+
+    for normalized_path in sorted(relevant_paths):
+        path_guidance = guidance_by_path.setdefault(normalized_path, {})
+        if placement_facts.get("generation_collision_detected") is not None:
+            path_guidance["generation_collision_detected"] = placement_facts.get("generation_collision_detected")
+        if placement_facts.get("recommended_edit_strategy") is not None:
+            path_guidance["recommended_edit_strategy"] = placement_facts.get("recommended_edit_strategy")
+        if "insertion_candidates" in path_guidance:
+            path_guidance["insertion_candidates"] = sorted(
+                path_guidance["insertion_candidates"],
+                key=_code_graph_insertion_candidate_sort_key,
+            )
+
+    return guidance_by_path
+
+
+def _normalize_code_graph_guidance_path(path_value: Any) -> str | None:
+    """Return a normalized relative guidance path or None when the facts path is unusable."""
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    try:
+        return _normalize_relative_path(Path(path_value))
+    except ValueError:
+        return None
+
+
+def _code_graph_insertion_candidate_sort_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    """Return a deterministic ordering key for preview-side insertion candidates."""
+    span = candidate.get("span")
+    return (
+        str(candidate.get("file_path", "")),
+        str(candidate.get("symbol_id") or ""),
+        str(candidate.get("symbol_name") or ""),
+        str(candidate.get("strategy") or ""),
+        -1 if not isinstance(span, dict) or span.get("start_line") is None else int(span.get("start_line")),
+        -1 if not isinstance(span, dict) or span.get("end_line") is None else int(span.get("end_line")),
+    )
 
 
 def build_change_plan(

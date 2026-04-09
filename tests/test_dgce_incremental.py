@@ -48,6 +48,74 @@ def _section_named(title: str) -> DGCESection:
     return section
 
 
+def _valid_code_graph_context(file_path: str = "mission_board/service.py") -> dict:
+    return {
+        "contract_name": "DefiantCodeGraphFacts",
+        "contract_version": "dcg.facts.v1",
+        "graph_id": "graph:mission-board",
+        "workspace_id": "workspace:dgce",
+        "repo_id": "repo:dgce-engine",
+        "language": "python",
+        "generated_at": "2026-04-04T10:15:30Z",
+        "source": "defiant-code-graph",
+        "target": {
+            "file_path": file_path,
+            "symbol_id": "sym:mission_board_service",
+            "symbol_name": "MissionBoardService",
+            "symbol_kind": "class",
+            "span": {"start_line": 3, "end_line": 30},
+        },
+        "intent_facts": {
+            "structural_scope": "file",
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": True,
+            "related_symbols": ["sym:mission_board_router"],
+            "related_files": [file_path],
+        },
+        "patch_facts": {
+            "touched_files": [file_path],
+            "touched_symbols": ["sym:mission_board_service"],
+            "structural_scope_expanded": False,
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": True,
+            "claimed_intent_match": True,
+        },
+        "placement_facts": {
+            "insertion_candidates": [
+                {
+                    "file_path": file_path,
+                    "symbol_id": "sym:existing_helper",
+                    "symbol_name": "existing_helper",
+                    "strategy": "append_after_symbol",
+                    "span": {"start_line": 7, "end_line": 7},
+                }
+            ],
+            "generation_collision_detected": True,
+            "recommended_edit_strategy": "bounded_insert",
+        },
+        "impact_facts": {
+            "blast_radius": {"files": 1, "symbols": 2},
+            "dependency_crossings": [],
+            "dependent_symbols": ["sym:payload_consumer"],
+        },
+        "ownership_facts": {
+            "target_ownership": "governed",
+            "touched_ownership_classes": ["governed"],
+        },
+        "meta": {
+            "parser_family": "tree-sitter",
+            "snapshot_id": "snapshot:mission-board",
+            "notes": ["read-only facts"],
+        },
+    }
+
+
 def _workspace_dir(name: str) -> Path:
     base = Path("tests/.tmp") / name
     if base.exists():
@@ -3495,6 +3563,75 @@ def test_build_incremental_preview_artifact_reports_existing_bytes_for_host_repo
     assert preview["previews"][0]["preview_reason"] in {"ownership", "modify", "identical"}
 
 
+def test_build_incremental_preview_artifact_uses_valid_code_graph_facts_as_preview_guidance_only():
+    project_root = _workspace_dir("dgce_incremental_v2_code_graph_guidance")
+    modify_entry = {"path": "mission_board/service.py", "purpose": "Modify", "source": "service"}
+    modify_path = project_root / "mission_board" / "service.py"
+    modify_path.parent.mkdir(parents=True, exist_ok=True)
+    modify_path.write_text("existing", encoding="utf-8")
+    file_plan = FilePlan(project_name="DGCE", files=[modify_entry])
+    change_plan = [
+        {"section_id": "mission-board", "path": "mission_board/service.py", "action": "modify", "reason": "target_present_in_workspace"},
+    ]
+
+    preview = build_incremental_preview_artifact(
+        "mission-board",
+        file_plan,
+        change_plan,
+        project_root,
+        code_graph_context=_valid_code_graph_context(),
+    )
+
+    assert preview["previews"][0]["preview_decision"] == "skip"
+    assert preview["previews"][0]["preview_reason"] == "ownership"
+    assert preview["previews"][0]["recommended_edit_strategy"] == "bounded_insert"
+    assert preview["previews"][0]["generation_collision_detected"] is True
+    assert preview["previews"][0]["insertion_candidates"] == [
+        {
+            "file_path": "mission_board/service.py",
+            "symbol_id": "sym:existing_helper",
+            "symbol_name": "existing_helper",
+            "strategy": "append_after_symbol",
+            "span": {"start_line": 7, "end_line": 7},
+        }
+    ]
+
+
+def test_build_incremental_preview_artifact_ignores_malformed_code_graph_facts():
+    project_root = _workspace_dir("dgce_incremental_v2_code_graph_invalid")
+    modify_entry = {"path": "mission_board/service.py", "purpose": "Modify", "source": "service"}
+    modify_path = project_root / "mission_board" / "service.py"
+    modify_path.parent.mkdir(parents=True, exist_ok=True)
+    modify_path.write_text("existing", encoding="utf-8")
+    file_plan = FilePlan(project_name="DGCE", files=[modify_entry])
+    change_plan = [
+        {"section_id": "mission-board", "path": "mission_board/service.py", "action": "modify", "reason": "target_present_in_workspace"},
+    ]
+
+    preview = build_incremental_preview_artifact(
+        "mission-board",
+        file_plan,
+        change_plan,
+        project_root,
+        code_graph_context={"contract_name": "DefiantCodeGraphFacts", "contract_version": "wrong", "graph_id": "graph:bad"},
+    )
+
+    assert preview["previews"] == [
+        {
+            "path": "mission_board/service.py",
+            "section_id": "mission-board",
+            "planned_action": "modify",
+            "eligibility": "blocked",
+            "preview_decision": "skip",
+            "preview_reason": "ownership",
+            "identical_content": False,
+            "existing_bytes": len(b"existing"),
+            "generated_bytes": len(render_file_entry_bytes(modify_entry)),
+            "approximate_line_delta": _changed_lines_estimate(b"existing", render_file_entry_bytes(modify_entry)),
+        }
+    ]
+
+
 def test_build_incremental_change_plan_keeps_create_for_truly_missing_target():
     repo_root = _workspace_dir("dgce_incremental_expected_targets_missing")
     project_root = repo_root / "defiant-sky"
@@ -4180,6 +4317,57 @@ def test_run_section_with_workspace_incremental_v2_preview_is_deterministic(monk
     second_preview = (second_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8")
 
     assert first_preview == second_preview
+
+
+def test_run_section_with_workspace_incremental_v2_2_persists_code_graph_preview_guidance_without_changing_governed_execution(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    section = _section().model_copy(update={"code_graph_context": _valid_code_graph_context()})
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+
+    project_root = _workspace_dir("dgce_incremental_v2_2_code_graph_preview_guidance")
+    _write_text(project_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(project_root, [])
+    preview_result = run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2")
+    preview = json.loads((project_root / ".dce" / "plans" / "mission-board.preview.json").read_text(encoding="utf-8"))
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="create_only",
+            approval_timestamp="2026-04-08T00:00:00Z",
+        ),
+    )
+    governed_result = run_dgce_section("mission-board", project_root, governed=True)
+
+    baseline_root = _workspace_dir("dgce_incremental_v2_2_code_graph_preview_baseline")
+    _write_text(baseline_root / "mission_board" / "service.py", "existing-service")
+    _write_ownership_index(baseline_root, [])
+    run_section_with_workspace(_section(), baseline_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        baseline_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="create_only",
+            approval_timestamp="2026-04-08T00:00:00Z",
+        ),
+    )
+    baseline_governed_result = run_dgce_section("mission-board", baseline_root, governed=True)
+
+    guided_preview = next(entry for entry in preview["previews"] if entry["path"] == "mission_board/service.py")
+
+    assert preview_result.run_outcome_class == "review_incremental_v2_2"
+    assert guided_preview["recommended_edit_strategy"] == "bounded_insert"
+    assert guided_preview["generation_collision_detected"] is True
+    assert guided_preview["insertion_candidates"][0]["symbol_id"] == "sym:existing_helper"
+    assert governed_result.status == "success"
+    assert governed_result.run_outcome_class == baseline_governed_result.run_outcome_class
+    assert governed_result.reason == baseline_governed_result.reason
 
 
 def test_run_section_with_workspace_incremental_v2_1_persists_additive_preview_summary(monkeypatch):
