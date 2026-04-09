@@ -4864,7 +4864,7 @@ def test_record_section_approval_derives_execution_permitted_correctly(monkeypat
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
 
     assert record_section_approval(
         project_root,
@@ -4907,7 +4907,7 @@ def test_record_section_approval_writes_artifact_and_updates_linkage(monkeypatch
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
 
     approval = record_section_approval(
         project_root,
@@ -5079,7 +5079,7 @@ def test_persisted_artifacts_include_fingerprint_fields(monkeypatch):
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
     approval = record_section_approval(
         project_root,
         "mission-board",
@@ -5117,7 +5117,7 @@ def test_record_section_approval_uses_same_preview_fingerprint_as_preview_artifa
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
     approval = record_section_approval(
         project_root,
         "mission-board",
@@ -5136,7 +5136,7 @@ def test_record_section_approval_reads_latest_preview_artifact_from_disk(monkeyp
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
 
     preview_path = project_root / ".dce" / "plans" / "mission-board.preview.json"
     preview_payload = json.loads(preview_path.read_text(encoding="utf-8"))
@@ -5475,7 +5475,7 @@ def test_run_dgce_section_governed_valid_approval_succeeds(monkeypatch):
     assert result.artifact_paths["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
     assert result.artifact_paths["preflight_path"] == ".dce/preflight/mission-board.preflight.json"
     assert result.artifact_paths["execution_gate_path"] == ".dce/execution/gate/mission-board.execution_gate.json"
-    assert result.artifact_paths["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
+    assert result.artifact_paths["alignment_path"] == ".dce/execution/alignment/mission-board.alignment.json"
     assert result.artifact_paths["execution_path"] == ".dce/execution/mission-board.execution.json"
     assert result.artifact_paths["output_path"] == ".dce/outputs/mission-board.json"
 
@@ -5557,10 +5557,10 @@ def test_run_dgce_section_governed_alignment_mismatch_blocks(monkeypatch):
 
     result = run_dgce_section("mission-board", project_root, governed=True)
 
-    assert result.status == "blocked"
-    assert result.reason == "blocked_alignment"
-    assert result.run_outcome_class == "blocked_alignment"
-    assert result.artifact_paths["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
+    assert result.status == "success"
+    assert result.reason == "success_create_only"
+    assert result.run_outcome_class == "success_create_only"
+    assert result.artifact_paths["alignment_path"] == ".dce/execution/alignment/mission-board.alignment.json"
 
 
 def test_run_dgce_section_governed_safe_modify_succeeds(monkeypatch):
@@ -7030,85 +7030,46 @@ def test_record_section_alignment_truth_table_and_linkage(monkeypatch):
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
-
-    record_section_approval(
-        project_root,
-        "mission-board",
-        SectionApprovalInput(approval_status="approved", selected_mode="review_required", approval_timestamp="2026-03-26T00:00:00Z"),
-    )
-    review_required = record_section_alignment(
-        project_root,
-        "mission-board",
-        require_preflight_pass=True,
-        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 0, "modify_written_count": 0}},
-    )
-    assert review_required["alignment_status"] == "alignment_blocked"
-    assert review_required["alignment_blocked"] is True
-    assert review_required["selected_mode"] == "review_required"
-    assert review_required["effective_execution_mode"] == "no_changes"
-    assert review_required["alignment_reason"] == "review_required_selected"
-
-    record_section_approval(
-        project_root,
-        "mission-board",
-        SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
-    )
-    no_changes = record_section_alignment(
-        project_root,
-        "mission-board",
-        require_preflight_pass=True,
-        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 1, "modify_written_count": 0}},
-    )
-    assert no_changes["alignment_status"] == "alignment_blocked"
-    assert no_changes["alignment_blocked"] is True
-    assert no_changes["effective_execution_mode"] == "create_only"
-    assert no_changes["alignment_reason"] == "writes_detected"
-
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
     record_section_approval(
         project_root,
         "mission-board",
         SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
     )
-    create_only = record_section_alignment(
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    change_plan = load_change_plan(project_root / ".dce" / "plans" / "mission-board.change_plan.json")
+    _, write_transparency = build_write_transparency(
+        preview_result.file_plan,
+        change_plan,
+        project_root,
+    )
+    alignment = record_section_alignment(
         project_root,
         "mission-board",
         require_preflight_pass=True,
         alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
-    )
-    assert create_only["alignment_status"] == "alignment_blocked"
-    assert create_only["alignment_blocked"] is True
-    assert create_only["effective_execution_mode"] == "safe_modify"
-    assert create_only["alignment_reason"] == "modify_write_detected"
-
-    record_section_approval(
-        project_root,
-        "mission-board",
-        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
-    )
-    safe_modify = record_section_alignment(
-        project_root,
-        "mission-board",
-        require_preflight_pass=True,
-        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+        file_plan=preview_result.file_plan,
+        change_plan=change_plan,
+        write_transparency=write_transparency,
     )
     review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
     workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
 
-    assert safe_modify["alignment_status"] == "alignment_pass"
-    assert safe_modify["alignment_blocked"] is False
-    assert safe_modify["selected_mode"] == "safe_modify"
-    assert safe_modify["effective_execution_mode"] == "safe_modify"
-    assert safe_modify["alignment_reason"] == "safe_modify_permitted"
-    assert review_index["sections"][0]["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
-    assert review_index["sections"][0]["alignment_status"] == "alignment_pass"
+    assert alignment["alignment_status"] == "aligned"
+    assert alignment["alignment_blocked"] is False
+    assert alignment["drift_findings"] == []
+    assert alignment["code_graph_used"] is False
+    assert review_index["sections"][0]["alignment_path"] == ".dce/execution/alignment/mission-board.alignment.json"
+    assert review_index["sections"][0]["alignment_status"] == "aligned"
     assert review_index["sections"][0]["alignment_blocked"] is False
-    assert workspace_summary["sections"][0]["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
-    assert workspace_summary["sections"][0]["alignment_status"] == "alignment_pass"
+    assert workspace_summary["sections"][0]["alignment_path"] == ".dce/execution/alignment/mission-board.alignment.json"
+    assert workspace_summary["sections"][0]["alignment_status"] == "aligned"
     assert workspace_summary["sections"][0]["alignment_blocked"] is False
 
 
@@ -7120,97 +7081,7 @@ def test_record_section_alignment_emits_deterministic_structured_contract(monkey
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
-    record_section_approval(
-        project_root,
-        "mission-board",
-        SectionApprovalInput(
-            approval_status="approved",
-            selected_mode="safe_modify",
-            approval_timestamp="2026-03-26T00:00:00Z",
-        ),
-    )
-    record_section_execution_gate(
-        project_root,
-        "mission-board",
-        require_preflight_pass=True,
-        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
-        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
-    )
-
-    alignment = record_section_alignment(
-        project_root,
-        "mission-board",
-        require_preflight_pass=True,
-        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
-    )
-
-    assert sorted(alignment.keys()) == [
-        "alignment_blocked",
-        "alignment_reason",
-        "alignment_status",
-        "alignment_timestamp",
-        "approval_path",
-        "checks",
-        "compared_artifacts",
-        "created_written_count",
-        "effective_execution_mode",
-        "execution_gate_path",
-        "gate_status",
-        "mismatches",
-        "modify_written_count",
-        "remediation_summary",
-        "require_preflight_pass",
-        "section_id",
-        "selected_mode",
-        "written_file_count",
-    ]
-    assert [entry["artifact_role"] for entry in alignment["compared_artifacts"]] == ["approval", "execution_gate"]
-    assert [entry["present"] for entry in alignment["compared_artifacts"]] == [True, True]
-    assert [check["check_id"] for check in alignment["checks"]] == [
-        "selected_mode_known",
-        "gate_context_available",
-        "selected_mode_matches_effective_execution",
-    ]
-    assert [check["result"] for check in alignment["checks"]] == ["passed", "passed", "passed"]
-    assert all(
-        sorted(check.keys()) == [
-            "category",
-            "check_id",
-            "checked_artifact_path",
-            "checked_artifact_role",
-            "detail",
-            "issue_code",
-            "result",
-        ]
-        for check in alignment["checks"]
-    )
-    assert alignment["mismatches"] == []
-    assert alignment["remediation_summary"] == {
-        "alignment_reason": "safe_modify_permitted",
-        "alignment_status": "alignment_pass",
-        "compared_artifact_count": 2,
-        "effective_execution_mode": "safe_modify",
-        "failed_check_count": 0,
-        "mismatch_count": 0,
-        "next_action": "proceed_to_execution",
-        "not_evaluated_check_count": 0,
-        "passed_check_count": 3,
-        "selected_mode": "safe_modify",
-        "total_check_count": 3,
-    }
-
-
-def test_record_section_alignment_normalizes_mismatches_and_remediation(monkeypatch):
-    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
-    project_root = _workspace_dir("dgce_incremental_v2_8_alignment_blocking_contract")
-
-    def fake_run(self, executor_name, content):
-        return _stub_executor_result(content)
-
-    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
     record_section_approval(
         project_root,
         "mission-board",
@@ -7228,42 +7099,113 @@ def test_record_section_alignment_normalizes_mismatches_and_remediation(monkeypa
         preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
     )
 
+    change_plan = load_change_plan(project_root / ".dce" / "plans" / "mission-board.change_plan.json")
+    _, write_transparency = build_write_transparency(
+        preview_result.file_plan,
+        change_plan,
+        project_root,
+    )
+
     alignment = record_section_alignment(
         project_root,
         "mission-board",
         require_preflight_pass=True,
         alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 2, "modify_written_count": 1}},
+        file_plan=preview_result.file_plan,
+        change_plan=change_plan,
+        write_transparency=write_transparency,
     )
 
-    assert alignment["alignment_status"] == "alignment_blocked"
-    assert alignment["alignment_blocked"] is True
-    assert [check["result"] for check in alignment["checks"]] == ["passed", "passed", "failed"]
-    assert alignment["mismatches"] == [
-        {
-            "category": "execution_mode",
-            "checked_artifact_path": ".dce/approvals/mission-board.approval.json",
-            "checked_artifact_role": "approval",
-            "issue_code": "modify_write_detected",
-            "message": "effective execution mode mismatched: safe_modify",
-            "mismatch_id": "03_selected_mode_matches_effective_execution",
-            "section_id": "mission-board",
-            "severity": "error",
-        }
+    assert sorted(alignment.keys()) == [
+        "alignment_blocked",
+        "alignment_fingerprint",
+        "alignment_reason",
+        "alignment_status",
+        "alignment_timestamp",
+        "artifact_fingerprint",
+        "artifact_type",
+        "code_graph_used",
+        "contract_version",
+        "created_written_count",
+        "drift_findings",
+        "effective_execution_mode",
+        "generated_by",
+        "intent_alignment",
+        "justification_alignment",
+        "modify_written_count",
+        "require_preflight_pass",
+        "schema_version",
+        "scope_alignment",
+        "section_id",
+        "strategy_alignment",
+        "written_file_count",
     ]
-    assert alignment["remediation_summary"] == {
-        "alignment_reason": "modify_write_detected",
-        "alignment_status": "alignment_blocked",
-        "compared_artifact_count": 2,
-        "effective_execution_mode": "safe_modify",
-        "failed_check_count": 1,
-        "mismatch_count": 1,
-        "next_action": "review_alignment_mismatch",
-        "not_evaluated_check_count": 0,
-        "passed_check_count": 2,
-        "selected_mode": "create_only",
-        "total_check_count": 3,
-    }
+    assert alignment["alignment_status"] == "aligned"
+    assert alignment["scope_alignment"]["status"] == "aligned"
+    assert alignment["intent_alignment"]["status"] == "aligned"
+    assert alignment["strategy_alignment"]["status"] == "aligned"
+    assert alignment["justification_alignment"]["status"] == "aligned"
+    assert alignment["drift_findings"] == []
+    assert alignment["artifact_type"] == "alignment_record"
+    for forbidden_field in (
+        "risk_score",
+        "severity",
+        "policy_violation",
+        "requires_approval",
+        "unauthorized",
+    ):
+        assert forbidden_field not in alignment
+
+
+def test_record_section_alignment_normalizes_mismatches_and_remediation(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_alignment_blocking_contract")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(
+            approval_status="approved",
+            selected_mode="create_only",
+            approval_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    drifted_files = [dict(entry) for entry in preview_result.file_plan.files]
+    drifted_files[2]["source"] = "api_surface"
+    drifted_files[2]["purpose"] = "API surface for mission board orchestration"
+    drifted_plan = FilePlan(project_name=preview_result.file_plan.project_name, files=drifted_files)
+    change_plan = load_change_plan(project_root / ".dce" / "plans" / "mission-board.change_plan.json")
+    _, write_transparency = build_write_transparency(
+        drifted_plan,
+        change_plan,
+        project_root,
+    )
+    alignment = record_section_alignment(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        file_plan=drifted_plan,
+        change_plan=change_plan,
+        write_transparency=write_transparency,
+    )
+
+    assert alignment["alignment_status"] == "misaligned"
+    assert alignment["alignment_blocked"] is True
+    assert "intent_category_drift" in alignment["drift_findings"]
 
 
 def test_record_section_alignment_unknown_selected_mode_does_not_emit_extra_execution_mismatch(monkeypatch):
@@ -7277,13 +7219,19 @@ def test_record_section_alignment_unknown_selected_mode_does_not_emit_extra_exec
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
 
     for root in (first_root, second_root):
-        run_section_with_workspace(_section(), root, incremental_mode="incremental_v2_2")
+        _write_text(root / "mission_board" / "service.py", "existing-service")
+        preview_result = run_section_with_workspace(
+            _section().model_copy(update={"code_graph_context": _valid_code_graph_context()}),
+            root,
+            incremental_mode="incremental_v2_2",
+            allow_safe_modify=True,
+        )
         record_section_approval(
             root,
             "mission-board",
             SectionApprovalInput(
                 approval_status="approved",
-                selected_mode="operator_override",
+                selected_mode="create_only",
                 approval_timestamp="2026-03-26T00:00:00Z",
             ),
         )
@@ -7294,55 +7242,38 @@ def test_record_section_alignment_unknown_selected_mode_does_not_emit_extra_exec
             gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
             preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
         )
-
-    first_alignment = record_section_alignment(
-        first_root,
-        "mission-board",
-        require_preflight_pass=True,
-        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 1, "modify_written_count": 0}},
-    )
-    second_alignment = record_section_alignment(
-        second_root,
-        "mission-board",
-        require_preflight_pass=True,
-        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
-        write_transparency={"write_summary": {"written_count": 1, "modify_written_count": 0}},
-    )
+        (root / ".dce" / "input" / "mission-board.json").write_text(
+            json.dumps(_section().model_dump(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        change_plan = load_change_plan(root / ".dce" / "plans" / "mission-board.change_plan.json")
+        owned_paths = {Path(str(entry["path"])).as_posix() for entry in preview_result.file_plan.files}
+        _, write_transparency = build_write_transparency(
+            preview_result.file_plan,
+            change_plan,
+            root,
+            allow_modify_write=True,
+            owned_paths=owned_paths,
+        )
+        alignment = record_section_alignment(
+            root,
+            "mission-board",
+            require_preflight_pass=True,
+            alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+            file_plan=preview_result.file_plan,
+            change_plan=change_plan,
+            write_transparency=write_transparency,
+        )
+        if root == first_root:
+            first_alignment = alignment
+        else:
+            second_alignment = alignment
 
     assert first_alignment == second_alignment
-    assert first_alignment["alignment_reason"] == "unknown_selected_mode"
-    assert [check["result"] for check in first_alignment["checks"]] == ["failed", "passed", "not_evaluated"]
-    assert first_alignment["checks"][2]["check_id"] == "selected_mode_matches_effective_execution"
-    assert first_alignment["checks"][2]["result"] == "not_evaluated"
-    assert first_alignment["checks"][2]["issue_code"] is None
-    assert first_alignment["mismatches"] == [
-        {
-            "category": "approval_mode",
-            "checked_artifact_path": ".dce/approvals/mission-board.approval.json",
-            "checked_artifact_role": "approval",
-            "issue_code": "unknown_selected_mode",
-            "message": "selected mode is unknown: operator_override",
-            "mismatch_id": "01_selected_mode_known",
-            "section_id": "mission-board",
-            "severity": "critical",
-        }
-    ]
-    assert first_alignment["remediation_summary"] == {
-        "alignment_reason": "unknown_selected_mode",
-        "alignment_status": "alignment_blocked",
-        "compared_artifact_count": 2,
-        "effective_execution_mode": "create_only",
-        "failed_check_count": 1,
-        "mismatch_count": 1,
-        "next_action": "review_alignment_mismatch",
-        "not_evaluated_check_count": 1,
-        "passed_check_count": 1,
-        "selected_mode": "operator_override",
-        "total_check_count": 3,
-    }
-    assert (first_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8") == (
-        second_root / ".dce" / "preflight" / "mission-board.alignment.json"
+    assert first_alignment["alignment_status"] == "misaligned"
+    assert first_alignment["drift_findings"] == ["edit_strategy_drift"]
+    assert (first_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json"
     ).read_text(encoding="utf-8")
 
 
@@ -7358,7 +7289,7 @@ def test_run_section_with_workspace_alignment_not_executed_when_preflight_not_re
     workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
 
     assert result.run_outcome_class == "success_create_only"
-    assert (project_root / ".dce" / "preflight" / "mission-board.alignment.json").exists() is False
+    assert (project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").exists() is False
     assert workspace_summary["sections"][0]["alignment_path"] is None
     assert workspace_summary["sections"][0]["alignment_status"] is None
     assert workspace_summary["sections"][0]["alignment_blocked"] is None
@@ -7367,19 +7298,19 @@ def test_run_section_with_workspace_alignment_not_executed_when_preflight_not_re
 def test_run_section_with_workspace_alignment_blocks_no_changes_without_project_writes(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_v2_7_blocked_no_changes")
-    _write_text(project_root / "docs" / "readme.md", "keep-doc")
 
     def fake_run(self, executor_name, content):
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
     record_section_approval(
         project_root,
         "mission-board",
-        SectionApprovalInput(approval_status="approved", selected_mode="no_changes", approval_timestamp="2026-03-26T00:00:00Z"),
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
     )
-
+    drifted_files = [dict(entry) for entry in preview_result.file_plan.files]
+    drifted_files.append({"path": "mission_board/drift.py", "purpose": "Unexpected drift target", "source": "game_system"})
     result = run_section_with_workspace(
         _section(),
         project_root,
@@ -7387,18 +7318,17 @@ def test_run_section_with_workspace_alignment_blocks_no_changes_without_project_
         gate_timestamp="2026-03-26T00:00:00Z",
         preflight_validation_timestamp="2026-03-26T00:00:00Z",
         alignment_timestamp="2026-03-26T00:00:00Z",
+        prepared_file_plan=FilePlan(project_name=preview_result.file_plan.project_name, files=drifted_files),
     )
-    alignment_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8"))
+    alignment_artifact = json.loads((project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").read_text(encoding="utf-8"))
 
     assert result.written_files == []
     assert result.run_outcome_class == "blocked_alignment"
     assert result.execution_outcome["status"] == "blocked"
-    assert result.execution_outcome["alignment_status"] == "alignment_blocked"
-    assert alignment_artifact["alignment_blocked"] is True
-    assert alignment_artifact["selected_mode"] == "no_changes"
-    assert alignment_artifact["effective_execution_mode"] == "create_only"
-    assert (project_root / "docs" / "readme.md").read_text(encoding="utf-8") == "keep-doc"
-    assert (project_root / "api" / "missionboardservice.py").exists() is False
+    assert result.execution_outcome["alignment_status"] == "misaligned"
+    assert "target_set_expanded" in alignment_artifact["drift_findings"]
+    assert "approved_scope_mismatch" in alignment_artifact["drift_findings"]
+    assert (project_root / "mission_board" / "drift.py").exists() is False
 
 
 def test_run_section_with_workspace_alignment_blocks_create_only_when_modify_would_occur(monkeypatch):
@@ -7435,7 +7365,15 @@ def test_run_section_with_workspace_alignment_blocks_create_only_when_modify_wou
         return _stub_executor_result(content)
 
     monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
-    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    constrained_section = _section().model_copy(
+        update={"description": "create only", "constraints": ["create only"]}
+    )
+    run_section_with_workspace(
+        constrained_section,
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+    )
     record_section_approval(
         project_root,
         section_id,
@@ -7443,7 +7381,7 @@ def test_run_section_with_workspace_alignment_blocks_create_only_when_modify_wou
     )
 
     result = run_section_with_workspace(
-        _section(),
+        constrained_section,
         project_root,
         allow_safe_modify=True,
         require_preflight_pass=True,
@@ -7451,15 +7389,87 @@ def test_run_section_with_workspace_alignment_blocks_create_only_when_modify_wou
         preflight_validation_timestamp="2026-03-26T00:00:00Z",
         alignment_timestamp="2026-03-26T00:00:00Z",
     )
-    alignment_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8"))
+    alignment_artifact = json.loads((project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").read_text(encoding="utf-8"))
 
     assert result.written_files == []
     assert result.run_outcome_class == "blocked_alignment"
     assert alignment_artifact["alignment_blocked"] is True
-    assert alignment_artifact["selected_mode"] == "create_only"
-    assert alignment_artifact["effective_execution_mode"] == "safe_modify"
+    assert alignment_artifact["alignment_status"] == "misaligned"
+    assert "design_constraint_mismatch" in alignment_artifact["drift_findings"]
     assert (project_root / "api" / "missionboardservice.py").read_text(encoding="utf-8") == "old-content"
     assert (project_root / "mission_board" / "models.py").exists() is False
+
+
+def test_record_section_alignment_reports_justification_missing_drift_for_modify_without_declared_justification(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_8_alignment_justification_missing")
+    section_id = "mission-board"
+    outputs_path = project_root / ".dce" / "outputs" / f"{section_id}.json"
+    outputs_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_path.write_text(
+        json.dumps(
+            {
+                "section_id": section_id,
+                "run_mode": "create_only",
+                "run_outcome_class": "success_create_only",
+                "file_plan": {
+                    "project_name": "DGCE",
+                    "files": [
+                        {
+                            "path": "api/missionboardservice.py",
+                            "language": "python",
+                            "purpose": "API surface",
+                            "content": "stale-content",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_ownership_index(project_root, [{"path": "api/missionboardservice.py", "section_id": section_id}])
+    _write_text(project_root / "api" / "missionboardservice.py", "old-content")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    preview_result = run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2", allow_safe_modify=True)
+    record_section_approval(
+        project_root,
+        section_id,
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    record_section_execution_gate(
+        project_root,
+        section_id,
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    input_path = project_root / ".dce" / "input" / f"{section_id}.json"
+    input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+    input_payload["description"] = ""
+    input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    change_plan = load_change_plan(project_root / ".dce" / "plans" / "mission-board.change_plan.json")
+    _, write_transparency = build_write_transparency(
+        preview_result.file_plan,
+        change_plan,
+        project_root,
+        allow_modify_write=True,
+    )
+    alignment = record_section_alignment(
+        project_root,
+        section_id,
+        require_preflight_pass=True,
+        alignment=SectionAlignmentInput(alignment_timestamp="2026-03-26T00:00:00Z"),
+        file_plan=preview_result.file_plan,
+        change_plan=change_plan,
+        write_transparency=write_transparency,
+    )
+
+    assert alignment["alignment_status"] == "misaligned"
+    assert alignment["drift_findings"] == ["justification_missing_drift"]
 
 
 def test_run_section_with_workspace_alignment_passes_safe_modify_and_executes(monkeypatch):
@@ -7512,7 +7522,7 @@ def test_run_section_with_workspace_alignment_passes_safe_modify_and_executes(mo
         preflight_validation_timestamp="2026-03-26T00:00:00Z",
         alignment_timestamp="2026-03-26T00:00:00Z",
     )
-    alignment_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8"))
+    alignment_artifact = json.loads((project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").read_text(encoding="utf-8"))
 
     assert result.run_outcome_class == "success_safe_modify"
     assert sorted(result.written_files) == [
@@ -7521,7 +7531,7 @@ def test_run_section_with_workspace_alignment_passes_safe_modify_and_executes(mo
         "mission_board/service.py",
         "models/mission.py",
     ]
-    assert alignment_artifact["alignment_status"] == "alignment_pass"
+    assert alignment_artifact["alignment_status"] == "aligned"
     assert alignment_artifact["alignment_blocked"] is False
     assert alignment_artifact["effective_execution_mode"] == "safe_modify"
 
@@ -7551,8 +7561,8 @@ def test_run_section_with_workspace_alignment_outputs_are_deterministic(monkeypa
             alignment_timestamp="2026-03-26T00:00:00Z",
         )
 
-    assert (first_root / ".dce" / "preflight" / "mission-board.alignment.json").read_text(encoding="utf-8") == (
-        second_root / ".dce" / "preflight" / "mission-board.alignment.json"
+    assert (first_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json"
     ).read_text(encoding="utf-8")
 
 
@@ -8101,18 +8111,18 @@ def test_run_section_with_workspace_governed_blocked_execution_preserves_approva
     execution_payload = json.loads((project_root / ".dce" / "execution" / "mission-board.execution.json").read_text(encoding="utf-8"))
     approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
 
-    assert result.run_outcome_class == "blocked_alignment"
-    assert execution_payload["execution_status"] == "execution_blocked"
+    assert result.run_outcome_class == "success_safe_modify"
+    assert execution_payload["execution_status"] == "execution_completed"
     assert execution_payload["governed_execution"] is True
-    assert execution_payload["execution_blocked"] is True
-    assert execution_payload["approval_consumed"] is False
+    assert execution_payload["execution_blocked"] is False
+    assert execution_payload["approval_consumed"] is True
     assert execution_payload["approval_status_before"] == "approved"
-    assert execution_payload["approval_status_after"] == "approved"
+    assert execution_payload["approval_status_after"] == "superseded"
     assert execution_payload["effective_execution_mode"] == "safe_modify"
-    assert execution_payload["written_file_count"] == 0
-    assert execution_payload["modify_written_count"] == 0
-    assert execution_payload["created_written_count"] == 0
-    assert approval_payload["approval_status"] == "approved"
+    assert execution_payload["written_file_count"] == 4
+    assert execution_payload["modify_written_count"] == 1
+    assert execution_payload["created_written_count"] == 3
+    assert approval_payload["approval_status"] == "superseded"
 
 
 def test_record_section_execution_stamp_is_deterministic_with_fixed_inputs(monkeypatch):
@@ -8262,7 +8272,7 @@ def test_run_section_with_workspace_lifecycle_trace_is_deterministic_and_governe
         {"ref_name": "approval_path", "ref_path": ".dce/approvals/mission-board.approval.json"},
         {"ref_name": "preflight_path", "ref_path": ".dce/preflight/mission-board.preflight.json"},
         {"ref_name": "execution_gate_path", "ref_path": ".dce/execution/gate/mission-board.execution_gate.json"},
-        {"ref_name": "alignment_path", "ref_path": ".dce/preflight/mission-board.alignment.json"},
+        {"ref_name": "alignment_path", "ref_path": ".dce/execution/alignment/mission-board.alignment.json"},
         {"ref_name": "output_path", "ref_path": ".dce/outputs/mission-board.json"},
     ]
     assert section_trace["trace_summary"] == {
@@ -9310,7 +9320,7 @@ def test_run_section_with_workspace_workspace_index_is_deterministic_and_governe
         {"artifact_role": "preflight", "path": ".dce/preflight/mission-board.preflight.json"},
         {"artifact_role": "stale_check", "path": ".dce/preflight/mission-board.stale_check.json"},
         {"artifact_role": "gate", "path": ".dce/execution/gate/mission-board.execution_gate.json"},
-        {"artifact_role": "alignment", "path": ".dce/preflight/mission-board.alignment.json"},
+        {"artifact_role": "alignment", "path": ".dce/execution/alignment/mission-board.alignment.json"},
         {"artifact_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
         {"artifact_role": "outputs", "path": ".dce/outputs/mission-board.json"},
     ]
@@ -9390,7 +9400,7 @@ def test_workspace_index_is_sorted_and_isolated_across_sections(monkeypatch):
         {"artifact_role": "preflight", "path": ".dce/preflight/mission-board.preflight.json"},
         {"artifact_role": "stale_check", "path": ".dce/preflight/mission-board.stale_check.json"},
         {"artifact_role": "gate", "path": ".dce/execution/gate/mission-board.execution_gate.json"},
-        {"artifact_role": "alignment", "path": ".dce/preflight/mission-board.alignment.json"},
+        {"artifact_role": "alignment", "path": ".dce/execution/alignment/mission-board.alignment.json"},
         {"artifact_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
         {"artifact_role": "outputs", "path": ".dce/outputs/mission-board.json"},
     ]
@@ -9723,7 +9733,7 @@ def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries
                 "section_id": "mission-board",
             },
             {
-                "artifact_path": ".dce/preflight/mission-board.alignment.json",
+                "artifact_path": ".dce/execution/alignment/mission-board.alignment.json",
                 "artifact_type": "alignment_record",
                 "schema_version": "1.0",
                 "scope": "section",
