@@ -16,6 +16,7 @@ from aether.dgce.decompose import (
     _read_workspace_index,
     _refresh_workspace_views,
     _write_json,
+    _write_json_with_artifact_fingerprint,
 )
 from aether.dgce.path_utils import resolve_workspace_path
 
@@ -47,6 +48,8 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
             validation_timestamp=str(existing_stale.get("validation_timestamp", default_timestamp))
         ),
     )
+    _write_json_with_artifact_fingerprint(preflight_path, preflight_payload)
+    _write_json(stale_check_path, stale_payload)
     gate_payload = _build_execution_gate_artifact(
         workspace["root"],
         section_id,
@@ -57,9 +60,6 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
         preflight_payload=preflight_payload,
         stale_check_payload=stale_payload,
     )
-
-    _write_json(preflight_path, preflight_payload)
-    _write_json(stale_check_path, stale_payload)
     _write_json(execution_gate_path, gate_payload)
 
 

@@ -1368,6 +1368,7 @@ class TestDGCEExecuteAPI:
                 }
             ],
         }
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
         prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         ownership_index_path = project_root / ".dce" / "ownership_index.json"
         ownership_index_path.write_text(
@@ -1389,7 +1390,7 @@ class TestDGCEExecuteAPI:
                 {
                     "section_id": "mission-board",
                     "status": "failed",
-                    "detail": "Section rerun requires safe_modify approval: mission-board",
+                    "detail": "Prepared file plan artifact exceeds approved preview scope: mission-board",
                 }
             ],
             "first_failing_section": "mission-board",
@@ -1950,6 +1951,7 @@ class TestDGCEExecuteAPI:
         prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
         prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
         prepared_plan_payload["binding_fingerprint"] = None
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
         prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
         response = _get_section_provenance(client, project_root, "mission-board")
@@ -3318,7 +3320,7 @@ class TestDGCEExecuteAPI:
         )
 
         assert response.status_code == 400
-        assert response.json() == {"detail": "Prepared file plan artifact section mismatch: mission-board"}
+        assert response.json() == {"detail": "Prepared file plan artifact is malformed: mission-board"}
 
     def test_execute_rejects_prepared_plan_when_selected_mode_changes_after_prepare(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_binding_selected_mode")
@@ -3352,7 +3354,7 @@ class TestDGCEExecuteAPI:
         )
 
         assert response.status_code == 400
-        assert response.json() == {"detail": "Prepared file plan approval lineage mismatch: mission-board"}
+        assert response.json() == {"detail": "Section is not eligible for execution: mission-board"}
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
@@ -3389,6 +3391,7 @@ class TestDGCEExecuteAPI:
         prepared_plan_payload["binding_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(
             prepared_plan_payload["binding"]
         )
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
         prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -3397,6 +3400,66 @@ class TestDGCEExecuteAPI:
 
         assert response.status_code == 400
         assert response.json() == {"detail": "Prepared file plan binding mismatch: mission-board"}
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_file_plan_exceeds_approved_preview_scope(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_unapproved_file_plan_scope")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["file_plan"]["files"].append(
+            {
+                "path": "docs/unapproved.md",
+                "purpose": "rogue write",
+                "source": "expected_targets",
+                "requirements": [],
+            }
+        )
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan artifact exceeds approved preview scope: mission-board"}
+        assert (project_root / "docs" / "unapproved.md").exists() is False
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_execute_rejects_prepared_plan_when_file_plan_attempts_path_escape(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_path_escape")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+
+        prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
+        prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
+        prepared_plan_payload["file_plan"]["files"].append(
+            {
+                "path": "../escape.py",
+                "purpose": "rogue write",
+                "source": "expected_targets",
+                "requirements": [],
+            }
+        )
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
+        prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Prepared file plan artifact contains invalid path"}
+        assert (project_root.parent / "escape.py").exists() is False
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
@@ -3416,7 +3479,7 @@ class TestDGCEExecuteAPI:
         )
 
         assert response.status_code == 400
-        assert response.json() == {"detail": "Prepared file plan approval lineage mismatch: mission-board"}
+        assert response.json() == {"detail": "Section is not eligible for execution: mission-board"}
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
@@ -3429,6 +3492,7 @@ class TestDGCEExecuteAPI:
         prepared_plan_path = project_root / ".dce" / "plans" / "mission-board.prepared_plan.json"
         prepared_plan_payload = json.loads(prepared_plan_path.read_text(encoding="utf-8"))
         prepared_plan_payload["approval_lineage"]["section_id"] = "other-section"
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
         prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         response = client.post(
             "/v1/dgce/sections/mission-board/execute",
@@ -3675,6 +3739,15 @@ class TestDGCEExecuteAPI:
             json={"workspace_path": str(project_root)},
         )
 
+        assert client.post(
+            "/v1/dgce/refresh",
+            json={"workspace_path": str(project_root)},
+        ).status_code == 200
+        prepare_response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
         assert prepare_response.status_code == 200
         assert prepare_response.json()["eligible"] is True
         approval_payload = json.loads((project_root / ".dce" / "approvals" / "mission-board.approval.json").read_text(encoding="utf-8"))
@@ -3814,6 +3887,7 @@ class TestDGCEExecuteAPI:
                 }
             ],
         }
+        prepared_plan_payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(prepared_plan_payload)
         prepared_plan_path.write_text(json.dumps(prepared_plan_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         ownership_index_path = project_root / ".dce" / "ownership_index.json"
         ownership_index_path.write_text(
@@ -3850,7 +3924,7 @@ class TestDGCEExecuteAPI:
 
         assert rerun_response.status_code == 400
         assert rerun_response.json() == {
-            "detail": "Section rerun requires safe_modify approval: mission-board"
+            "detail": "Prepared file plan artifact exceeds approved preview scope: mission-board"
         }
         assert _file_bytes(
             project_root,

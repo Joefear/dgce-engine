@@ -14,8 +14,11 @@ from aether.dgce.decompose import (
     compute_json_file_fingerprint,
     compute_json_payload_fingerprint,
     compute_review_artifact_fingerprint,
+    verify_artifact_fingerprint,
+    verify_review_artifact_fingerprint,
     _load_section_from_workspace_input,
     _write_json,
+    _write_json_with_artifact_fingerprint,
     _artifact_manifest_entries_by_path,
     _build_execution_gate_artifact,
     _build_preflight_artifact,
@@ -147,6 +150,56 @@ def _prepared_plan_payload(
     }
 
 
+def _normalize_prepared_plan_path(path_value: Any) -> str:
+    path = Path(str(path_value))
+    if path.is_absolute():
+        raise ValueError("Prepared file plan artifact contains invalid path")
+    normalized_parts: list[str] = []
+    for part in path.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            raise ValueError("Prepared file plan artifact contains invalid path")
+        normalized_parts.append(part)
+    if not normalized_parts:
+        raise ValueError("Prepared file plan artifact contains invalid path")
+    return Path(*normalized_parts).as_posix()
+
+
+def _preview_scope_paths(project_root: Path, section_id: str) -> set[str]:
+    preview_relative_path = _artifact_relative_path(section_id, ".dce/plans/{section_id}.preview.json")
+    preview_payload = _load_validated_json_artifact(project_root, preview_relative_path)
+    preview_file = _artifact_file_path(project_root, preview_relative_path)
+    if not verify_artifact_fingerprint(preview_file):
+        raise ValueError(f"Preview artifact fingerprint mismatch: {section_id}")
+    preview_paths: set[str] = set()
+    for entry in preview_payload.get("previews", []):
+        if not isinstance(entry, dict):
+            continue
+        if "path" not in entry:
+            continue
+        preview_paths.add(_normalize_prepared_plan_path(entry.get("path")))
+    return preview_paths
+
+
+def _validate_prepared_plan_file_plan(project_root: Path, section_id: str, file_plan_payload: dict[str, Any]) -> FilePlan:
+    try:
+        file_plan = FilePlan.model_validate(file_plan_payload)
+    except Exception as exc:
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}") from exc
+
+    preview_paths = _preview_scope_paths(project_root, section_id)
+    normalized_paths: set[str] = set()
+    for file_entry in file_plan.files:
+        normalized_path = _normalize_prepared_plan_path(file_entry.get("path"))
+        if normalized_path in normalized_paths:
+            raise ValueError(f"Prepared file plan artifact contains duplicate path: {section_id}")
+        if normalized_path not in preview_paths:
+            raise ValueError(f"Prepared file plan artifact exceeds approved preview scope: {section_id}")
+        normalized_paths.add(normalized_path)
+    return file_plan
+
+
 def load_prepared_section_plan_artifact(project_root: Path, section_id: str) -> dict[str, Any]:
     artifact_path = _prepared_plan_file_path(project_root, section_id)
     if not artifact_path.exists():
@@ -154,6 +207,11 @@ def load_prepared_section_plan_artifact(project_root: Path, section_id: str) -> 
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Prepared file plan artifact must contain a JSON object: {section_id}")
+    artifact_fingerprint = payload.get("artifact_fingerprint")
+    if not isinstance(artifact_fingerprint, str):
+        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    if not verify_artifact_fingerprint(artifact_path):
+        raise ValueError(f"Prepared file plan artifact fingerprint mismatch: {section_id}")
     if str(payload.get("section_id")) != section_id:
         raise ValueError(f"Prepared file plan artifact section mismatch: {section_id}")
     approval_lineage = payload.get("approval_lineage")
@@ -212,23 +270,22 @@ def load_prepared_section_plan_artifact(project_root: Path, section_id: str) -> 
     file_plan = payload.get("file_plan")
     if not isinstance(file_plan, dict):
         raise ValueError(f"Prepared file plan artifact is malformed: {section_id}")
+    _validate_prepared_plan_file_plan(project_root, section_id, file_plan)
     return payload
 
 
 def load_prepared_section_file_plan(project_root: Path, section_id: str) -> FilePlan:
     payload = load_prepared_section_plan_artifact(project_root, section_id)
-    try:
-        return FilePlan.model_validate(payload["file_plan"])
-    except Exception as exc:
-        raise ValueError(f"Prepared file plan artifact is malformed: {section_id}") from exc
+    return _validate_prepared_plan_file_plan(project_root, section_id, payload["file_plan"])
 
 
 def _seal_prepared_section_file_plan(project_root: Path, section_id: str) -> None:
     section = _load_section_from_workspace_input(project_root, section_id)
     file_plan = compute_governed_execution_file_plan(section)
+    _validate_prepared_plan_file_plan(project_root, section_id, file_plan.model_dump())
     binding = _compute_prepared_plan_binding(project_root, section_id)
     approval_lineage = _compute_prepared_plan_approval_lineage(project_root, section_id)
-    _write_json(
+    _write_json_with_artifact_fingerprint(
         _prepared_plan_file_path(project_root, section_id),
         _prepared_plan_payload(section_id, file_plan.model_dump(), binding, approval_lineage),
     )
@@ -381,6 +438,8 @@ def prepare_section_execution(
     preflight_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.preflight.json")
     stale_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.stale_check.json")
     gate_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.execution_gate.json")
+    preview_relative_path = _artifact_relative_path(section_id, ".dce/plans/{section_id}.preview.json")
+    review_relative_path = _artifact_relative_path(section_id, ".dce/reviews/{section_id}.review.md")
 
     approval_payload = (
         _load_validated_json_artifact(project_root, approval_relative_path)
@@ -403,31 +462,71 @@ def prepare_section_execution(
         else None
     )
 
+    approval_file = _artifact_file_path(project_root, approval_relative_path)
+    preview_file = _artifact_file_path(project_root, preview_relative_path)
+    review_file = _artifact_file_path(project_root, review_relative_path)
+    preflight_file = _artifact_file_path(project_root, preflight_relative_path)
+
     approval_ready = (
         approval_payload is not None
+        and verify_artifact_fingerprint(approval_file)
+        and verify_artifact_fingerprint(preview_file)
+        and verify_review_artifact_fingerprint(review_file)
         and str(approval_payload.get("approval_status")) == "approved"
         and approval_payload.get("execution_permitted") is True
     )
 
-    recomputed_preflight = _build_preflight_artifact(dce_root, section_id, SectionPreflightInput())
+    preflight_timestamp = (
+        str(persisted_preflight.get("validation_timestamp"))
+        if persisted_preflight is not None and isinstance(persisted_preflight.get("validation_timestamp"), str)
+        else "1970-01-01T00:00:00Z"
+    )
+    stale_timestamp = (
+        str(persisted_stale.get("validation_timestamp"))
+        if persisted_stale is not None and isinstance(persisted_stale.get("validation_timestamp"), str)
+        else "1970-01-01T00:00:00Z"
+    )
+    gate_timestamp = (
+        str(persisted_gate.get("gate_timestamp"))
+        if persisted_gate is not None and isinstance(persisted_gate.get("gate_timestamp"), str)
+        else "1970-01-01T00:00:00Z"
+    )
+
+    recomputed_preflight = _build_preflight_artifact(
+        dce_root,
+        section_id,
+        SectionPreflightInput(validation_timestamp=preflight_timestamp),
+    )
+    recomputed_preflight_with_fingerprint = {
+        **recomputed_preflight,
+        "artifact_fingerprint": compute_json_payload_fingerprint(recomputed_preflight),
+    }
     preflight_ready = (
         persisted_preflight is not None
+        and verify_artifact_fingerprint(preflight_file)
+        and persisted_preflight == recomputed_preflight_with_fingerprint
         and str(recomputed_preflight.get("preflight_status")) == "preflight_pass"
         and recomputed_preflight.get("execution_allowed") is True
     )
 
-    recomputed_stale = _build_stale_check_artifact(dce_root, section_id, SectionStaleCheckInput())
+    recomputed_stale = _build_stale_check_artifact(
+        dce_root,
+        section_id,
+        SectionStaleCheckInput(validation_timestamp=stale_timestamp),
+    )
     recomputed_gate = _build_execution_gate_artifact(
         dce_root,
         section_id,
         require_preflight_pass=True,
-        gate_input=SectionExecutionGateInput(),
+        gate_input=SectionExecutionGateInput(gate_timestamp=gate_timestamp),
         preflight_payload=recomputed_preflight,
         stale_check_payload=recomputed_stale,
     )
     gate_ready = (
         persisted_stale is not None
         and persisted_gate is not None
+        and persisted_stale == recomputed_stale
+        and persisted_gate == recomputed_gate
         and str(recomputed_stale.get("stale_status")) == "stale_valid"
         and recomputed_stale.get("stale_detected") is False
         and str(recomputed_gate.get("gate_status")) == "gate_pass"
