@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -35,6 +36,7 @@ from aether.dgce.execution_failure import (
 from aether.dgce.execution_timing import build_execution_timing, duration_ms
 from aether.dgce.function_stub_canonicalizer import canonicalize_function_stub_output
 from aether.dgce.function_stub_spec import parse_function_stub_spec
+from aether.dgce.code_graph_context import parse_code_graph_context, verify_vendored_code_graph_schema_checksum
 from aether.dgce.model_execution_basis import (
     assert_function_stub_model_execution_basis_consistent,
     build_function_stub_model_execution_basis_fingerprint,
@@ -1132,6 +1134,7 @@ def record_section_execution_gate(
     """Persist a deterministic execution-gate artifact and refresh workspace linkage."""
     workspace = _ensure_workspace(project_root)
     gate_input = gate or SectionExecutionGateInput()
+    gate_input_path = workspace["preflight"] / f"{section_id}.gate_input.json"
     preflight_path = workspace["preflight"] / f"{section_id}.preflight.json"
     stale_check_path = workspace["preflight"] / f"{section_id}.stale_check.json"
     if require_preflight_pass:
@@ -1148,11 +1151,19 @@ def record_section_execution_gate(
     stale_artifact = _build_stale_check_artifact(workspace["root"], section_id, stale_input)
     _write_json(stale_check_path, stale_artifact)
     preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else None
+    gate_input_artifact = _write_json_with_artifact_fingerprint(
+        gate_input_path,
+        _build_gate_input_artifact(workspace["root"], section_id),
+    )
+    guardrail_gate_input = _pass_gate_input_to_guardrail(gate_input_artifact)
+    if guardrail_gate_input != gate_input_artifact:
+        raise ValueError("Guardrail gate input handoff must remain unchanged")
     gate_artifact = _build_execution_gate_artifact(
         workspace["root"],
         section_id,
         require_preflight_pass=require_preflight_pass,
         gate_input=gate_input,
+        gate_input_payload=gate_input_artifact,
         preflight_payload=preflight_payload,
         stale_check_payload=stale_artifact,
     )
@@ -3404,14 +3415,17 @@ def _build_execution_gate_artifact(
     *,
     require_preflight_pass: bool,
     gate_input: SectionExecutionGateInput,
+    gate_input_payload: dict[str, Any],
     preflight_payload: dict[str, Any] | None,
     stale_check_payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build a deterministic execution-gate artifact from explicit preflight enforcement inputs."""
     preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
     stale_check_path = workspace_root / "preflight" / f"{section_id}.stale_check.json"
+    gate_input_path = workspace_root / "preflight" / f"{section_id}.gate_input.json"
     preflight_path_str = preflight_path.relative_to(workspace_root.parent).as_posix() if preflight_path.exists() else None
     stale_check_path_str = stale_check_path.relative_to(workspace_root.parent).as_posix() if stale_check_path.exists() else None
+    gate_input_path_str = gate_input_path.relative_to(workspace_root.parent).as_posix()
 
     if not require_preflight_pass:
         gate_status = "gate_not_required"
@@ -3488,11 +3502,236 @@ def _build_execution_gate_artifact(
         "stale_check_path": stale_check_path_str,
         "stale_status": stale_check_payload.get("stale_status") if stale_check_payload else None,
         "stale_detected": stale_check_payload.get("stale_detected") if stale_check_payload else None,
+        "gate_input_path": gate_input_path_str,
+        "gate_input_fingerprint": gate_input_payload.get("gate_input_fingerprint"),
         "execution_allowed": preflight_payload.get("execution_allowed") if preflight_payload else None,
         "selected_mode": preflight_payload.get("selected_mode") if preflight_payload else None,
         "gate_reason": gate_reason,
         "gate_timestamp": str(gate_input.gate_timestamp),
     }
+
+
+def _build_gate_input_artifact(workspace_root: Path, section_id: str) -> dict[str, Any]:
+    """Build a deterministic factual gate-input artifact for Guardrail handoff."""
+    approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
+    preview_path = workspace_root / "plans" / f"{section_id}.preview.json"
+    section = DGCESection.model_validate(json.loads((workspace_root / "input" / f"{section_id}.json").read_text(encoding="utf-8")))
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8")) if preview_path.exists() else {}
+
+    approved_scope = _build_gate_input_approved_scope(section_id, approval_payload, preview_payload)
+    design_context = _build_gate_input_design_context(section_id, section)
+    code_graph_context = _build_gate_input_code_graph_context(section.code_graph_context)
+    target_classifications = [
+        _build_gate_target_classification(target, design_context, code_graph_context)
+        for target in approved_scope["approved_targets"]
+    ]
+
+    payload = {
+        "artifact_type": "gate_input_record",
+        "generated_by": DGCE_ARTIFACT_GENERATED_BY,
+        "schema_version": DGCE_ARTIFACT_SCHEMA_VERSION,
+        "section_id": section_id,
+        "contract_version": "dgce.gate_input.v1",
+        "approved_scope": approved_scope,
+        "design_context": design_context,
+        "code_graph_context": code_graph_context,
+        "target_classifications": target_classifications,
+    }
+    payload["gate_input_fingerprint"] = compute_json_payload_fingerprint(payload)
+    return payload
+
+
+def _build_gate_input_approved_scope(
+    section_id: str,
+    approval_payload: dict[str, Any],
+    preview_payload: dict[str, Any],
+) -> dict[str, Any]:
+    preview_entries = [
+        dict(entry)
+        for entry in preview_payload.get("previews", [])
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+    ]
+    approved_targets = [
+        {
+            "target_id": f"{index:02d}:{str(entry['path'])}",
+            "path": str(entry["path"]),
+            "operation": str(entry.get("planned_action", "unknown")),
+        }
+        for index, entry in enumerate(sorted(preview_entries, key=lambda item: str(item.get("path", ""))), start=1)
+    ]
+    return {
+        "approval_id": (
+            f"approval:{section_id}:{approval_payload.get('artifact_fingerprint')}"
+            if isinstance(approval_payload.get("artifact_fingerprint"), str)
+            else None
+        ),
+        "input_fingerprint": approval_payload.get("input_fingerprint"),
+        "preview_fingerprint": approval_payload.get("preview_fingerprint"),
+        "approval_fingerprint": approval_payload.get("artifact_fingerprint"),
+        "approved_targets": approved_targets,
+        "scope_summary": dict(preview_payload.get("summary", {})),
+    }
+
+
+def _build_gate_input_design_context(section_id: str, section: DGCESection) -> dict[str, Any]:
+    return {
+        "declared_capabilities": [str(item) for item in section.requirements],
+        "declared_constraints": [str(item) for item in section.constraints],
+        "declared_justifications": [str(section.description)] if str(section.description).strip() else [],
+        "section_refs": [
+            {
+                "section_id": section_id,
+                "section_type": str(section.section_type),
+                "title": str(section.title),
+            }
+        ],
+    }
+
+
+def _build_gate_input_code_graph_context(raw_context: dict[str, Any] | None) -> dict[str, Any]:
+    if raw_context is None:
+        return {
+            "availability_status": "absent",
+            "source_format": "conservative_default",
+            "degradation_reason": "code_graph_context_absent",
+        }
+
+    try:
+        verify_vendored_code_graph_schema_checksum()
+        parsed_context = parse_code_graph_context(raw_context)
+    except Exception:
+        return {
+            "availability_status": "invalid",
+            "source_format": "conservative_default",
+            "degradation_reason": "facts_malformed",
+        }
+
+    return {
+        "availability_status": "available",
+        "source_format": "dcg.facts.v1",
+        "degradation_reason": None,
+        "facts": parsed_context,
+    }
+
+
+def _build_gate_target_classification(
+    target: dict[str, Any],
+    design_context: dict[str, Any],
+    code_graph_context: dict[str, Any],
+) -> dict[str, Any]:
+    path = str(target.get("path", ""))
+    operation = str(target.get("operation", "unknown"))
+    path_lower = path.lower()
+    direct_text_sources = [
+        path_lower,
+        *[str(item).lower() for item in design_context.get("declared_capabilities", [])],
+        *[str(item).lower() for item in design_context.get("declared_constraints", [])],
+        *[str(item).lower() for item in design_context.get("declared_justifications", [])],
+    ]
+    sensitive_surfaces: list[str] = []
+    supporting_evidence: list[str] = [f"approved_target:{path}", f"operation:{operation}"]
+
+    env_access_detected = _contains_any_token(direct_text_sources, ("env", ".env", "environment", "config"))
+    if env_access_detected:
+        sensitive_surfaces.append("env_access_literals")
+    credential_handling_detected = _contains_any_token(
+        direct_text_sources,
+        ("credential", "credentials", "token", "secret", "password", "auth", "key"),
+    )
+    if credential_handling_detected:
+        sensitive_surfaces.append("credential_literals")
+
+    code_graph_facts = code_graph_context.get("facts") if code_graph_context.get("availability_status") == "available" else None
+    symbol_name = None
+    new_external_boundary_detected = path_lower.startswith("api/")
+    if new_external_boundary_detected:
+        sensitive_surfaces.append("path_boundary:api")
+    blast_radius_estimate = None
+    classification_source = (
+        "approved_preview"
+        if code_graph_context.get("availability_status") == "available"
+        else "conservative_default"
+    )
+    if isinstance(code_graph_facts, dict):
+        target_payload = code_graph_facts.get("target")
+        patch_facts = code_graph_facts.get("patch_facts")
+        impact_facts = code_graph_facts.get("impact_facts")
+        if isinstance(target_payload, dict) and str(target_payload.get("file_path", "")) == path:
+            symbol_name = target_payload.get("symbol_name")
+            classification_source = "code_graph_validated"
+            supporting_evidence.append(f"code_graph_target:{path}")
+        if isinstance(patch_facts, dict):
+            if path in [str(item) for item in patch_facts.get("touched_files") or []]:
+                classification_source = "code_graph_validated"
+                supporting_evidence.append(f"code_graph_touched_file:{path}")
+            if patch_facts.get("module_boundary_crossed") is True or patch_facts.get("trust_boundary_crossed") is True:
+                new_external_boundary_detected = True
+                sensitive_surfaces.append("code_graph_boundary_crossing")
+        if isinstance(impact_facts, dict) and isinstance(impact_facts.get("blast_radius"), dict):
+            blast_radius_estimate = {
+                "files": impact_facts["blast_radius"].get("files"),
+                "symbols": impact_facts["blast_radius"].get("symbols"),
+            }
+        if isinstance(impact_facts, dict) and impact_facts.get("dependency_crossings"):
+            new_external_boundary_detected = True
+            sensitive_surfaces.append("code_graph_dependency_crossing")
+
+    ownership_classes: list[str] = []
+    if env_access_detected:
+        ownership_classes.append("env_sensitive")
+    if credential_handling_detected:
+        ownership_classes.append("credential_adjacent")
+        if operation == "modify":
+            ownership_classes.append("credential_adjacent_modification")
+    if new_external_boundary_detected:
+        ownership_classes.append("external_service_boundary")
+
+    sensitive_surfaces = sorted(dict.fromkeys(sensitive_surfaces))
+    supporting_evidence.extend(f"sensitive_surface:{surface}" for surface in sensitive_surfaces)
+    supporting_evidence = sorted(dict.fromkeys(supporting_evidence))
+    existing_sensitive_symbol_modified = operation == "modify" and bool(sensitive_surfaces)
+    classification_confidence = (
+        "high"
+        if classification_source == "code_graph_validated" or bool(sensitive_surfaces)
+        else "low"
+    )
+
+    return {
+        "target_id": str(target.get("target_id", "")),
+        "path": path,
+        "operation": operation,
+        "symbol_name": symbol_name,
+        "classification_source": (
+            classification_source
+        ),
+        "ownership_classes": ownership_classes,
+        "sensitive_surfaces": sensitive_surfaces,
+        "existing_sensitive_symbol_modified": existing_sensitive_symbol_modified,
+        "new_external_boundary_detected": new_external_boundary_detected,
+        "env_access_detected": env_access_detected,
+        "credential_handling_detected": credential_handling_detected,
+        "blast_radius_estimate": blast_radius_estimate,
+        "supporting_evidence": supporting_evidence,
+        "classification_confidence": classification_confidence,
+    }
+
+
+def _contains_any_token(values: list[str], tokens: tuple[str, ...]) -> bool:
+    normalized_tokens = {token.lower() for token in tokens}
+    for value in values:
+        lowered = value.lower()
+        split_tokens = {token for token in re.split(r"[^a-z0-9_.]+", lowered) if token}
+        if ".env" in normalized_tokens and ".env" in lowered:
+            return True
+        if split_tokens.intersection(normalized_tokens - {".env"}):
+            return True
+    return False
+
+
+def _pass_gate_input_to_guardrail(gate_input_payload: dict[str, Any]) -> dict[str, Any]:
+    """Pass the factual gate-input artifact to Guardrail unchanged."""
+    return gate_input_payload
 
 
 def _build_gate_checks(

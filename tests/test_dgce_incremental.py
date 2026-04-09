@@ -162,6 +162,10 @@ def _ambiguous_code_graph_context() -> dict:
     return payload
 
 
+def _malformed_code_graph_context() -> dict:
+    return {"contract_name": "DefiantCodeGraphFacts", "contract_version": "wrong", "graph_id": "graph:bad"}
+
+
 def _workspace_dir(name: str) -> Path:
     base = Path("tests/.tmp") / name
     if base.exists():
@@ -6433,6 +6437,238 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     assert workspace_summary["sections"][0]["stale_detected"] is False
 
 
+def test_record_section_execution_gate_writes_gate_input_artifact_without_code_graph(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_gate_input_absent")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    gate = record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+    gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+
+    assert gate["gate_input_path"] == ".dce/preflight/mission-board.gate_input.json"
+    assert gate["gate_input_fingerprint"] == gate_input["gate_input_fingerprint"]
+    assert gate_input["code_graph_context"] == {
+        "availability_status": "absent",
+        "source_format": "conservative_default",
+        "degradation_reason": "code_graph_context_absent",
+    }
+    assert [entry["path"] for entry in gate_input["approved_scope"]["approved_targets"]] == [
+        preview["path"] for preview in gate_input["target_classifications"]
+    ]
+
+
+def test_record_section_execution_gate_uses_valid_code_graph_deterministically(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    first_root = _workspace_dir("dgce_incremental_v2_6_gate_input_code_graph_a")
+    second_root = _workspace_dir("dgce_incremental_v2_6_gate_input_code_graph_b")
+    section = _section().model_copy(update={"code_graph_context": _valid_code_graph_context()})
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    for root in (first_root, second_root):
+        run_section_with_workspace(section, root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+        record_section_execution_gate(
+            root,
+            "mission-board",
+            require_preflight_pass=True,
+            gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+            preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+        )
+
+    first_gate_input = json.loads((first_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    second_gate_input = json.loads((second_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    service_classification = next(
+        entry for entry in first_gate_input["target_classifications"] if entry["path"] == "mission_board/service.py"
+    )
+
+    assert first_gate_input == second_gate_input
+    assert first_gate_input["code_graph_context"]["availability_status"] == "available"
+    assert first_gate_input["code_graph_context"]["source_format"] == "dcg.facts.v1"
+    assert service_classification["classification_source"] == "code_graph_validated"
+    assert service_classification["symbol_name"] == "MissionBoardService"
+    assert service_classification["blast_radius_estimate"] == {"files": 1, "symbols": 2}
+    assert service_classification["classification_confidence"] == "high"
+
+
+def test_record_section_execution_gate_invalid_code_graph_triggers_safe_fallback(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_gate_input_invalid_code_graph")
+    section = _section().model_copy(update={"code_graph_context": _malformed_code_graph_context()})
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(section, project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+
+    assert gate_input["code_graph_context"] == {
+        "availability_status": "invalid",
+        "source_format": "conservative_default",
+        "degradation_reason": "facts_malformed",
+    }
+    assert all(entry["classification_source"] == "conservative_default" for entry in gate_input["target_classifications"])
+
+
+def test_gate_input_target_classifications_stay_within_approved_scope_and_policy_free(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_gate_input_scope_binding")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    approved_paths = {entry["path"] for entry in gate_input["approved_scope"]["approved_targets"]}
+    classification_paths = {entry["path"] for entry in gate_input["target_classifications"]}
+    allowed_classification_keys = {
+        "target_id",
+        "path",
+        "operation",
+        "symbol_name",
+        "classification_source",
+        "ownership_classes",
+        "sensitive_surfaces",
+        "existing_sensitive_symbol_modified",
+        "new_external_boundary_detected",
+        "env_access_detected",
+        "credential_handling_detected",
+        "blast_radius_estimate",
+        "supporting_evidence",
+        "classification_confidence",
+    }
+
+    assert classification_paths == approved_paths
+    assert all(set(entry.keys()) == allowed_classification_keys for entry in gate_input["target_classifications"])
+    assert all("decision" not in entry and "risk" not in entry for entry in gate_input["target_classifications"])
+    assert all(
+        not entry["ownership_classes"] or entry["sensitive_surfaces"]
+        for entry in gate_input["target_classifications"]
+    )
+
+
+def test_record_section_execution_gate_hands_gate_input_to_guardrail_unchanged(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_6_gate_input_guardrail_handoff")
+    captured: list[dict] = []
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_handoff(payload):
+        captured.append(json.loads(json.dumps(payload, sort_keys=True)))
+        return payload
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr("aether.dgce.decompose._pass_gate_input_to_guardrail", fake_handoff)
+    run_section_with_workspace(_section().model_copy(update={"code_graph_context": _valid_code_graph_context()}), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    record_section_execution_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
+        preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    persisted_gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+
+    assert captured == [persisted_gate_input]
+
+
+def test_run_section_with_workspace_require_preflight_pass_execution_behavior_unchanged_with_code_graph(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    baseline_root = _workspace_dir("dgce_incremental_v2_6_gate_input_execution_baseline")
+    code_graph_root = _workspace_dir("dgce_incremental_v2_6_gate_input_execution_code_graph")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    for root, section in (
+        (baseline_root, _section()),
+        (code_graph_root, _section().model_copy(update={"code_graph_context": _valid_code_graph_context()})),
+    ):
+        run_section_with_workspace(section, root, incremental_mode="incremental_v2_2")
+        record_section_approval(
+            root,
+            "mission-board",
+            SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+        )
+
+    baseline_result = run_section_with_workspace(
+        _section(),
+        baseline_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+    )
+    code_graph_result = run_section_with_workspace(
+        _section().model_copy(update={"code_graph_context": _valid_code_graph_context()}),
+        code_graph_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+    )
+
+    assert code_graph_result.run_outcome_class == baseline_result.run_outcome_class
+    assert code_graph_result.written_files == baseline_result.written_files
+
+
 def test_record_section_execution_gate_recomputes_stale_from_current_approval_review_fingerprint(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_gate_recompute_current_review_fingerprint")
@@ -6520,6 +6756,8 @@ def test_record_section_execution_gate_emits_deterministic_structured_contract(m
         "execution_allowed",
         "execution_attempted",
         "execution_blocked",
+        "gate_input_fingerprint",
+        "gate_input_path",
         "gate_reason",
         "gate_status",
         "gate_timestamp",

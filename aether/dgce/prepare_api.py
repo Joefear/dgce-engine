@@ -11,6 +11,7 @@ from aether.dgce.decompose import (
     SectionPreflightInput,
     SectionStaleCheckInput,
     compute_governed_execution_file_plan,
+    _build_gate_input_artifact,
     compute_json_file_fingerprint,
     compute_json_payload_fingerprint,
     compute_review_artifact_fingerprint,
@@ -514,11 +515,16 @@ def prepare_section_execution(
         section_id,
         SectionStaleCheckInput(validation_timestamp=stale_timestamp),
     )
+    recomputed_gate_input = _build_gate_input_artifact(dce_root, section_id)
     recomputed_gate = _build_execution_gate_artifact(
         dce_root,
         section_id,
         require_preflight_pass=True,
         gate_input=SectionExecutionGateInput(gate_timestamp=gate_timestamp),
+        gate_input_payload={
+            **recomputed_gate_input,
+            "artifact_fingerprint": compute_json_payload_fingerprint(recomputed_gate_input),
+        },
         preflight_payload=recomputed_preflight,
         stale_check_payload=recomputed_stale,
     )

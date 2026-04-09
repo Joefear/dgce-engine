@@ -10,6 +10,7 @@ from aether.dgce.decompose import (
     SectionPreflightInput,
     SectionStaleCheckInput,
     _build_execution_gate_artifact,
+    _build_gate_input_artifact,
     _build_preflight_artifact,
     _build_stale_check_artifact,
     _ensure_workspace,
@@ -48,6 +49,11 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
             validation_timestamp=str(existing_stale.get("validation_timestamp", default_timestamp))
         ),
     )
+    gate_input_path = workspace["preflight"] / f"{section_id}.gate_input.json"
+    gate_input_payload = _write_json_with_artifact_fingerprint(
+        gate_input_path,
+        _build_gate_input_artifact(workspace["root"], section_id),
+    )
     _write_json_with_artifact_fingerprint(preflight_path, preflight_payload)
     _write_json(stale_check_path, stale_payload)
     gate_payload = _build_execution_gate_artifact(
@@ -57,6 +63,7 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
         gate_input=SectionExecutionGateInput(
             gate_timestamp=str(existing_gate.get("gate_timestamp", default_timestamp))
         ),
+        gate_input_payload=gate_input_payload,
         preflight_payload=preflight_payload,
         stale_check_payload=stale_payload,
     )
