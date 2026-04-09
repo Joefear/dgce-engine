@@ -3,7 +3,7 @@ from pathlib import Path
 
 import aether.dgce.decompose as dgce_decompose
 import pytest
-from aether.dgce import DGCESection, FilePlan, SectionAlignmentInput, SectionApprovalInput, SectionExecutionGateInput, SectionExecutionStampInput, SectionPreflightInput, SectionStaleCheckInput, compute_artifact_fingerprint, compute_json_payload_fingerprint, record_section_alignment, record_section_approval, record_section_execution_gate, record_section_execution_stamp, record_section_preflight, record_section_stale_check, run_dgce_section, run_section_with_workspace
+from aether.dgce import DGCESection, FilePlan, SectionAlignmentInput, SectionApprovalInput, SectionExecutionGateInput, SectionExecutionStampInput, SectionPreflightInput, SectionSimulationInput, SectionStaleCheckInput, compute_artifact_fingerprint, compute_json_payload_fingerprint, record_section_alignment, record_section_approval, record_section_execution_gate, record_section_execution_stamp, record_section_preflight, record_section_simulation, record_section_stale_check, run_dgce_section, run_section_with_workspace
 from aether.dgce.decompose import ResponseEnvelope, _build_run_outcome_class, _validate_write_stage_structured_content, compute_preview_payload_fingerprint
 from aether.dgce.incremental import (
     build_change_plan,
@@ -7536,6 +7536,138 @@ def test_run_section_with_workspace_alignment_passes_safe_modify_and_executes(mo
     assert alignment_artifact["effective_execution_mode"] == "safe_modify"
 
 
+def test_run_section_with_workspace_simulation_skip_path_proceeds(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_9_simulation_skip")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=False,
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    trigger_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").read_text(encoding="utf-8")
+    )
+    workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+
+    assert result.run_outcome_class == "success_create_only"
+    assert trigger_artifact["simulation_triggered"] is False
+    assert trigger_artifact["simulation_stage_status"] == "simulation_skipped"
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
+    assert {"artifact_role": "simulation_trigger", "path": ".dce/execution/simulation/mission-board.simulation_trigger.json"} in workspace_index["sections"][0]["artifact_links"]
+
+
+def test_run_section_with_workspace_simulation_required_blocks_without_valid_result(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_v2_9_simulation_missing")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=True,
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    trigger_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").read_text(encoding="utf-8")
+    )
+
+    assert result.run_outcome_class == "blocked_simulation"
+    assert result.written_files == []
+    assert result.execution_outcome["simulation_triggered"] is True
+    assert result.execution_outcome["simulation_status"] == "indeterminate"
+    assert trigger_artifact["simulation_triggered"] is True
+    assert trigger_artifact["simulation_stage_status"] == "simulation_required"
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("simulation_status", "expected_outcome"),
+    [
+        ("pass", "success_create_only"),
+        ("fail", "blocked_simulation"),
+        ("indeterminate", "blocked_simulation"),
+    ],
+)
+def test_run_section_with_workspace_simulation_result_contract_controls_gate(monkeypatch, simulation_status, expected_outcome):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir(f"dgce_incremental_v2_9_simulation_{simulation_status}")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status=simulation_status,
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=True,
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+    )
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+
+    assert result.run_outcome_class == expected_outcome
+    assert simulation_artifact["simulation_status"] == simulation_status
+    if simulation_status == "pass":
+        assert result.execution_outcome["status"] == "success"
+    else:
+        assert result.execution_outcome["status"] == "blocked"
+        assert result.execution_outcome["simulation_status"] == simulation_status
+
+
 def test_run_section_with_workspace_alignment_outputs_are_deterministic(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     first_root = _workspace_dir("dgce_incremental_v2_7_repeat_a")
@@ -7703,6 +7835,10 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "schema_version",
         "section_id",
         "selected_mode",
+        "simulation_path",
+        "simulation_status",
+        "simulation_trigger_path",
+        "simulation_triggered",
         "skipped_units",
         "unit_results",
         "written_file_count",
@@ -7716,9 +7852,11 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "preflight",
         "execution_gate",
         "alignment",
+        "simulation_trigger",
+        "simulation",
         "outputs",
     ]
-    assert all(entry["present"] is True for entry in execution_payload["linked_artifacts"])
+    assert [entry["present"] for entry in execution_payload["linked_artifacts"]] == [True, True, True, True, True, False, True]
     assert [entry["path"] for entry in execution_payload["artifact_results"]] == [
         "api/missionboardservice.py",
         "mission_board/models.py",
@@ -7789,7 +7927,7 @@ def test_run_section_with_workspace_execution_stamp_emits_deterministic_structur
         "execution_blocked": False,
         "execution_status": "execution_completed",
         "executed_unit_count": 3,
-        "linked_artifact_count": 5,
+        "linked_artifact_count": 7,
         "result_artifact_count": 4,
         "run_outcome_class": "success_create_only",
         "skipped_artifact_count": 0,
@@ -8190,9 +8328,11 @@ def test_record_section_execution_stamp_helper_derives_effective_mode_from_write
         "preflight",
         "execution_gate",
         "alignment",
+        "simulation_trigger",
+        "simulation",
         "outputs",
     ]
-    assert [entry["present"] for entry in stamp["linked_artifacts"]] == [True, False, False, False, False]
+    assert [entry["present"] for entry in stamp["linked_artifacts"]] == [True, False, False, False, False, False, False]
     assert stamp["artifact_results"] == []
     assert stamp["unit_results"] == []
     assert stamp["executed_units"] == []
@@ -8202,7 +8342,7 @@ def test_record_section_execution_stamp_helper_derives_effective_mode_from_write
         "execution_blocked": True,
         "execution_status": "execution_blocked",
         "executed_unit_count": 0,
-        "linked_artifact_count": 5,
+        "linked_artifact_count": 7,
         "result_artifact_count": 0,
         "run_outcome_class": "blocked_alignment",
         "skipped_artifact_count": 0,
@@ -8257,7 +8397,16 @@ def test_run_section_with_workspace_lifecycle_trace_is_deterministic_and_governe
         "execution",
         "outputs",
     ]
-    assert [entry["stage"] for entry in section_trace["trace_entries"]] == first_trace["lifecycle_order"]
+    assert [entry["stage"] for entry in section_trace["trace_entries"]] == [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "outputs",
+    ]
     assert all(entry["artifact_present"] is True for entry in section_trace["trace_entries"])
     approval_entry = next(entry for entry in section_trace["trace_entries"] if entry["stage"] == "approval")
     execution_entry = next(entry for entry in section_trace["trace_entries"] if entry["stage"] == "execution")
@@ -8273,6 +8422,8 @@ def test_run_section_with_workspace_lifecycle_trace_is_deterministic_and_governe
         {"ref_name": "preflight_path", "ref_path": ".dce/preflight/mission-board.preflight.json"},
         {"ref_name": "execution_gate_path", "ref_path": ".dce/execution/gate/mission-board.execution_gate.json"},
         {"ref_name": "alignment_path", "ref_path": ".dce/execution/alignment/mission-board.alignment.json"},
+        {"ref_name": "simulation_trigger_path", "ref_path": ".dce/execution/simulation/mission-board.simulation_trigger.json"},
+        {"ref_name": "simulation_path", "ref_path": None},
         {"ref_name": "output_path", "ref_path": ".dce/outputs/mission-board.json"},
     ]
     assert section_trace["trace_summary"] == {
@@ -9310,6 +9461,7 @@ def test_run_section_with_workspace_workspace_index_is_deterministic_and_governe
         "stale_check",
         "gate",
         "alignment",
+        "simulation_trigger",
         "execution",
         "outputs",
     ]
@@ -9321,6 +9473,7 @@ def test_run_section_with_workspace_workspace_index_is_deterministic_and_governe
         {"artifact_role": "stale_check", "path": ".dce/preflight/mission-board.stale_check.json"},
         {"artifact_role": "gate", "path": ".dce/execution/gate/mission-board.execution_gate.json"},
         {"artifact_role": "alignment", "path": ".dce/execution/alignment/mission-board.alignment.json"},
+        {"artifact_role": "simulation_trigger", "path": ".dce/execution/simulation/mission-board.simulation_trigger.json"},
         {"artifact_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
         {"artifact_role": "outputs", "path": ".dce/outputs/mission-board.json"},
     ]
@@ -9401,6 +9554,7 @@ def test_workspace_index_is_sorted_and_isolated_across_sections(monkeypatch):
         {"artifact_role": "stale_check", "path": ".dce/preflight/mission-board.stale_check.json"},
         {"artifact_role": "gate", "path": ".dce/execution/gate/mission-board.execution_gate.json"},
         {"artifact_role": "alignment", "path": ".dce/execution/alignment/mission-board.alignment.json"},
+        {"artifact_role": "simulation_trigger", "path": ".dce/execution/simulation/mission-board.simulation_trigger.json"},
         {"artifact_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
         {"artifact_role": "outputs", "path": ".dce/outputs/mission-board.json"},
     ]
@@ -9413,6 +9567,7 @@ def test_workspace_index_is_sorted_and_isolated_across_sections(monkeypatch):
         "stale_check",
         "gate",
         "alignment",
+        "simulation_trigger",
         "execution",
         "outputs",
     ]
@@ -9735,6 +9890,13 @@ def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries
             {
                 "artifact_path": ".dce/execution/alignment/mission-board.alignment.json",
                 "artifact_type": "alignment_record",
+                "schema_version": "1.0",
+                "scope": "section",
+                "section_id": "mission-board",
+            },
+            {
+                "artifact_path": ".dce/execution/simulation/mission-board.simulation_trigger.json",
+                "artifact_type": "simulation_trigger_record",
                 "schema_version": "1.0",
                 "scope": "section",
                 "section_id": "mission-board",

@@ -160,6 +160,22 @@ class SectionAlignmentInput(BaseModel):
     alignment_timestamp: str = "1970-01-01T00:00:00Z"
 
 
+class SectionSimulationTriggerInput(BaseModel):
+    """Deterministic Stage 7.5 trigger input for explicit simulation-gate control."""
+
+    simulation_triggered: bool = False
+    trigger_source: str = "manual"
+    simulation_trigger_timestamp: str = "1970-01-01T00:00:00Z"
+
+
+class SectionSimulationInput(BaseModel):
+    """Deterministic Stage 7.5 simulation result input produced outside DGCE."""
+
+    simulation_status: str
+    simulation_source: str = "external"
+    simulation_timestamp: str = "1970-01-01T00:00:00Z"
+
+
 class SectionExecutionStampInput(BaseModel):
     """Deterministic execution-stamp input for one coordinator run."""
 
@@ -506,6 +522,8 @@ def run_section_with_workspace(
     preflight_validation_timestamp: str = "1970-01-01T00:00:00Z",
     gate_timestamp: str = "1970-01-01T00:00:00Z",
     alignment_timestamp: str = "1970-01-01T00:00:00Z",
+    simulation_triggered: bool = False,
+    simulation_trigger_timestamp: str = "1970-01-01T00:00:00Z",
     execution_timestamp: str = "1970-01-01T00:00:00Z",
     prepared_file_plan: Optional[FilePlan] = None,
 ) -> RunSectionWriteResult:
@@ -788,6 +806,57 @@ def run_section_with_workspace(
                     "alignment_status": alignment_artifact["alignment_status"],
                     "alignment_reason": alignment_artifact["alignment_reason"],
                     "drift_findings": list(alignment_artifact.get("drift_findings", [])),
+                    "execution_status": execution_artifact["execution_status"],
+                    "written_files_count": 0,
+                },
+                advisory=None,
+                write_transparency=None,
+                ownership_index=None,
+            )
+        simulation_trigger_artifact = record_section_simulation_trigger(
+            project_root,
+            section_id,
+            require_preflight_pass=True,
+            simulation_trigger=SectionSimulationTriggerInput(
+                simulation_triggered=simulation_triggered,
+                simulation_trigger_timestamp=simulation_trigger_timestamp,
+            ),
+        )
+        simulation_gate = _evaluate_simulation_gate(workspace["root"], section_id, simulation_trigger_artifact)
+        if simulation_gate["simulation_blocked"]:
+            execution_artifact = record_section_execution_stamp(
+                project_root,
+                section_id,
+                require_preflight_pass=True,
+                execution=SectionExecutionStampInput(execution_timestamp=execution_timestamp),
+                run_outcome_class="blocked_simulation",
+                execution_blocked=True,
+                write_transparency=write_transparency,
+            )
+            _write_state(
+                state_path,
+                section_id,
+                DGCEWorkspaceStage.FINALIZE,
+                status="blocked",
+                tasks_completed=len(tasks) - failed_tasks,
+                tasks_failed=failed_tasks,
+            )
+            return RunSectionWriteResult(
+                responses=responses,
+                file_plan=file_plan,
+                written_files=[],
+                run_mode=incremental_mode or run_mode,
+                run_outcome_class="blocked_simulation",
+                execution_outcome={
+                    "status": "blocked",
+                    "gate_status": gate_artifact["gate_status"] if gate_artifact else None,
+                    "preflight_status": gate_artifact["preflight_status"] if gate_artifact else None,
+                    "alignment_status": alignment_artifact["alignment_status"],
+                    "alignment_reason": alignment_artifact["alignment_reason"],
+                    "drift_findings": list(alignment_artifact.get("drift_findings", [])),
+                    "simulation_triggered": simulation_gate["simulation_triggered"],
+                    "simulation_status": simulation_gate["simulation_status"],
+                    "simulation_reason": simulation_gate["simulation_reason"],
                     "execution_status": execution_artifact["execution_status"],
                     "written_files_count": 0,
                 },
@@ -1205,6 +1274,49 @@ def record_section_alignment(
     return alignment_artifact
 
 
+def record_section_simulation_trigger(
+    project_root: Path,
+    section_id: str,
+    *,
+    require_preflight_pass: bool = False,
+    simulation_trigger: SectionSimulationTriggerInput | None = None,
+) -> dict[str, Any]:
+    """Persist a deterministic Stage 7.5 trigger artifact and refresh workspace linkage."""
+    workspace = _ensure_workspace(project_root)
+    trigger_input = simulation_trigger or SectionSimulationTriggerInput()
+    trigger_artifact = _build_simulation_trigger_artifact(
+        workspace["root"],
+        section_id,
+        require_preflight_pass=require_preflight_pass,
+        simulation_trigger_input=trigger_input,
+    )
+    trigger_artifact = _write_json_with_artifact_fingerprint(
+        workspace["simulation"] / f"{section_id}.simulation_trigger.json",
+        trigger_artifact,
+    )
+    _refresh_workspace_views(workspace)
+    return trigger_artifact
+
+
+def record_section_simulation(
+    project_root: Path,
+    section_id: str,
+    *,
+    simulation: SectionSimulationInput | None = None,
+) -> dict[str, Any]:
+    """Persist one externally produced Stage 7.5 simulation result artifact."""
+    if simulation is None:
+        raise ValueError("simulation input is required")
+    workspace = _ensure_workspace(project_root)
+    simulation_artifact = _build_simulation_artifact(workspace["root"], section_id, simulation_input=simulation)
+    simulation_artifact = _write_json_with_artifact_fingerprint(
+        workspace["simulation"] / f"{section_id}.simulation.json",
+        simulation_artifact,
+    )
+    _refresh_workspace_views(workspace)
+    return simulation_artifact
+
+
 def record_section_execution_stamp(
     project_root: Path,
     section_id: str,
@@ -1264,11 +1376,12 @@ def _ensure_workspace(project_root: Path) -> Dict[str, Path]:
         "preflight": dce_root / "preflight",
         "gate": dce_root / "execution" / "gate",
         "alignment": dce_root / "execution" / "alignment",
+        "simulation": dce_root / "execution" / "simulation",
         "execution": dce_root / "execution",
         "state": dce_root / "state",
         "index": dce_root / "index.yaml",
     }
-    for key in ("root", "input", "plans", "outputs", "reviews", "approvals", "preflight", "gate", "alignment", "execution", "state"):
+    for key in ("root", "input", "plans", "outputs", "reviews", "approvals", "preflight", "gate", "alignment", "simulation", "execution", "state"):
         workspace[key].mkdir(parents=True, exist_ok=True)
     if not workspace["index"].exists():
         workspace["index"].write_text("sections: []\n", encoding="utf-8")
@@ -1295,6 +1408,8 @@ def _collect_orchestrator_artifact_paths(project_root: Path, section_id: str) ->
         "preflight_path": workspace["preflight"] / f"{section_id}.preflight.json",
         "execution_gate_path": workspace["gate"] / f"{section_id}.execution_gate.json",
         "alignment_path": workspace["alignment"] / f"{section_id}.alignment.json",
+        "simulation_trigger_path": workspace["simulation"] / f"{section_id}.simulation_trigger.json",
+        "simulation_path": workspace["simulation"] / f"{section_id}.simulation.json",
         "output_path": workspace["outputs"] / f"{section_id}.json",
         "execution_path": workspace["execution"] / f"{section_id}.execution.json",
     }
@@ -1345,6 +1460,8 @@ def _section_artifact_link_specs() -> list[tuple[str, str, str]]:
         ("stale_check", "stale_check_path", "stale_check_record"),
         ("gate", "execution_gate_path", "execution_gate_record"),
         ("alignment", "alignment_path", "alignment_record"),
+        ("simulation_trigger", "simulation_trigger_path", "simulation_trigger_record"),
+        ("simulation", "simulation_path", "simulation_record"),
         ("execution", "execution_path", "execution_record"),
         ("outputs", "output_path", "output_record"),
     ]
@@ -1636,55 +1753,55 @@ def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dic
     artifact_paths = section_artifacts["artifact_paths"]
     payloads = section_artifacts["payloads"]
     stage_specs = [
-        ("preview", "preview_path", payloads["preview_path"].get("preview_outcome_class"), ["input_path", "review_path", "approval_path"]),
+        ("preview", artifact_paths.get("preview_path"), payloads["preview_path"].get("preview_outcome_class"), ["input_path", "review_path", "approval_path"]),
         (
             "review",
-            "review_path",
+            artifact_paths.get("review_path"),
             "review_available" if artifact_paths.get("review_path") is not None else None,
             ["preview_path", "approval_path"],
         ),
         (
             "approval",
-            "approval_path",
+            artifact_paths.get("approval_path"),
             payloads["approval_path"].get("approval_status"),
             ["preview_path", "review_path", "preflight_path"],
         ),
         (
             "preflight",
-            "preflight_path",
+            artifact_paths.get("preflight_path"),
             payloads["preflight_path"].get("preflight_status"),
             ["approval_path", "preview_path", "review_path", "execution_gate_path"],
         ),
         (
             "gate",
-            "execution_gate_path",
+            artifact_paths.get("execution_gate_path"),
             payloads["execution_gate_path"].get("gate_status"),
-            ["preflight_path", "stale_check_path", "alignment_path", "execution_path"],
+            ["preflight_path", "stale_check_path", "alignment_path", "simulation_trigger_path", "execution_path"],
         ),
         (
             "alignment",
-            "alignment_path",
+            artifact_paths.get("alignment_path"),
             payloads["alignment_path"].get("alignment_status"),
-            ["approval_path", "execution_gate_path", "execution_path"],
+            ["approval_path", "execution_gate_path", "simulation_trigger_path", "simulation_path"],
         ),
         (
             "execution",
-            "execution_path",
+            artifact_paths.get("execution_path"),
             payloads["execution_path"].get("execution_status"),
-            ["approval_path", "preflight_path", "execution_gate_path", "alignment_path", "output_path"],
+            ["approval_path", "preflight_path", "execution_gate_path", "alignment_path", "simulation_trigger_path", "simulation_path", "output_path"],
         ),
-        ("outputs", "output_path", payloads["output_path"].get("run_outcome_class"), ["execution_path"]),
+        ("outputs", artifact_paths.get("output_path"), payloads["output_path"].get("run_outcome_class"), ["execution_path"]),
     ]
     return [
         {
-            "artifact_path": artifact_paths.get(artifact_key),
-            "artifact_present": artifact_paths.get(artifact_key) is not None,
+            "artifact_path": artifact_path,
+            "artifact_present": artifact_path is not None,
             "linkage": [{"ref_name": ref_name, "ref_path": artifact_paths.get(ref_name)} for ref_name in linkage_names],
             "stage": stage_name,
             "stage_order": stage_index,
             "stage_status": stage_status,
         }
-        for stage_index, (stage_name, artifact_key, stage_status, linkage_names) in enumerate(stage_specs, start=1)
+        for stage_index, (stage_name, artifact_path, stage_status, linkage_names) in enumerate(stage_specs, start=1)
     ]
 
 
@@ -4012,12 +4129,16 @@ def _build_execution_stamp_artifact(
     preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
     execution_gate_path = workspace_root / "execution" / "gate" / f"{section_id}.execution_gate.json"
     alignment_path = workspace_root / "execution" / "alignment" / f"{section_id}.alignment.json"
+    simulation_trigger_path = workspace_root / "execution" / "simulation" / f"{section_id}.simulation_trigger.json"
+    simulation_path = workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json"
     outputs_path = workspace_root / "outputs" / f"{section_id}.json"
 
     approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
     preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8")) if preflight_path.exists() else {}
     gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
     alignment_payload = json.loads(alignment_path.read_text(encoding="utf-8")) if alignment_path.exists() else {}
+    simulation_trigger_payload = json.loads(simulation_trigger_path.read_text(encoding="utf-8")) if simulation_trigger_path.exists() else {}
+    simulation_payload = json.loads(simulation_path.read_text(encoding="utf-8")) if simulation_path.exists() else {}
     outputs_payload = json.loads(outputs_path.read_text(encoding="utf-8")) if outputs_path.exists() else {}
 
     effective_execution_mode = _effective_execution_mode(write_transparency)
@@ -4079,6 +4200,16 @@ def _build_execution_stamp_artifact(
             "present": alignment_path.exists(),
         },
         {
+            "artifact_role": "simulation_trigger",
+            "artifact_path": simulation_trigger_path.relative_to(workspace_root.parent).as_posix() if simulation_trigger_path.exists() else None,
+            "present": simulation_trigger_path.exists(),
+        },
+        {
+            "artifact_role": "simulation",
+            "artifact_path": simulation_path.relative_to(workspace_root.parent).as_posix() if simulation_path.exists() else None,
+            "present": simulation_path.exists(),
+        },
+        {
             "artifact_role": "outputs",
             "artifact_path": outputs_path.relative_to(workspace_root.parent).as_posix() if outputs_path.exists() else None,
             "present": outputs_path.exists(),
@@ -4110,12 +4241,17 @@ def _build_execution_stamp_artifact(
         "preflight_path": preflight_path.relative_to(workspace_root.parent).as_posix() if preflight_path.exists() else None,
         "execution_gate_path": execution_gate_path.relative_to(workspace_root.parent).as_posix() if execution_gate_path.exists() else None,
         "alignment_path": alignment_path.relative_to(workspace_root.parent).as_posix() if alignment_path.exists() else None,
+        "simulation_trigger_path": simulation_trigger_path.relative_to(workspace_root.parent).as_posix() if simulation_trigger_path.exists() else None,
+        "simulation_path": simulation_path.relative_to(workspace_root.parent).as_posix() if simulation_path.exists() else None,
         "outputs_path": outputs_path.relative_to(workspace_root.parent).as_posix() if outputs_path.exists() else None,
         "selected_mode": selected_mode,
         "effective_execution_mode": effective_execution_mode,
         "approval_status_before": approval_status_before,
         "approval_consumed": approval_consumed,
         "approval_status_after": approval_status_after,
+        "simulation_triggered": simulation_trigger_payload.get("simulation_triggered"),
+        "simulation_status": simulation_payload.get("simulation_status")
+        or simulation_trigger_payload.get("simulation_stage_status"),
         "execution_blocked": execution_blocked,
         "run_outcome_class": run_outcome_class,
         "written_file_count": written_file_count,
@@ -4664,9 +4800,9 @@ def _execution_intent_category(file_entry: dict[str, Any]) -> str:
     source = str(file_entry.get("source", "")).strip().lower()
     purpose = str(file_entry.get("purpose", "")).strip().lower()
     path = _normalize_alignment_path(file_entry.get("path")) or ""
-    if source == "api_surface" or "api" in purpose or path.startswith("api/"):
+    if source == "api_surface" or "api" in purpose or path.startswith("api/") or path.startswith("src/api/"):
         return "api_surface"
-    if source == "data_model" or "model" in purpose or path.startswith("models/"):
+    if source == "data_model" or "model" in purpose or path.startswith("models/") or path.startswith("src/models/"):
         return "data_model"
     return "module"
 
@@ -4816,9 +4952,9 @@ def _preview_target_category(entry: dict[str, Any]) -> str | None:
     path = _normalize_alignment_path(entry.get("path"))
     if path is None:
         return None
-    if path.startswith("api/"):
+    if path.startswith("api/") or path.startswith("src/api/"):
         return "api_surface"
-    if path.startswith("models/"):
+    if path.startswith("models/") or path.startswith("src/models/"):
         return "data_model"
     return "module"
 
@@ -4906,6 +5042,118 @@ def _ordered_alignment_drift_findings(findings: list[str]) -> list[str]:
     return [finding for finding in _ALLOWED_ALIGNMENT_DRIFT_FINDINGS if finding in unique_findings]
 
 
+_ALLOWED_SIMULATION_STATUSES = {"pass", "fail", "indeterminate"}
+
+
+def _build_simulation_trigger_artifact(
+    workspace_root: Path,
+    section_id: str,
+    *,
+    require_preflight_pass: bool,
+    simulation_trigger_input: SectionSimulationTriggerInput,
+) -> dict[str, Any]:
+    alignment_path = workspace_root / "execution" / "alignment" / f"{section_id}.alignment.json"
+    payload = _with_artifact_metadata(
+        "simulation_trigger_record",
+        {
+            "contract_version": "dgce.simulation_trigger_record.v1",
+            "section_id": section_id,
+            "require_preflight_pass": require_preflight_pass,
+            "simulation_triggered": bool(simulation_trigger_input.simulation_triggered),
+            "simulation_stage_status": (
+                "simulation_required" if simulation_trigger_input.simulation_triggered else "simulation_skipped"
+            ),
+            "simulation_trigger_timestamp": str(simulation_trigger_input.simulation_trigger_timestamp),
+            "trigger_source": str(simulation_trigger_input.trigger_source),
+            "alignment_path": alignment_path.relative_to(workspace_root.parent).as_posix() if alignment_path.exists() else None,
+        },
+    )
+    payload["simulation_trigger_fingerprint"] = compute_json_payload_fingerprint(payload)
+    return payload
+
+
+def _build_simulation_artifact(
+    workspace_root: Path,
+    section_id: str,
+    *,
+    simulation_input: SectionSimulationInput,
+) -> dict[str, Any]:
+    simulation_status = str(simulation_input.simulation_status).strip().lower()
+    if simulation_status not in _ALLOWED_SIMULATION_STATUSES:
+        raise ValueError(f"Unsupported simulation status: {simulation_input.simulation_status}")
+    payload = _with_artifact_metadata(
+        "simulation_record",
+        {
+            "contract_version": "dgce.simulation_record.v1",
+            "section_id": section_id,
+            "simulation_status": simulation_status,
+            "simulation_source": str(simulation_input.simulation_source),
+            "simulation_timestamp": str(simulation_input.simulation_timestamp),
+        },
+    )
+    payload["simulation_fingerprint"] = compute_json_payload_fingerprint(payload)
+    return payload
+
+
+def _load_valid_simulation_artifact(workspace_root: Path, section_id: str) -> dict[str, Any] | None:
+    simulation_path = workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json"
+    if not simulation_path.exists():
+        return None
+    try:
+        payload = json.loads(simulation_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not verify_artifact_fingerprint(simulation_path):
+        return None
+    if str(payload.get("artifact_type")) != "simulation_record":
+        return None
+    if str(payload.get("contract_version")) != "dgce.simulation_record.v1":
+        return None
+    if str(payload.get("section_id")) != section_id:
+        return None
+    if str(payload.get("simulation_status")) not in _ALLOWED_SIMULATION_STATUSES:
+        return None
+    return payload
+
+
+def _evaluate_simulation_gate(
+    workspace_root: Path,
+    section_id: str,
+    simulation_trigger_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    simulation_triggered = bool(simulation_trigger_artifact.get("simulation_triggered"))
+    if not simulation_triggered:
+        return {
+            "simulation_triggered": False,
+            "simulation_status": "skipped",
+            "simulation_reason": "simulation_skipped",
+            "simulation_blocked": False,
+        }
+    simulation_artifact = _load_valid_simulation_artifact(workspace_root, section_id)
+    if simulation_artifact is None:
+        return {
+            "simulation_triggered": True,
+            "simulation_status": "indeterminate",
+            "simulation_reason": "simulation_result_missing",
+            "simulation_blocked": True,
+        }
+    simulation_status = str(simulation_artifact.get("simulation_status"))
+    return {
+        "simulation_triggered": True,
+        "simulation_status": simulation_status,
+        "simulation_reason": (
+            "simulation_pass"
+            if simulation_status == "pass"
+            else "simulation_fail"
+            if simulation_status == "fail"
+            else "simulation_indeterminate"
+        ),
+        "simulation_blocked": simulation_status != "pass",
+    }
+
+
 def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
     """Build a deterministic review index from known section preview/review artifacts."""
     sections: list[dict[str, Any]] = []
@@ -4922,6 +5170,8 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
                 "stale_check_path",
                 "execution_gate_path",
                 "alignment_path",
+                "simulation_trigger_path",
+                "simulation_path",
                 "execution_path",
             )
         ):

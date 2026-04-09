@@ -102,6 +102,8 @@ def _assert_rerun_is_safe(project_root: Path, section_id: str, file_plan: FilePl
         section_id,
         require_preflight_pass=True,
         alignment_input=SectionAlignmentInput(),
+        file_plan=file_plan,
+        change_plan=change_plan,
         write_transparency=write_transparency,
     )
     if alignment_artifact.get("alignment_blocked") is True:

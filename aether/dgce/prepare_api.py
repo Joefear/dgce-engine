@@ -41,6 +41,8 @@ _SECTION_ARTIFACT_SPECS = (
     ("stale_check", "stale_check_path", "stale_check_record", ".dce/preflight/{section_id}.stale_check.json"),
     ("gate", "execution_gate_path", "execution_gate_record", ".dce/execution/gate/{section_id}.execution_gate.json"),
     ("alignment", "alignment_path", "alignment_record", ".dce/execution/alignment/{section_id}.alignment.json"),
+    ("simulation_trigger", "simulation_trigger_path", "simulation_trigger_record", ".dce/execution/simulation/{section_id}.simulation_trigger.json"),
+    ("simulation", "simulation_path", "simulation_record", ".dce/execution/simulation/{section_id}.simulation.json"),
     ("execution", "execution_path", "execution_record", ".dce/execution/{section_id}.execution.json"),
     ("outputs", "output_path", "output_record", ".dce/outputs/{section_id}.json"),
 )
