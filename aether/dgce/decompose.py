@@ -753,6 +753,8 @@ def run_section_with_workspace(
             section_id,
             require_preflight_pass=True,
             alignment=SectionAlignmentInput(alignment_timestamp=alignment_timestamp),
+            file_plan=file_plan,
+            change_plan=change_plan,
             write_transparency=write_transparency,
         )
         if alignment_artifact["alignment_blocked"]:
@@ -785,6 +787,7 @@ def run_section_with_workspace(
                     "preflight_status": gate_artifact["preflight_status"] if gate_artifact else None,
                     "alignment_status": alignment_artifact["alignment_status"],
                     "alignment_reason": alignment_artifact["alignment_reason"],
+                    "drift_findings": list(alignment_artifact.get("drift_findings", [])),
                     "execution_status": execution_artifact["execution_status"],
                     "written_files_count": 0,
                 },
@@ -1178,6 +1181,8 @@ def record_section_alignment(
     *,
     require_preflight_pass: bool = False,
     alignment: SectionAlignmentInput | None = None,
+    file_plan: FilePlan | None = None,
+    change_plan: list[dict[str, Any]] | None = None,
     write_transparency: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a deterministic alignment artifact and refresh workspace linkage."""
@@ -1188,9 +1193,14 @@ def record_section_alignment(
         section_id,
         require_preflight_pass=require_preflight_pass,
         alignment_input=alignment_input,
+        file_plan=file_plan or FilePlan(project_name="DGCE", files=[]),
+        change_plan=change_plan or [],
         write_transparency=write_transparency or {},
     )
-    _write_json(workspace["preflight"] / f"{section_id}.alignment.json", alignment_artifact)
+    alignment_artifact = _write_json_with_artifact_fingerprint(
+        workspace["alignment"] / f"{section_id}.alignment.json",
+        alignment_artifact,
+    )
     _refresh_workspace_views(workspace)
     return alignment_artifact
 
@@ -1253,11 +1263,12 @@ def _ensure_workspace(project_root: Path) -> Dict[str, Path]:
         "approvals": dce_root / "approvals",
         "preflight": dce_root / "preflight",
         "gate": dce_root / "execution" / "gate",
+        "alignment": dce_root / "execution" / "alignment",
         "execution": dce_root / "execution",
         "state": dce_root / "state",
         "index": dce_root / "index.yaml",
     }
-    for key in ("root", "input", "plans", "outputs", "reviews", "approvals", "preflight", "gate", "execution", "state"):
+    for key in ("root", "input", "plans", "outputs", "reviews", "approvals", "preflight", "gate", "alignment", "execution", "state"):
         workspace[key].mkdir(parents=True, exist_ok=True)
     if not workspace["index"].exists():
         workspace["index"].write_text("sections: []\n", encoding="utf-8")
@@ -1283,7 +1294,7 @@ def _collect_orchestrator_artifact_paths(project_root: Path, section_id: str) ->
         "stale_check_path": workspace["preflight"] / f"{section_id}.stale_check.json",
         "preflight_path": workspace["preflight"] / f"{section_id}.preflight.json",
         "execution_gate_path": workspace["gate"] / f"{section_id}.execution_gate.json",
-        "alignment_path": workspace["preflight"] / f"{section_id}.alignment.json",
+        "alignment_path": workspace["alignment"] / f"{section_id}.alignment.json",
         "output_path": workspace["outputs"] / f"{section_id}.json",
         "execution_path": workspace["execution"] / f"{section_id}.execution.json",
     }
@@ -4000,7 +4011,7 @@ def _build_execution_stamp_artifact(
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
     preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
     execution_gate_path = workspace_root / "execution" / "gate" / f"{section_id}.execution_gate.json"
-    alignment_path = workspace_root / "preflight" / f"{section_id}.alignment.json"
+    alignment_path = workspace_root / "execution" / "alignment" / f"{section_id}.alignment.json"
     outputs_path = workspace_root / "outputs" / f"{section_id}.json"
 
     approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
@@ -4293,98 +4304,60 @@ def _build_alignment_artifact(
     *,
     require_preflight_pass: bool,
     alignment_input: SectionAlignmentInput,
+    file_plan: FilePlan,
+    change_plan: list[dict[str, Any]],
     write_transparency: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build a deterministic alignment artifact from approved mode plus effective write behavior."""
-    approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
-    execution_gate_path = workspace_root / "execution" / "gate" / f"{section_id}.execution_gate.json"
-    approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
-    gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
-    selected_mode = approval_payload.get("selected_mode")
-    effective_execution_mode = _effective_execution_mode(write_transparency)
-    written_file_count, modify_written_count, created_written_count = _write_summary_counts(write_transparency)
-
-    if selected_mode == "review_required":
-        alignment_status = "alignment_blocked"
-        alignment_blocked = True
-        alignment_reason = "review_required_selected"
-    elif selected_mode == "no_changes" and effective_execution_mode != "no_changes":
-        alignment_status = "alignment_blocked"
-        alignment_blocked = True
-        alignment_reason = "writes_detected"
-    elif selected_mode == "create_only" and effective_execution_mode == "safe_modify":
-        alignment_status = "alignment_blocked"
-        alignment_blocked = True
-        alignment_reason = "modify_write_detected"
-    elif selected_mode == "safe_modify":
-        alignment_status = "alignment_pass"
-        alignment_blocked = False
-        alignment_reason = "safe_modify_permitted"
-    elif selected_mode == "create_only":
-        alignment_status = "alignment_pass"
-        alignment_blocked = False
-        alignment_reason = "create_only_aligned"
-    elif selected_mode == "no_changes":
-        alignment_status = "alignment_pass"
-        alignment_blocked = False
-        alignment_reason = "no_changes_aligned"
-    else:
-        alignment_status = "alignment_blocked"
-        alignment_blocked = True
-        alignment_reason = "unknown_selected_mode"
-
-    approval_path_str = approval_path.relative_to(workspace_root.parent).as_posix() if approval_path.exists() else None
-    execution_gate_path_str = execution_gate_path.relative_to(workspace_root.parent).as_posix() if execution_gate_path.exists() else None
-    compared_artifacts = [
-        {
-            "artifact_role": "approval",
-            "artifact_path": approval_path_str,
-            "present": approval_path.exists(),
-        },
-        {
-            "artifact_role": "execution_gate",
-            "artifact_path": execution_gate_path_str,
-            "present": execution_gate_path.exists(),
-        },
-    ]
-    checks = _build_alignment_checks(
-        selected_mode=selected_mode,
-        effective_execution_mode=effective_execution_mode,
-        approval_path=approval_path_str,
-        execution_gate_path=execution_gate_path_str,
-        gate_status=gate_payload.get("gate_status"),
+    """Build a deterministic Stage 7 drift-detection artifact from approved artifacts versus the current execution candidate."""
+    alignment_input_payload = _build_alignment_input_artifact(
+        workspace_root,
+        section_id,
+        file_plan=file_plan,
+        change_plan=change_plan,
+        write_transparency=write_transparency,
     )
-    mismatches = _build_alignment_mismatches(section_id, checks)
-    remediation_summary = _build_alignment_remediation_summary(
-        compared_artifacts=compared_artifacts,
-        checks=checks,
-        mismatches=mismatches,
-        alignment_status=alignment_status,
-        alignment_reason=alignment_reason,
-        selected_mode=selected_mode,
-        effective_execution_mode=effective_execution_mode,
+    scope_alignment = _build_scope_alignment_record(alignment_input_payload)
+    intent_alignment = _build_intent_alignment_record(alignment_input_payload)
+    strategy_alignment = _build_strategy_alignment_record(alignment_input_payload)
+    justification_alignment = _build_justification_alignment_record(alignment_input_payload)
+    drift_findings = _ordered_alignment_drift_findings(
+        [
+            *scope_alignment["findings"],
+            *intent_alignment["findings"],
+            *strategy_alignment["findings"],
+            *justification_alignment["findings"],
+        ]
     )
+    alignment_status = "misaligned" if drift_findings else "aligned"
+    write_summary = dict(write_transparency.get("write_summary", {}))
 
-    return {
-        "section_id": section_id,
-        "alignment_status": alignment_status,
-        "alignment_blocked": alignment_blocked,
-        "compared_artifacts": compared_artifacts,
-        "checks": checks,
-        "mismatches": mismatches,
-        "remediation_summary": remediation_summary,
-        "selected_mode": selected_mode,
-        "effective_execution_mode": effective_execution_mode,
-        "written_file_count": written_file_count,
-        "modify_written_count": modify_written_count,
-        "created_written_count": created_written_count,
-        "approval_path": approval_path_str,
-        "execution_gate_path": execution_gate_path_str,
-        "gate_status": gate_payload.get("gate_status"),
-        "alignment_reason": alignment_reason,
-        "require_preflight_pass": require_preflight_pass,
-        "alignment_timestamp": str(alignment_input.alignment_timestamp),
-    }
+    payload = _with_artifact_metadata(
+        "alignment_record",
+        {
+            "contract_version": "dgce.alignment_record.v1",
+            "section_id": section_id,
+            "alignment_status": alignment_status,
+            "scope_alignment": scope_alignment["record"],
+            "intent_alignment": intent_alignment["record"],
+            "strategy_alignment": strategy_alignment["record"],
+            "justification_alignment": justification_alignment["record"],
+            "drift_findings": drift_findings,
+            "code_graph_used": alignment_input_payload["code_graph_context"].get("availability_status") == "available",
+            "alignment_blocked": alignment_status == "misaligned",
+            "alignment_reason": drift_findings[0] if drift_findings else "aligned",
+            "alignment_timestamp": str(alignment_input.alignment_timestamp),
+            "require_preflight_pass": require_preflight_pass,
+            "effective_execution_mode": _effective_execution_mode(write_transparency),
+            "written_file_count": int(write_summary.get("written_count", 0)),
+            "modify_written_count": int(write_summary.get("modify_written_count", 0)),
+            "created_written_count": max(
+                0,
+                int(write_summary.get("written_count", 0)) - int(write_summary.get("modify_written_count", 0)),
+            ),
+        },
+    )
+    payload["alignment_fingerprint"] = compute_json_payload_fingerprint(payload)
+    return payload
 
 
 def _build_alignment_checks(
@@ -4540,12 +4513,397 @@ def _build_alignment_remediation_summary(
         "effective_execution_mode": effective_execution_mode,
         "failed_check_count": failed_check_count,
         "mismatch_count": len(mismatches),
-        "next_action": "proceed_to_execution" if alignment_status == "alignment_pass" else "review_alignment_mismatch",
+        "next_action": "proceed_to_execution" if alignment_status == "aligned" else "review_alignment_mismatch",
         "not_evaluated_check_count": not_evaluated_check_count,
         "passed_check_count": passed_check_count,
         "selected_mode": selected_mode,
         "total_check_count": len(checks),
     }
+
+
+_ALLOWED_ALIGNMENT_DRIFT_FINDINGS = [
+    "approved_scope_mismatch",
+    "target_set_expanded",
+    "target_set_missing",
+    "operation_type_drift",
+    "write_scope_drift",
+    "intent_category_drift",
+    "undeclared_capability_drift",
+    "edit_strategy_drift",
+    "structural_locality_drift",
+    "design_constraint_mismatch",
+    "justification_missing_drift",
+]
+
+
+def _build_alignment_input_artifact(
+    workspace_root: Path,
+    section_id: str,
+    *,
+    file_plan: FilePlan,
+    change_plan: list[dict[str, Any]],
+    write_transparency: dict[str, Any],
+) -> dict[str, Any]:
+    approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
+    preview_path = workspace_root / "plans" / f"{section_id}.preview.json"
+    section = DGCESection.model_validate(json.loads((workspace_root / "input" / f"{section_id}.json").read_text(encoding="utf-8")))
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
+    preview_payload = json.loads(preview_path.read_text(encoding="utf-8")) if preview_path.exists() else {}
+    code_graph_context = _build_gate_input_code_graph_context(section.code_graph_context)
+    payload = {
+        "contract_version": "dgce.alignment_input.v1",
+        "approved_scope": _build_gate_input_approved_scope(section_id, approval_payload, preview_payload),
+        "approved_design_context": _build_gate_input_design_context(section_id, section),
+        "approved_preview_context": _build_alignment_preview_context(preview_payload),
+        "current_execution_context": _build_current_execution_context(
+            file_plan=file_plan,
+            change_plan=change_plan,
+            write_transparency=write_transparency,
+            code_graph_context=code_graph_context,
+        ),
+        "code_graph_context": code_graph_context,
+    }
+    payload["alignment_input_fingerprint"] = compute_json_payload_fingerprint(payload)
+    return payload
+
+
+def _build_alignment_preview_context(preview_payload: dict[str, Any]) -> dict[str, Any]:
+    preview_targets: list[dict[str, Any]] = []
+    for entry in preview_payload.get("previews", []):
+        if not isinstance(entry, dict):
+            continue
+        normalized_path = _normalize_alignment_path(entry.get("path"))
+        if normalized_path is None:
+            continue
+        selected_candidate = entry.get("selected_insertion_candidate")
+        selected_candidate_path = None
+        if isinstance(selected_candidate, dict):
+            selected_candidate_path = _normalize_alignment_path(selected_candidate.get("file_path"))
+        preview_targets.append(
+            {
+                "path": normalized_path,
+                "planned_action": str(entry.get("planned_action", "unknown")),
+                "preview_edit_strategy": entry.get("preview_edit_strategy"),
+                "collision_assessment": entry.get("collision_assessment"),
+                "selected_insertion_candidate_path": selected_candidate_path,
+            }
+        )
+    return {
+        "preview_outcome_class": preview_payload.get("preview_outcome_class"),
+        "recommended_mode": preview_payload.get("recommended_mode"),
+        "summary": dict(preview_payload.get("summary", {})),
+        "preview_targets": sorted(preview_targets, key=lambda item: str(item["path"])),
+    }
+
+
+def _build_current_execution_context(
+    *,
+    file_plan: FilePlan,
+    change_plan: list[dict[str, Any]],
+    write_transparency: dict[str, Any],
+    code_graph_context: dict[str, Any],
+) -> dict[str, Any]:
+    change_by_path: dict[str, dict[str, Any]] = {}
+    for entry in change_plan:
+        if not isinstance(entry, dict):
+            continue
+        normalized_path = _normalize_alignment_path(entry.get("path"))
+        if normalized_path is None:
+            continue
+        change_by_path[normalized_path] = dict(entry)
+
+    decisions_by_path: dict[str, dict[str, Any]] = {}
+    for decision in write_transparency.get("write_decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        normalized_path = _normalize_alignment_path(decision.get("path"))
+        if normalized_path is None:
+            continue
+        decisions_by_path[normalized_path] = dict(decision)
+
+    execution_targets: list[dict[str, Any]] = []
+    for file_entry in file_plan.files:
+        normalized_path = _normalize_alignment_path(file_entry.get("path"))
+        if normalized_path is None:
+            continue
+        change_entry = change_by_path.get(normalized_path, {})
+        decision_entry = decisions_by_path.get(normalized_path, {})
+        execution_targets.append(
+            {
+                "path": normalized_path,
+                "operation": str(change_entry.get("action", "unknown")),
+                "intent_category": _execution_intent_category(file_entry),
+                "candidate_edit_strategy": _current_candidate_edit_strategy(
+                    normalized_path,
+                    str(change_entry.get("action", "unknown")),
+                    code_graph_context,
+                ),
+                "structural_locality_path": _current_structural_locality_path(normalized_path, code_graph_context),
+                "write_decision": decision_entry.get("decision"),
+            }
+        )
+    execution_targets = sorted(execution_targets, key=lambda item: str(item["path"]))
+    write_targets = sorted(
+        path
+        for path, decision in decisions_by_path.items()
+        if str(decision.get("decision", "")) == "written"
+    )
+    return {
+        "execution_targets": execution_targets,
+        "write_targets": write_targets,
+    }
+
+
+def _normalize_alignment_path(path_value: Any) -> str | None:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    return Path(path_value).as_posix()
+
+
+def _execution_intent_category(file_entry: dict[str, Any]) -> str:
+    source = str(file_entry.get("source", "")).strip().lower()
+    purpose = str(file_entry.get("purpose", "")).strip().lower()
+    path = _normalize_alignment_path(file_entry.get("path")) or ""
+    if source == "api_surface" or "api" in purpose or path.startswith("api/"):
+        return "api_surface"
+    if source == "data_model" or "model" in purpose or path.startswith("models/"):
+        return "data_model"
+    return "module"
+
+
+def _current_candidate_edit_strategy(path: str, operation: str, code_graph_context: dict[str, Any]) -> str:
+    if operation == "create":
+        return "new_file"
+    if operation != "modify":
+        return "unknown"
+    code_graph_facts = code_graph_context.get("facts") if code_graph_context.get("availability_status") == "available" else None
+    if isinstance(code_graph_facts, dict):
+        placement_facts = code_graph_facts.get("placement_facts")
+        target_payload = code_graph_facts.get("target")
+        patch_facts = code_graph_facts.get("patch_facts")
+        touched_files = [str(item) for item in (patch_facts or {}).get("touched_files") or []]
+        target_path = str((target_payload or {}).get("file_path") or "")
+        if isinstance(placement_facts, dict) and (path == target_path or path in touched_files):
+            recommended_strategy = placement_facts.get("recommended_edit_strategy")
+            if isinstance(recommended_strategy, str) and recommended_strategy.strip():
+                return recommended_strategy
+    return "full_file_modify"
+
+
+def _current_structural_locality_path(path: str, code_graph_context: dict[str, Any]) -> str:
+    code_graph_facts = code_graph_context.get("facts") if code_graph_context.get("availability_status") == "available" else None
+    if isinstance(code_graph_facts, dict):
+        target_payload = code_graph_facts.get("target")
+        target_path = _normalize_alignment_path((target_payload or {}).get("file_path"))
+        if target_path is not None:
+            return target_path
+    return path
+
+
+def _build_scope_alignment_record(alignment_input_payload: dict[str, Any]) -> dict[str, Any]:
+    approved_targets = alignment_input_payload["approved_scope"].get("approved_targets", [])
+    execution_targets = alignment_input_payload["current_execution_context"].get("execution_targets", [])
+    write_targets = alignment_input_payload["current_execution_context"].get("write_targets", [])
+    approved_by_path = {
+        str(entry["path"]): str(entry.get("operation", "unknown"))
+        for entry in approved_targets
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    execution_by_path = {
+        str(entry["path"]): str(entry.get("operation", "unknown"))
+        for entry in execution_targets
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    findings: list[str] = []
+    if any(path not in approved_by_path for path in execution_by_path):
+        findings.append("target_set_expanded")
+    if any(path not in execution_by_path for path in approved_by_path):
+        findings.append("target_set_missing")
+    if any(path not in approved_by_path for path in execution_by_path) or any(path not in execution_by_path for path in approved_by_path):
+        findings.append("approved_scope_mismatch")
+    if any(
+        approved_by_path[path] != execution_by_path[path]
+        for path in sorted(set(approved_by_path).intersection(execution_by_path))
+    ):
+        findings.append("operation_type_drift")
+    if any(path not in approved_by_path for path in write_targets):
+        findings.append("write_scope_drift")
+    ordered_findings = _ordered_alignment_drift_findings(findings)
+    return {
+        "findings": ordered_findings,
+        "record": {
+            "status": "misaligned" if ordered_findings else "aligned",
+            "approved_target_count": len(approved_by_path),
+            "execution_target_count": len(execution_by_path),
+            "write_target_count": len(write_targets),
+            "findings": ordered_findings,
+        },
+    }
+
+
+def _build_intent_alignment_record(alignment_input_payload: dict[str, Any]) -> dict[str, Any]:
+    design_context = alignment_input_payload["approved_design_context"]
+    preview_context = alignment_input_payload["approved_preview_context"]
+    execution_targets = alignment_input_payload["current_execution_context"].get("execution_targets", [])
+    approved_categories = _design_declared_intent_categories(design_context)
+    preview_by_path = {
+        str(entry["path"]): str(category)
+        for entry in preview_context.get("preview_targets", [])
+        if isinstance(entry, dict)
+        and entry.get("path")
+        and (category := _preview_target_category(entry)) is not None
+    }
+    current_by_path = {
+        str(entry["path"]): str(entry.get("intent_category"))
+        for entry in execution_targets
+        if isinstance(entry, dict) and entry.get("path") and isinstance(entry.get("intent_category"), str)
+    }
+    preview_categories = sorted(set(preview_by_path.values()))
+    current_categories = sorted(set(current_by_path.values()))
+    allowed_categories = sorted(set(approved_categories).union(preview_categories))
+    findings: list[str] = []
+    if any(
+        current_by_path[path] != preview_by_path[path]
+        for path in sorted(set(preview_by_path).intersection(current_by_path))
+    ):
+        findings.append("intent_category_drift")
+    if any(category not in allowed_categories for category in current_categories):
+        findings.append("undeclared_capability_drift")
+    ordered_findings = _ordered_alignment_drift_findings(findings)
+    return {
+        "findings": ordered_findings,
+        "record": {
+            "status": "misaligned" if ordered_findings else "aligned",
+            "approved_intent_categories": approved_categories,
+            "allowed_intent_categories": allowed_categories,
+            "preview_intent_categories": preview_categories,
+            "current_intent_categories": current_categories,
+            "findings": ordered_findings,
+        },
+    }
+
+
+def _design_declared_intent_categories(design_context: dict[str, Any]) -> list[str]:
+    categories: set[str] = set()
+    for ref in design_context.get("section_refs", []):
+        if not isinstance(ref, dict):
+            continue
+        section_type = str(ref.get("section_type", "")).strip().lower()
+        if section_type == "api_surface":
+            categories.add("api_surface")
+        elif section_type == "data_model":
+            categories.add("data_model")
+        elif section_type:
+            categories.add("module")
+    for raw_value in (
+        list(design_context.get("declared_capabilities", []))
+        + list(design_context.get("declared_constraints", []))
+        + list(design_context.get("declared_justifications", []))
+    ):
+        lowered = str(raw_value).lower()
+        if "api" in lowered or "endpoint" in lowered or "interface" in lowered:
+            categories.add("api_surface")
+        if "model" in lowered or "entity" in lowered or "schema" in lowered:
+            categories.add("data_model")
+        if "module" in lowered or "system" in lowered or "service" in lowered:
+            categories.add("module")
+    if not categories:
+        categories.add("module")
+    return sorted(categories)
+
+
+def _preview_target_category(entry: dict[str, Any]) -> str | None:
+    path = _normalize_alignment_path(entry.get("path"))
+    if path is None:
+        return None
+    if path.startswith("api/"):
+        return "api_surface"
+    if path.startswith("models/"):
+        return "data_model"
+    return "module"
+
+
+def _build_strategy_alignment_record(alignment_input_payload: dict[str, Any]) -> dict[str, Any]:
+    preview_targets = alignment_input_payload["approved_preview_context"].get("preview_targets", [])
+    execution_targets = alignment_input_payload["current_execution_context"].get("execution_targets", [])
+    preview_by_path = {
+        str(entry["path"]): dict(entry)
+        for entry in preview_targets
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    execution_by_path = {
+        str(entry["path"]): dict(entry)
+        for entry in execution_targets
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    findings: list[str] = []
+    for path in sorted(set(preview_by_path).intersection(execution_by_path)):
+        if str(execution_by_path[path].get("operation")) != "modify":
+            continue
+        approved_strategy = preview_by_path[path].get("preview_edit_strategy")
+        current_strategy = execution_by_path[path].get("candidate_edit_strategy")
+        if (
+            isinstance(approved_strategy, str)
+            and approved_strategy.strip()
+            and isinstance(current_strategy, str)
+            and current_strategy.strip()
+            and approved_strategy != current_strategy
+        ):
+            findings.append("edit_strategy_drift")
+            break
+    for path in sorted(set(preview_by_path).intersection(execution_by_path)):
+        if str(execution_by_path[path].get("operation")) != "modify":
+            continue
+        approved_locality = preview_by_path[path].get("selected_insertion_candidate_path")
+        current_locality = execution_by_path[path].get("structural_locality_path")
+        if (
+            isinstance(approved_locality, str)
+            and approved_locality.strip()
+            and isinstance(current_locality, str)
+            and current_locality.strip()
+            and approved_locality != current_locality
+        ):
+            findings.append("structural_locality_drift")
+            break
+    ordered_findings = _ordered_alignment_drift_findings(findings)
+    return {
+        "findings": ordered_findings,
+        "record": {
+            "status": "misaligned" if ordered_findings else "aligned",
+            "code_graph_available": alignment_input_payload["code_graph_context"].get("availability_status") == "available",
+            "findings": ordered_findings,
+        },
+    }
+
+
+def _build_justification_alignment_record(alignment_input_payload: dict[str, Any]) -> dict[str, Any]:
+    design_context = alignment_input_payload["approved_design_context"]
+    execution_targets = alignment_input_payload["current_execution_context"].get("execution_targets", [])
+    constraints_text = " ".join(str(item).lower() for item in design_context.get("declared_constraints", []))
+    findings: list[str] = []
+    modifies_targets = any(str(entry.get("operation")) == "modify" for entry in execution_targets if isinstance(entry, dict))
+    if modifies_targets and any(
+        phrase in constraints_text
+        for phrase in ("create only", "no modify", "do not modify", "read only", "read-only", "immutable")
+    ):
+        findings.append("design_constraint_mismatch")
+    if modifies_targets and not design_context.get("declared_justifications"):
+        findings.append("justification_missing_drift")
+    ordered_findings = _ordered_alignment_drift_findings(findings)
+    return {
+        "findings": ordered_findings,
+        "record": {
+            "status": "misaligned" if ordered_findings else "aligned",
+            "declared_constraint_count": len(design_context.get("declared_constraints", [])),
+            "declared_justification_count": len(design_context.get("declared_justifications", [])),
+            "findings": ordered_findings,
+        },
+    }
+
+
+def _ordered_alignment_drift_findings(findings: list[str]) -> list[str]:
+    unique_findings = {str(finding) for finding in findings if str(finding) in _ALLOWED_ALIGNMENT_DRIFT_FINDINGS}
+    return [finding for finding in _ALLOWED_ALIGNMENT_DRIFT_FINDINGS if finding in unique_findings]
 
 
 def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
