@@ -57,5 +57,4 @@ defiant-sky/.runtime/
 # Local/generated data logs
 data/*.jsonl
 '@ | Set-Content .gitignore.pytest_local_tmp/
-DGCE_Context_Assembly_Spec_v0.1.md
-DGCE_INGESTION_CONTRACT (2).md
+
