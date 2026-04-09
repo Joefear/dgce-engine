@@ -48,6 +48,19 @@ def _section_named(title: str) -> DGCESection:
     return section
 
 
+def _infra_file_plan(path: str = "deploy/docker-compose.yaml") -> FilePlan:
+    return FilePlan(
+        project_name="DGCE",
+        files=[
+            {
+                "path": path,
+                "purpose": "Deployment manifest",
+                "source": "expected_targets",
+            }
+        ],
+    )
+
+
 def _valid_code_graph_context(file_path: str = "mission_board/service.py") -> dict:
     return {
         "contract_name": "DefiantCodeGraphFacts",
@@ -7840,6 +7853,151 @@ def test_execute_reserved_simulation_gate_allows_stage_8_when_provider_passes(mo
     assert simulation_gate["simulation_blocked"] is False
     assert simulation_artifact["simulation_status"] == "pass"
     assert simulation_artifact["findings"] == []
+
+
+def test_infra_dry_run_provider_passes_for_create_only_infra_candidate(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_infra_pass")
+    prepared_file_plan = _infra_file_plan()
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert result.run_outcome_class == "success_create_only"
+    assert result.execution_outcome["status"] == "success"
+    assert simulation_artifact["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["findings"] == []
+
+
+def test_infra_dry_run_provider_fails_for_modify_infra_candidate(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_infra_fail")
+    prepared_file_plan = _infra_file_plan()
+    deploy_path = project_root / "deploy" / "docker-compose.yaml"
+    deploy_path.parent.mkdir(parents=True, exist_ok=True)
+    deploy_path.write_text("version: '3'\nservices: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+        prepared_file_plan=prepared_file_plan,
+    )
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="safe_modify", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        allow_safe_modify=True,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert result.run_outcome_class == "blocked_simulation"
+    assert result.execution_outcome["status"] == "blocked"
+    assert result.execution_outcome["simulation_status"] == "fail"
+    assert simulation_artifact["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        "infrastructure dry-run detected modify candidate: deploy/docker-compose.yaml"
+    ]
+
+
+def test_infra_dry_run_provider_returns_indeterminate_when_preview_input_missing():
+    project_root = _workspace_dir("dgce_incremental_stage75_infra_indeterminate")
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_blocked"] is True
+    assert simulation_artifact["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["indeterminate_reason"] == "preview_artifact_missing"
+
+
+def test_infra_dry_run_provider_non_triggered_path_is_unchanged():
+    project_root = _workspace_dir("dgce_incremental_stage75_infra_not_triggered")
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=False,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    trigger_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_blocked"] is False
+    assert simulation_gate["simulation_status"] == "skipped"
+    assert simulation_gate["provider_resolution_status"] == "not_applicable"
+    assert trigger_artifact["simulation_provider"] == "infra_dry_run"
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
 
 
 def test_stage_7_5_remains_outside_canonical_lifecycle_order():

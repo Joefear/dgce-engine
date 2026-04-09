@@ -549,6 +549,7 @@ def run_section_with_workspace(
     gate_timestamp: str = "1970-01-01T00:00:00Z",
     alignment_timestamp: str = "1970-01-01T00:00:00Z",
     simulation_triggered: bool = False,
+    simulation_provider: str = "workspace_artifact",
     simulation_trigger_timestamp: str = "1970-01-01T00:00:00Z",
     execution_timestamp: str = "1970-01-01T00:00:00Z",
     prepared_file_plan: Optional[FilePlan] = None,
@@ -845,6 +846,7 @@ def run_section_with_workspace(
             require_preflight_pass=True,
             simulation_trigger=SectionSimulationTriggerInput(
                 simulation_triggered=simulation_triggered,
+                simulation_provider=simulation_provider,
                 simulation_trigger_timestamp=simulation_trigger_timestamp,
             ),
         )
@@ -5161,19 +5163,52 @@ _ALLOWED_SIMULATION_STATUSES = {"pass", "fail", "indeterminate"}
 _ALLOWED_SIMULATION_TRIGGER_STAGE_STATUSES = {"simulation_required", "simulation_skipped"}
 _ALLOWED_SIMULATION_RESOLUTION_STATUSES = {"not_applicable", "resolved", "required_unavailable"}
 _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
+    "dry_run_input_missing",
+    "infra_candidate_absent",
     "invalid_provider_response",
+    "preview_artifact_missing",
     "provider_exception",
     "provider_unavailable",
     "simulation_result_missing",
 }
 _SIMULATION_PROVIDER_REGISTRY: dict[str, SimulationProviderCallable] = {}
 _SIMULATION_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+_INFRA_DRY_RUN_PROVIDER_NAME = "infra_dry_run"
+_INFRA_DRY_RUN_PATH_PARTS = {
+    "deploy",
+    "deployment",
+    "deployments",
+    "docker",
+    "helm",
+    "infra",
+    "infrastructure",
+    "k8s",
+    "kubernetes",
+    "systemd",
+    "terraform",
+}
+_INFRA_DRY_RUN_FILENAMES = {
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+    "dockerfile",
+}
+_INFRA_DRY_RUN_SUFFIXES = {".service", ".tf", ".tfvars"}
 
 
 def _default_workspace_artifact_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
     return {
         "findings": [],
         "indeterminate_reason": "simulation_result_missing",
+        "simulation_status": "indeterminate",
+    }
+
+
+def _default_infra_dry_run_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
+    return {
+        "findings": [],
+        "indeterminate_reason": "preview_artifact_missing",
         "simulation_status": "indeterminate",
     }
 
@@ -5190,6 +5225,7 @@ def unregister_stage75_simulation_provider(name: str) -> None:
 
 
 _SIMULATION_PROVIDER_REGISTRY["workspace_artifact"] = _default_workspace_artifact_provider
+_SIMULATION_PROVIDER_REGISTRY[_INFRA_DRY_RUN_PROVIDER_NAME] = _default_infra_dry_run_provider
 
 
 def _build_simulation_trigger_artifact(
@@ -5367,6 +5403,101 @@ def _load_simulation_provider_response_from_workspace_artifact(
     }
 
 
+def _load_preview_artifact_for_stage75_provider(
+    workspace_root: Path,
+    section_id: str,
+) -> dict[str, Any] | None:
+    preview_path = workspace_root / "plans" / f"{section_id}.preview.json"
+    if not preview_path.exists():
+        return None
+    try:
+        payload = json.loads(preview_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    previews = payload.get("previews")
+    if not isinstance(previews, list):
+        return None
+    return payload
+
+
+def _is_infra_dry_run_candidate_path(path_value: Any) -> bool:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return False
+    normalized_path = Path(path_value).as_posix().lower()
+    path = Path(normalized_path)
+    if path.name.lower() in _INFRA_DRY_RUN_FILENAMES:
+        return True
+    if path.suffix.lower() in _INFRA_DRY_RUN_SUFFIXES:
+        return True
+    parts = {part.lower() for part in path.parts}
+    if parts & _INFRA_DRY_RUN_PATH_PARTS:
+        return True
+    return False
+
+
+def _load_simulation_provider_response_from_infra_dry_run_preview(
+    workspace_root: Path,
+    section_id: str,
+) -> dict[str, Any]:
+    preview_payload = _load_preview_artifact_for_stage75_provider(workspace_root, section_id)
+    if preview_payload is None:
+        return {
+            "findings": [],
+            "indeterminate_reason": "preview_artifact_missing",
+            "simulation_status": "indeterminate",
+        }
+
+    previews = preview_payload.get("previews", [])
+    infra_candidates: list[dict[str, Any]] = []
+    for entry in previews:
+        if not isinstance(entry, dict):
+            return {
+                "findings": [],
+                "indeterminate_reason": "dry_run_input_missing",
+                "simulation_status": "indeterminate",
+            }
+        path_value = entry.get("path")
+        if _is_infra_dry_run_candidate_path(path_value):
+            infra_candidates.append(entry)
+
+    actionable_candidates = [
+        entry for entry in infra_candidates if str(entry.get("planned_action", "")).strip() in {"create", "modify"}
+    ]
+    if not actionable_candidates:
+        return {
+            "findings": [],
+            "indeterminate_reason": "infra_candidate_absent",
+            "simulation_status": "indeterminate",
+        }
+
+    findings: list[str] = []
+    for entry in sorted(actionable_candidates, key=lambda item: str(item.get("path", ""))):
+        path_value = entry.get("path")
+        planned_action = str(entry.get("planned_action", "")).strip()
+        if not isinstance(path_value, str) or not path_value.strip() or planned_action not in {"create", "modify"}:
+            return {
+                "findings": [],
+                "indeterminate_reason": "dry_run_input_missing",
+                "simulation_status": "indeterminate",
+            }
+        if planned_action == "modify":
+            findings.append(f"infrastructure dry-run detected modify candidate: {Path(path_value).as_posix()}")
+
+    if findings:
+        return {
+            "findings": findings,
+            "indeterminate_reason": None,
+            "simulation_status": "fail",
+        }
+    return {
+        "findings": [],
+        "indeterminate_reason": None,
+        "simulation_status": "pass",
+    }
+
+
 def _execute_stage75_simulation_provider(
     workspace_root: Path,
     section_id: str,
@@ -5427,6 +5558,8 @@ def _execute_stage75_simulation_provider(
         provider_raw_response: Stage75SimulationProviderResponse | dict[str, Any]
         if provider is _default_workspace_artifact_provider:
             provider_response_payload = _load_simulation_provider_response_from_workspace_artifact(workspace_root, section_id)
+        elif provider is _default_infra_dry_run_provider:
+            provider_response_payload = _load_simulation_provider_response_from_infra_dry_run_preview(workspace_root, section_id)
         else:
             provider_raw_response = provider(provider_request)
     except Exception:
@@ -5457,7 +5590,7 @@ def _execute_stage75_simulation_provider(
         }
 
     try:
-        if provider is not _default_workspace_artifact_provider:
+        if provider not in {_default_workspace_artifact_provider, _default_infra_dry_run_provider}:
             provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
         simulation_artifact = _write_json_with_artifact_fingerprint(
             workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
