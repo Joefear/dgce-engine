@@ -39,7 +39,7 @@ _SECTION_ARTIFACT_SPECS = (
     ("approval", "approval_path", "approval_artifact", ".dce/approvals/{section_id}.approval.json"),
     ("preflight", "preflight_path", "preflight_record", ".dce/preflight/{section_id}.preflight.json"),
     ("stale_check", "stale_check_path", "stale_check_record", ".dce/preflight/{section_id}.stale_check.json"),
-    ("gate", "execution_gate_path", "execution_gate_record", ".dce/preflight/{section_id}.execution_gate.json"),
+    ("gate", "execution_gate_path", "execution_gate_record", ".dce/execution/gate/{section_id}.execution_gate.json"),
     ("alignment", "alignment_path", "alignment_record", ".dce/preflight/{section_id}.alignment.json"),
     ("execution", "execution_path", "execution_record", ".dce/execution/{section_id}.execution.json"),
     ("outputs", "output_path", "output_record", ".dce/outputs/{section_id}.json"),
@@ -77,7 +77,7 @@ def _prepared_plan_file_path(project_root: Path, section_id: str) -> Path:
 def _prepared_plan_artifact_relative_paths(section_id: str) -> dict[str, str]:
     return {
         "approval_path": _artifact_relative_path(section_id, ".dce/approvals/{section_id}.approval.json"),
-        "execution_gate_path": _artifact_relative_path(section_id, ".dce/preflight/{section_id}.execution_gate.json"),
+        "execution_gate_path": _artifact_relative_path(section_id, ".dce/execution/gate/{section_id}.execution_gate.json"),
         "input_path": _artifact_relative_path(section_id, ".dce/input/{section_id}.json"),
         "preflight_path": _artifact_relative_path(section_id, ".dce/preflight/{section_id}.preflight.json"),
         "preview_path": _artifact_relative_path(section_id, ".dce/plans/{section_id}.preview.json"),
@@ -438,7 +438,7 @@ def prepare_section_execution(
     approval_relative_path = _artifact_relative_path(section_id, ".dce/approvals/{section_id}.approval.json")
     preflight_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.preflight.json")
     stale_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.stale_check.json")
-    gate_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.execution_gate.json")
+    gate_relative_path = _artifact_relative_path(section_id, ".dce/execution/gate/{section_id}.execution_gate.json")
     preview_relative_path = _artifact_relative_path(section_id, ".dce/plans/{section_id}.preview.json")
     review_relative_path = _artifact_relative_path(section_id, ".dce/reviews/{section_id}.review.md")
 

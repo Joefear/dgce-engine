@@ -27,7 +27,7 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
     approval_path = workspace["approvals"] / f"{section_id}.approval.json"
     preflight_path = workspace["preflight"] / f"{section_id}.preflight.json"
     stale_check_path = workspace["preflight"] / f"{section_id}.stale_check.json"
-    execution_gate_path = workspace["preflight"] / f"{section_id}.execution_gate.json"
+    execution_gate_path = workspace["gate"] / f"{section_id}.execution_gate.json"
     if not approval_path.exists():
         return
 
@@ -49,7 +49,7 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
             validation_timestamp=str(existing_stale.get("validation_timestamp", default_timestamp))
         ),
     )
-    gate_input_path = workspace["preflight"] / f"{section_id}.gate_input.json"
+    gate_input_path = workspace["gate"] / f"{section_id}.gate_input.json"
     gate_input_payload = _write_json_with_artifact_fingerprint(
         gate_input_path,
         _build_gate_input_artifact(workspace["root"], section_id),

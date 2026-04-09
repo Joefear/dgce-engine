@@ -192,7 +192,7 @@ class TestDGCERefreshAPI:
         project_root = _build_workspace(monkeypatch, "dgce_refresh_api_recompute_current_approval")
         current_preview_fingerprint = _create_stale_gate_drift(project_root)
         stale_path = project_root / ".dce" / "preflight" / "mission-board.stale_check.json"
-        gate_path = project_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+        gate_path = project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
         stale_before = json.loads(stale_path.read_text(encoding="utf-8"))
         gate_before = json.loads(gate_path.read_text(encoding="utf-8"))
         client = TestClient(create_app())

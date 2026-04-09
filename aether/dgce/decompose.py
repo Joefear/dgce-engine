@@ -1134,7 +1134,7 @@ def record_section_execution_gate(
     """Persist a deterministic execution-gate artifact and refresh workspace linkage."""
     workspace = _ensure_workspace(project_root)
     gate_input = gate or SectionExecutionGateInput()
-    gate_input_path = workspace["preflight"] / f"{section_id}.gate_input.json"
+    gate_input_path = workspace["gate"] / f"{section_id}.gate_input.json"
     preflight_path = workspace["preflight"] / f"{section_id}.preflight.json"
     stale_check_path = workspace["preflight"] / f"{section_id}.stale_check.json"
     if require_preflight_pass:
@@ -1167,7 +1167,7 @@ def record_section_execution_gate(
         preflight_payload=preflight_payload,
         stale_check_payload=stale_artifact,
     )
-    _write_json(workspace["preflight"] / f"{section_id}.execution_gate.json", gate_artifact)
+    _write_json(workspace["gate"] / f"{section_id}.execution_gate.json", gate_artifact)
     _refresh_workspace_views(workspace)
     return gate_artifact
 
@@ -1252,11 +1252,12 @@ def _ensure_workspace(project_root: Path) -> Dict[str, Path]:
         "reviews": dce_root / "reviews",
         "approvals": dce_root / "approvals",
         "preflight": dce_root / "preflight",
+        "gate": dce_root / "execution" / "gate",
         "execution": dce_root / "execution",
         "state": dce_root / "state",
         "index": dce_root / "index.yaml",
     }
-    for key in ("root", "input", "plans", "outputs", "reviews", "approvals", "preflight", "execution", "state"):
+    for key in ("root", "input", "plans", "outputs", "reviews", "approvals", "preflight", "gate", "execution", "state"):
         workspace[key].mkdir(parents=True, exist_ok=True)
     if not workspace["index"].exists():
         workspace["index"].write_text("sections: []\n", encoding="utf-8")
@@ -1281,7 +1282,7 @@ def _collect_orchestrator_artifact_paths(project_root: Path, section_id: str) ->
         "approval_path": workspace["approvals"] / f"{section_id}.approval.json",
         "stale_check_path": workspace["preflight"] / f"{section_id}.stale_check.json",
         "preflight_path": workspace["preflight"] / f"{section_id}.preflight.json",
-        "execution_gate_path": workspace["preflight"] / f"{section_id}.execution_gate.json",
+        "execution_gate_path": workspace["gate"] / f"{section_id}.execution_gate.json",
         "alignment_path": workspace["preflight"] / f"{section_id}.alignment.json",
         "output_path": workspace["outputs"] / f"{section_id}.json",
         "execution_path": workspace["execution"] / f"{section_id}.execution.json",
@@ -3422,7 +3423,7 @@ def _build_execution_gate_artifact(
     """Build a deterministic execution-gate artifact from explicit preflight enforcement inputs."""
     preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
     stale_check_path = workspace_root / "preflight" / f"{section_id}.stale_check.json"
-    gate_input_path = workspace_root / "preflight" / f"{section_id}.gate_input.json"
+    gate_input_path = workspace_root / "execution" / "gate" / f"{section_id}.gate_input.json"
     preflight_path_str = preflight_path.relative_to(workspace_root.parent).as_posix() if preflight_path.exists() else None
     stale_check_path_str = stale_check_path.relative_to(workspace_root.parent).as_posix() if stale_check_path.exists() else None
     gate_input_path_str = gate_input_path.relative_to(workspace_root.parent).as_posix()
@@ -3998,7 +3999,7 @@ def _build_execution_stamp_artifact(
     """Build a deterministic execution-stamp artifact from current run facts and linked metadata."""
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
     preflight_path = workspace_root / "preflight" / f"{section_id}.preflight.json"
-    execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
+    execution_gate_path = workspace_root / "execution" / "gate" / f"{section_id}.execution_gate.json"
     alignment_path = workspace_root / "preflight" / f"{section_id}.alignment.json"
     outputs_path = workspace_root / "outputs" / f"{section_id}.json"
 
@@ -4296,7 +4297,7 @@ def _build_alignment_artifact(
 ) -> dict[str, Any]:
     """Build a deterministic alignment artifact from approved mode plus effective write behavior."""
     approval_path = workspace_root / "approvals" / f"{section_id}.approval.json"
-    execution_gate_path = workspace_root / "preflight" / f"{section_id}.execution_gate.json"
+    execution_gate_path = workspace_root / "execution" / "gate" / f"{section_id}.execution_gate.json"
     approval_payload = json.loads(approval_path.read_text(encoding="utf-8")) if approval_path.exists() else {}
     gate_payload = json.loads(execution_gate_path.read_text(encoding="utf-8")) if execution_gate_path.exists() else {}
     selected_mode = approval_payload.get("selected_mode")

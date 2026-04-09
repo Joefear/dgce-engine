@@ -369,7 +369,7 @@ class TestDGCEPrepareAPI:
         assert prepared_plan_payload["binding"] == {
             "artifact_paths": {
                 "approval_path": ".dce/approvals/mission-board.approval.json",
-                "execution_gate_path": ".dce/preflight/mission-board.execution_gate.json",
+                "execution_gate_path": ".dce/execution/gate/mission-board.execution_gate.json",
                 "input_path": ".dce/input/mission-board.json",
                 "preflight_path": ".dce/preflight/mission-board.preflight.json",
                 "preview_path": ".dce/plans/mission-board.preview.json",
@@ -382,7 +382,7 @@ class TestDGCEPrepareAPI:
                     project_root / ".dce" / "approvals" / "mission-board.approval.json"
                 ),
                 "execution_gate": dgce_decompose.compute_json_file_fingerprint(
-                    project_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+                    project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
                 ),
                 "input": dgce_decompose.compute_json_file_fingerprint(project_root / ".dce" / "input" / "mission-board.json"),
                 "preflight": dgce_decompose.compute_json_file_fingerprint(
@@ -469,7 +469,7 @@ class TestDGCEPrepareAPI:
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_recompute_current_approval")
         current_preview_fingerprint = _create_stale_gate_drift(project_root)
         stale_path = project_root / ".dce" / "preflight" / "mission-board.stale_check.json"
-        gate_path = project_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+        gate_path = project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
         stale_before = json.loads(stale_path.read_text(encoding="utf-8"))
         gate_before = json.loads(gate_path.read_text(encoding="utf-8"))
         client = TestClient(create_app())
@@ -502,7 +502,7 @@ class TestDGCEPrepareAPI:
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_recompute_current_review")
         current_review_fingerprint = _create_review_fingerprint_stale_gate_drift(project_root)
         stale_path = project_root / ".dce" / "preflight" / "mission-board.stale_check.json"
-        gate_path = project_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+        gate_path = project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
         stale_before = json.loads(stale_path.read_text(encoding="utf-8"))
         gate_before = json.loads(gate_path.read_text(encoding="utf-8"))
         client = TestClient(create_app())

@@ -5474,7 +5474,7 @@ def test_run_dgce_section_governed_valid_approval_succeeds(monkeypatch):
     assert result.artifact_paths["approval_path"] == ".dce/approvals/mission-board.approval.json"
     assert result.artifact_paths["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
     assert result.artifact_paths["preflight_path"] == ".dce/preflight/mission-board.preflight.json"
-    assert result.artifact_paths["execution_gate_path"] == ".dce/preflight/mission-board.execution_gate.json"
+    assert result.artifact_paths["execution_gate_path"] == ".dce/execution/gate/mission-board.execution_gate.json"
     assert result.artifact_paths["alignment_path"] == ".dce/preflight/mission-board.alignment.json"
     assert result.artifact_paths["execution_path"] == ".dce/execution/mission-board.execution.json"
     assert result.artifact_paths["output_path"] == ".dce/outputs/mission-board.json"
@@ -5530,7 +5530,7 @@ def test_run_dgce_section_governed_blocks_when_input_fingerprint_mismatches(monk
 
     result = run_dgce_section("mission-board", project_root, governed=True)
     stale_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))
-    gate_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
+    gate_payload = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
 
     assert result.status == "blocked"
     assert result.reason == "blocked_stale"
@@ -6054,8 +6054,8 @@ def test_record_section_preflight_is_deterministic_with_fixed_inputs(monkeypatch
     )
 
     assert first_gate == second_gate
-    assert (first_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8") == (
-        second_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+    assert (first_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
     ).read_text(encoding="utf-8")
 
 
@@ -6423,13 +6423,13 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     assert gate_pass["execution_blocked"] is False
     assert gate_pass["preflight_status"] == "preflight_pass"
     assert gate_pass["stale_status"] == "stale_valid"
-    assert review_index["sections"][0]["execution_gate_path"] == ".dce/preflight/mission-board.execution_gate.json"
+    assert review_index["sections"][0]["execution_gate_path"] == ".dce/execution/gate/mission-board.execution_gate.json"
     assert review_index["sections"][0]["gate_status"] == "gate_pass"
     assert review_index["sections"][0]["execution_blocked"] is False
     assert review_index["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
     assert review_index["sections"][0]["stale_status"] == "stale_valid"
     assert review_index["sections"][0]["stale_detected"] is False
-    assert workspace_summary["sections"][0]["execution_gate_path"] == ".dce/preflight/mission-board.execution_gate.json"
+    assert workspace_summary["sections"][0]["execution_gate_path"] == ".dce/execution/gate/mission-board.execution_gate.json"
     assert workspace_summary["sections"][0]["gate_status"] == "gate_pass"
     assert workspace_summary["sections"][0]["execution_blocked"] is False
     assert workspace_summary["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
@@ -6459,9 +6459,13 @@ def test_record_section_execution_gate_writes_gate_input_artifact_without_code_g
         gate=SectionExecutionGateInput(gate_timestamp="2026-03-26T00:00:00Z"),
         preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
     )
-    gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    gate_input = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
 
-    assert gate["gate_input_path"] == ".dce/preflight/mission-board.gate_input.json"
+    assert gate["gate_input_path"] == ".dce/execution/gate/mission-board.gate_input.json"
+    assert (project_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").exists()
+    assert (project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json").exists()
+    assert not (project_root / ".dce" / "preflight" / "mission-board.gate_input.json").exists()
+    assert not (project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").exists()
     assert gate["gate_input_fingerprint"] == gate_input["gate_input_fingerprint"]
     assert gate_input["code_graph_context"] == {
         "availability_status": "absent",
@@ -6498,8 +6502,8 @@ def test_record_section_execution_gate_uses_valid_code_graph_deterministically(m
             preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
         )
 
-    first_gate_input = json.loads((first_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
-    second_gate_input = json.loads((second_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    first_gate_input = json.loads((first_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    second_gate_input = json.loads((second_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
     service_classification = next(
         entry for entry in first_gate_input["target_classifications"] if entry["path"] == "mission_board/service.py"
     )
@@ -6536,7 +6540,7 @@ def test_record_section_execution_gate_invalid_code_graph_triggers_safe_fallback
         preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
     )
 
-    gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    gate_input = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
 
     assert gate_input["code_graph_context"] == {
         "availability_status": "invalid",
@@ -6568,7 +6572,7 @@ def test_gate_input_target_classifications_stay_within_approved_scope_and_policy
         preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
     )
 
-    gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    gate_input = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
     approved_paths = {entry["path"] for entry in gate_input["approved_scope"]["approved_targets"]}
     classification_paths = {entry["path"] for entry in gate_input["target_classifications"]}
     allowed_classification_keys = {
@@ -6625,7 +6629,7 @@ def test_record_section_execution_gate_hands_gate_input_to_guardrail_unchanged(m
         preflight=SectionPreflightInput(validation_timestamp="2026-03-26T00:00:00Z"),
     )
 
-    persisted_gate_input = json.loads((project_root / ".dce" / "preflight" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
+    persisted_gate_input = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json").read_text(encoding="utf-8"))
 
     assert captured == [persisted_gate_input]
 
@@ -6903,7 +6907,7 @@ def test_run_section_with_workspace_require_preflight_pass_blocks_without_writes
         gate_timestamp="2026-03-26T00:00:00Z",
         preflight_validation_timestamp="2026-03-26T00:00:00Z",
     )
-    gate_artifact = json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
+    gate_artifact = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
 
     assert result.written_files == []
     assert result.run_outcome_class == "blocked_stale"
@@ -6944,7 +6948,7 @@ def test_run_section_with_workspace_stale_gate_blocks_without_project_writes(mon
         execution_timestamp="2026-03-26T00:00:00Z",
     )
     stale_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))
-    gate_payload = json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
+    gate_payload = json.loads((project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))
 
     assert result.written_files == []
     assert result.run_outcome_class == "blocked_stale"
@@ -7013,8 +7017,8 @@ def test_run_section_with_workspace_gate_outputs_are_deterministic(monkeypatch):
             preflight_validation_timestamp="2026-03-26T00:00:00Z",
         )
 
-    assert (first_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8") == (
-        second_root / ".dce" / "preflight" / "mission-board.execution_gate.json"
+    assert (first_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json").read_text(encoding="utf-8") == (
+        second_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
     ).read_text(encoding="utf-8")
 
 
@@ -8257,7 +8261,7 @@ def test_run_section_with_workspace_lifecycle_trace_is_deterministic_and_governe
     assert execution_entry["linkage"] == [
         {"ref_name": "approval_path", "ref_path": ".dce/approvals/mission-board.approval.json"},
         {"ref_name": "preflight_path", "ref_path": ".dce/preflight/mission-board.preflight.json"},
-        {"ref_name": "execution_gate_path", "ref_path": ".dce/preflight/mission-board.execution_gate.json"},
+        {"ref_name": "execution_gate_path", "ref_path": ".dce/execution/gate/mission-board.execution_gate.json"},
         {"ref_name": "alignment_path", "ref_path": ".dce/preflight/mission-board.alignment.json"},
         {"ref_name": "output_path", "ref_path": ".dce/outputs/mission-board.json"},
     ]
@@ -9305,7 +9309,7 @@ def test_run_section_with_workspace_workspace_index_is_deterministic_and_governe
         {"artifact_role": "approval", "path": ".dce/approvals/mission-board.approval.json"},
         {"artifact_role": "preflight", "path": ".dce/preflight/mission-board.preflight.json"},
         {"artifact_role": "stale_check", "path": ".dce/preflight/mission-board.stale_check.json"},
-        {"artifact_role": "gate", "path": ".dce/preflight/mission-board.execution_gate.json"},
+        {"artifact_role": "gate", "path": ".dce/execution/gate/mission-board.execution_gate.json"},
         {"artifact_role": "alignment", "path": ".dce/preflight/mission-board.alignment.json"},
         {"artifact_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
         {"artifact_role": "outputs", "path": ".dce/outputs/mission-board.json"},
@@ -9385,7 +9389,7 @@ def test_workspace_index_is_sorted_and_isolated_across_sections(monkeypatch):
         {"artifact_role": "approval", "path": ".dce/approvals/mission-board.approval.json"},
         {"artifact_role": "preflight", "path": ".dce/preflight/mission-board.preflight.json"},
         {"artifact_role": "stale_check", "path": ".dce/preflight/mission-board.stale_check.json"},
-        {"artifact_role": "gate", "path": ".dce/preflight/mission-board.execution_gate.json"},
+        {"artifact_role": "gate", "path": ".dce/execution/gate/mission-board.execution_gate.json"},
         {"artifact_role": "alignment", "path": ".dce/preflight/mission-board.alignment.json"},
         {"artifact_role": "execution", "path": ".dce/execution/mission-board.execution.json"},
         {"artifact_role": "outputs", "path": ".dce/outputs/mission-board.json"},
@@ -9712,7 +9716,7 @@ def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries
                 "section_id": "mission-board",
             },
             {
-                "artifact_path": ".dce/preflight/mission-board.execution_gate.json",
+                "artifact_path": ".dce/execution/gate/mission-board.execution_gate.json",
                 "artifact_type": "execution_gate_record",
                 "schema_version": "1.0",
                 "scope": "section",
