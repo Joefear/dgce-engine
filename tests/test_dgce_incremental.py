@@ -61,6 +61,20 @@ def _infra_file_plan(path: str = "deploy/docker-compose.yaml") -> FilePlan:
     )
 
 
+def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
+    fragments = {
+        "deployment_artifact": "deployment artifacts",
+        "design_required_simulation": "approved design constraints",
+        "infrastructure_touching": "infrastructure-touching changes",
+        "irreversible_operation": "modify operations",
+        "policy_required_simulation": "governance policy requirements",
+        "runtime_control": "runtime-control artifacts",
+    }
+    if not reason_codes:
+        return None
+    return "Simulation was required due to " + "; ".join(fragments[code] for code in reason_codes) + "."
+
+
 def _valid_code_graph_context(file_path: str = "mission_board/service.py") -> dict:
     return {
         "contract_name": "DefiantCodeGraphFacts",
@@ -7654,6 +7668,8 @@ def test_run_section_with_workspace_simulation_skip_path_proceeds(monkeypatch):
     assert result.run_outcome_class == "success_create_only"
     assert trigger_artifact["simulation_triggered"] is False
     assert trigger_artifact["simulation_stage_status"] == "simulation_skipped"
+    assert trigger_artifact["trigger_reason_codes"] == []
+    assert trigger_artifact["trigger_reason_summary"] is None
     assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
     assert {"artifact_role": "simulation_trigger", "path": ".dce/execution/simulation/mission-board.simulation_trigger.json"} in workspace_index["sections"][0]["artifact_links"]
 
@@ -7694,6 +7710,8 @@ def test_run_section_with_workspace_simulation_required_blocks_without_valid_res
     assert result.execution_outcome["simulation_status"] == "indeterminate"
     assert trigger_artifact["simulation_triggered"] is True
     assert trigger_artifact["simulation_stage_status"] == "simulation_required"
+    assert trigger_artifact["trigger_reason_codes"] == ["policy_required_simulation"]
+    assert trigger_artifact["trigger_reason_summary"] == _expected_trigger_reason_summary("policy_required_simulation")
     simulation_artifact = json.loads(
         (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
     )
@@ -8246,7 +8264,129 @@ def test_infra_dry_run_provider_non_triggered_path_is_unchanged():
     assert simulation_gate["simulation_status"] == "skipped"
     assert simulation_gate["provider_resolution_status"] == "not_applicable"
     assert trigger_artifact["simulation_provider"] == "infra_dry_run"
+    assert trigger_artifact["trigger_reason_codes"] == []
+    assert trigger_artifact["trigger_reason_summary"] is None
     assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
+
+
+def test_stage75_trigger_record_adds_infra_and_deployment_reason_codes_for_deployment_candidates(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_trigger_reasons_deploy")
+    prepared_file_plan = _infra_file_plan("deploy/docker-compose.yaml")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    trigger_artifact = dgce_decompose.record_section_simulation_trigger(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    assert trigger_artifact["trigger_reason_codes"] == [
+        "policy_required_simulation",
+        "infrastructure_touching",
+        "deployment_artifact",
+    ]
+    assert trigger_artifact["trigger_reason_summary"] == _expected_trigger_reason_summary(
+        "policy_required_simulation",
+        "infrastructure_touching",
+        "deployment_artifact",
+    )
+
+
+def test_stage75_trigger_record_adds_runtime_control_reason_codes_for_systemd_candidates(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_trigger_reasons_runtime")
+    prepared_file_plan = _infra_file_plan("systemd/mission-board.service")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    trigger_artifact = dgce_decompose.record_section_simulation_trigger(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    assert trigger_artifact["trigger_reason_codes"] == [
+        "policy_required_simulation",
+        "infrastructure_touching",
+        "runtime_control",
+    ]
+    assert trigger_artifact["trigger_reason_summary"] == _expected_trigger_reason_summary(
+        "policy_required_simulation",
+        "infrastructure_touching",
+        "runtime_control",
+    )
+
+
+def test_stage75_trigger_record_sorts_multi_reason_codes_deterministically_for_modify_candidates(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_trigger_reasons_modify")
+    prepared_file_plan = _infra_file_plan("deploy/docker-compose.yaml")
+    deploy_path = project_root / "deploy" / "docker-compose.yaml"
+    deploy_path.parent.mkdir(parents=True, exist_ok=True)
+    deploy_path.write_text("version: '3'\nservices: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    trigger_artifact = dgce_decompose.record_section_simulation_trigger(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    assert trigger_artifact["trigger_reason_codes"] == [
+        "policy_required_simulation",
+        "infrastructure_touching",
+        "deployment_artifact",
+        "irreversible_operation",
+    ]
+    assert trigger_artifact["trigger_reason_summary"] == _expected_trigger_reason_summary(
+        "policy_required_simulation",
+        "infrastructure_touching",
+        "deployment_artifact",
+        "irreversible_operation",
+    )
 
 
 def test_stage75_selector_explicit_valid_provider_override_selects_requested_provider(monkeypatch):

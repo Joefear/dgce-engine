@@ -2605,6 +2605,9 @@ def _validate_simulation_trigger_schema(payload: Any) -> None:
     artifact_name = "simulation_trigger"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
     _validate_artifact_metadata(artifact, artifact_name, "simulation_trigger_record")
+    unexpected_fields = sorted(set(artifact.keys()) - _SIMULATION_TRIGGER_RECORD_ALLOWED_FIELDS)
+    if unexpected_fields:
+        _schema_error(artifact_name, f"unexpected fields are not allowed: {', '.join(unexpected_fields)}")
     _expect_str(_expect_required_field(artifact, "contract_version", artifact_name), artifact_name, "contract_version")
     _expect_str(_expect_required_field(artifact, "section_id", artifact_name), artifact_name, "section_id")
     _expect_bool(_expect_required_field(artifact, "require_preflight_pass", artifact_name), artifact_name, "require_preflight_pass")
@@ -2620,6 +2623,12 @@ def _validate_simulation_trigger_schema(payload: Any) -> None:
         artifact_name,
         "simulation_trigger_timestamp",
     )
+    trigger_reason_codes = _expect_list(_expect_required_field(artifact, "trigger_reason_codes", artifact_name), artifact_name, "trigger_reason_codes")
+    for index, code in enumerate(trigger_reason_codes):
+        _expect_str(code, artifact_name, f"trigger_reason_codes[{index}]")
+        if code not in _ALLOWED_SIMULATION_TRIGGER_REASON_CODES:
+            _schema_error(artifact_name, f"trigger_reason_codes[{index}] must be a supported Stage 7.5 trigger reason code")
+    _expect_optional_str(_expect_required_field(artifact, "trigger_reason_summary", artifact_name), artifact_name, "trigger_reason_summary")
     _expect_str(_expect_required_field(artifact, "trigger_source", artifact_name), artifact_name, "trigger_source")
     _expect_optional_str(_expect_required_field(artifact, "alignment_path", artifact_name), artifact_name, "alignment_path")
     _expect_str(
@@ -2637,6 +2646,19 @@ def _validate_simulation_trigger_schema(payload: Any) -> None:
         _schema_error(artifact_name, "simulation_stage_status must be simulation_required when simulation_triggered is true")
     if not artifact["simulation_triggered"] and artifact["simulation_stage_status"] != "simulation_skipped":
         _schema_error(artifact_name, "simulation_stage_status must be simulation_skipped when simulation_triggered is false")
+    ordered_trigger_reason_codes = _ordered_simulation_trigger_reason_codes(trigger_reason_codes)
+    if trigger_reason_codes != ordered_trigger_reason_codes:
+        _schema_error(artifact_name, "trigger_reason_codes must be unique and emitted in deterministic order")
+    if artifact["simulation_triggered"]:
+        if not trigger_reason_codes:
+            _schema_error(artifact_name, "trigger_reason_codes must be populated when simulation_triggered is true")
+        if artifact["trigger_reason_summary"] != _build_simulation_trigger_reason_summary(trigger_reason_codes):
+            _schema_error(artifact_name, "trigger_reason_summary must match the normalized trigger reason codes")
+    else:
+        if trigger_reason_codes:
+            _schema_error(artifact_name, "trigger_reason_codes must be empty when simulation_triggered is false")
+        if artifact["trigger_reason_summary"] is not None:
+            _schema_error(artifact_name, "trigger_reason_summary must be null when simulation_triggered is false")
 
 
 def _validate_simulation_record_schema(payload: Any) -> None:
@@ -5407,6 +5429,30 @@ def _ordered_alignment_drift_findings(findings: list[str]) -> list[str]:
 _ALLOWED_SIMULATION_STATUSES = {"pass", "fail", "indeterminate"}
 _ALLOWED_SIMULATION_TRIGGER_STAGE_STATUSES = {"simulation_required", "simulation_skipped"}
 _ALLOWED_SIMULATION_RESOLUTION_STATUSES = {"not_applicable", "resolved", "required_unavailable"}
+_ALLOWED_SIMULATION_TRIGGER_REASON_CODES = {
+    "deployment_artifact",
+    "design_required_simulation",
+    "infrastructure_touching",
+    "irreversible_operation",
+    "policy_required_simulation",
+    "runtime_control",
+}
+_ORDERED_SIMULATION_TRIGGER_REASON_CODES = (
+    "policy_required_simulation",
+    "design_required_simulation",
+    "infrastructure_touching",
+    "deployment_artifact",
+    "runtime_control",
+    "irreversible_operation",
+)
+_SIMULATION_TRIGGER_REASON_SUMMARY_FRAGMENTS = {
+    "deployment_artifact": "deployment artifacts",
+    "design_required_simulation": "approved design constraints",
+    "infrastructure_touching": "infrastructure-touching changes",
+    "irreversible_operation": "modify operations",
+    "policy_required_simulation": "governance policy requirements",
+    "runtime_control": "runtime-control artifacts",
+}
 _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
     "dry_run_input_missing",
     "infra_candidate_absent",
@@ -5441,6 +5487,24 @@ _SIMULATION_REASON_SUMMARIES = {
     "simulation_pass": "Simulation completed without blocking findings.",
     "simulation_provider_unresolved": "No applicable simulation provider could be resolved.",
     "simulation_result_missing": "Simulation result artifact was missing.",
+}
+_SIMULATION_TRIGGER_RECORD_ALLOWED_FIELDS = {
+    "alignment_path",
+    "artifact_fingerprint",
+    "artifact_type",
+    "contract_version",
+    "generated_by",
+    "require_preflight_pass",
+    "schema_version",
+    "section_id",
+    "simulation_provider",
+    "simulation_stage_status",
+    "simulation_trigger_fingerprint",
+    "simulation_trigger_timestamp",
+    "simulation_triggered",
+    "trigger_reason_codes",
+    "trigger_reason_summary",
+    "trigger_source",
 }
 _SIMULATION_RECORD_ALLOWED_FIELDS = {
     "artifact_type",
@@ -5486,6 +5550,19 @@ _INFRA_DRY_RUN_FILENAMES = {
     "dockerfile",
 }
 _INFRA_DRY_RUN_SUFFIXES = {".service", ".tf", ".tfvars"}
+_DEPLOYMENT_ARTIFACT_PATH_PARTS = {
+    "deploy",
+    "deployment",
+    "deployments",
+    "docker",
+    "helm",
+    "k8s",
+    "kubernetes",
+    "terraform",
+}
+_RUNTIME_CONTROL_PATH_PARTS = {"systemd"}
+_RUNTIME_CONTROL_FILENAMES: set[str] = set()
+_RUNTIME_CONTROL_SUFFIXES = {".service"}
 
 
 def _default_workspace_artifact_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
@@ -5519,6 +5596,91 @@ _SIMULATION_PROVIDER_REGISTRY["workspace_artifact"] = _default_workspace_artifac
 _SIMULATION_PROVIDER_REGISTRY[_INFRA_DRY_RUN_PROVIDER_NAME] = _default_infra_dry_run_provider
 
 
+def _ordered_simulation_trigger_reason_codes(reason_codes: list[str]) -> list[str]:
+    unique_codes = {
+        str(code).strip()
+        for code in reason_codes
+        if str(code).strip() in _ALLOWED_SIMULATION_TRIGGER_REASON_CODES
+    }
+    return [code for code in _ORDERED_SIMULATION_TRIGGER_REASON_CODES if code in unique_codes]
+
+
+def _build_simulation_trigger_reason_summary(reason_codes: list[str]) -> str | None:
+    ordered_codes = _ordered_simulation_trigger_reason_codes(reason_codes)
+    if not ordered_codes:
+        return None
+    fragments = [_SIMULATION_TRIGGER_REASON_SUMMARY_FRAGMENTS[code] for code in ordered_codes]
+    if len(fragments) == 1:
+        return f"Simulation was required due to {fragments[0]}."
+    return f"Simulation was required due to {'; '.join(fragments)}."
+
+
+def _is_deployment_artifact_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path = Path(normalized_path.lower())
+    if path.name.lower() in _INFRA_DRY_RUN_FILENAMES:
+        return True
+    if path.suffix.lower() in {".tf", ".tfvars"}:
+        return True
+    return bool({part.lower() for part in path.parts} & _DEPLOYMENT_ARTIFACT_PATH_PARTS)
+
+
+def _is_runtime_control_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path = Path(normalized_path.lower())
+    if path.name.lower() in _RUNTIME_CONTROL_FILENAMES:
+        return True
+    if path.suffix.lower() in _RUNTIME_CONTROL_SUFFIXES:
+        return True
+    return bool({part.lower() for part in path.parts} & _RUNTIME_CONTROL_PATH_PARTS)
+
+
+def _derive_simulation_trigger_reasons(
+    workspace_root: Path,
+    section_id: str,
+    *,
+    require_preflight_pass: bool,
+    simulation_trigger_input: SectionSimulationTriggerInput,
+) -> tuple[list[str], str | None]:
+    if not simulation_trigger_input.simulation_triggered:
+        return [], None
+
+    reason_codes: set[str] = set()
+    normalized_trigger_source = str(simulation_trigger_input.trigger_source).strip().lower()
+    if require_preflight_pass or normalized_trigger_source in {"policy", "policy_required", "policy_required_simulation"}:
+        reason_codes.add("policy_required_simulation")
+    if normalized_trigger_source in {"design", "design_required", "design_required_simulation"}:
+        reason_codes.add("design_required_simulation")
+
+    preview_payload = _load_preview_artifact_for_stage75_provider(workspace_root, section_id)
+    preview_entries = preview_payload.get("previews", []) if isinstance(preview_payload, dict) else []
+    if isinstance(preview_entries, list):
+        for entry in preview_entries:
+            if not isinstance(entry, dict):
+                continue
+            normalized_path = _normalize_alignment_path(entry.get("path"))
+            planned_action = str(entry.get("planned_action", "")).strip()
+            if normalized_path is None or planned_action not in {"create", "modify"}:
+                continue
+            if _is_infra_dry_run_candidate_path(normalized_path):
+                reason_codes.add("infrastructure_touching")
+            if _is_deployment_artifact_path(normalized_path):
+                reason_codes.add("deployment_artifact")
+            if _is_runtime_control_path(normalized_path):
+                reason_codes.add("runtime_control")
+            if planned_action == "modify":
+                reason_codes.add("irreversible_operation")
+
+    if not reason_codes:
+        reason_codes.add("policy_required_simulation")
+    ordered_reason_codes = _ordered_simulation_trigger_reason_codes(list(reason_codes))
+    return ordered_reason_codes, _build_simulation_trigger_reason_summary(ordered_reason_codes)
+
+
 def _build_simulation_trigger_artifact(
     workspace_root: Path,
     section_id: str,
@@ -5527,6 +5689,12 @@ def _build_simulation_trigger_artifact(
     simulation_trigger_input: SectionSimulationTriggerInput,
 ) -> dict[str, Any]:
     alignment_path = workspace_root / "execution" / "alignment" / f"{section_id}.alignment.json"
+    trigger_reason_codes, trigger_reason_summary = _derive_simulation_trigger_reasons(
+        workspace_root,
+        section_id,
+        require_preflight_pass=require_preflight_pass,
+        simulation_trigger_input=simulation_trigger_input,
+    )
     payload = _with_artifact_metadata(
         "simulation_trigger_record",
         {
@@ -5543,6 +5711,8 @@ def _build_simulation_trigger_artifact(
                 "simulation_required" if simulation_trigger_input.simulation_triggered else "simulation_skipped"
             ),
             "simulation_trigger_timestamp": str(simulation_trigger_input.simulation_trigger_timestamp),
+            "trigger_reason_codes": trigger_reason_codes,
+            "trigger_reason_summary": trigger_reason_summary,
             "trigger_source": str(simulation_trigger_input.trigger_source),
             "alignment_path": alignment_path.relative_to(workspace_root.parent).as_posix() if alignment_path.exists() else None,
         },
