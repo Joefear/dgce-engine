@@ -7828,6 +7828,7 @@ def test_stage75_pass_artifact_has_normalized_reason_fields(monkeypatch):
         "generated_by",
         "indeterminate_reason",
         "provider_name",
+        "provider_applicability",
         "provider_selection_reason",
         "provider_selection_source",
         "reason_code",
@@ -8435,9 +8436,44 @@ def test_stage75_selector_explicit_valid_provider_override_selects_requested_pro
     assert simulation_gate["provider_selection_source"] == "explicit"
     assert simulation_gate["provider_selection_reason"] == "explicit_provider_selected"
     assert simulation_artifact["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": ["workspace_artifact"],
+        "resolution": "explicit",
+        "selected_provider": "workspace_artifact",
+    }
     assert simulation_artifact["provider_selection_source"] == "explicit"
     assert simulation_artifact["provider_selection_reason"] == "explicit_provider_selected"
     assert simulation_artifact["simulation_status"] == "pass"
+
+
+def test_stage75_selector_explicit_override_uses_forced_override_when_provider_is_registered_but_not_applicable():
+    project_root = _workspace_dir("dgce_incremental_stage75_selector_forced_override")
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "infra_dry_run"
+    assert simulation_gate["provider_selection_source"] == "explicit"
+    assert simulation_gate["provider_selection_reason"] == "forced_override"
+    assert simulation_artifact["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": [],
+        "resolution": "forced_override",
+        "selected_provider": "infra_dry_run",
+    }
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "preview_artifact_missing"
 
 
 def test_workspace_artifact_provider_returns_fail_with_normalized_findings_on_valid_seed_artifact():
@@ -8617,6 +8653,11 @@ def test_stage75_selector_explicit_invalid_provider_override_fails_closed():
     assert simulation_gate["provider_selection_source"] == "explicit"
     assert simulation_gate["provider_selection_reason"] == "explicit_provider_unavailable"
     assert simulation_artifact["provider_name"] is None
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": [],
+        "resolution": "unresolved",
+        "selected_provider": None,
+    }
     assert simulation_artifact["provider_selection_source"] == "explicit"
     assert simulation_artifact["provider_selection_reason"] == "explicit_provider_unavailable"
     assert simulation_artifact["simulation_status"] == "indeterminate"
@@ -8656,6 +8697,11 @@ def test_stage75_selector_infers_infra_dry_run_only_for_clear_infra_candidates(m
     assert simulation_gate["provider_selection_source"] == "inferred"
     assert simulation_gate["provider_selection_reason"] == "infra_dry_run_applicable"
     assert simulation_artifact["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": ["infra_dry_run"],
+        "resolution": "inferred",
+        "selected_provider": "infra_dry_run",
+    }
     assert simulation_artifact["provider_selection_source"] == "inferred"
     assert simulation_artifact["provider_selection_reason"] == "infra_dry_run_applicable"
 
@@ -8691,9 +8737,118 @@ def test_stage75_selector_uses_workspace_artifact_when_existing_contract_is_appl
     assert simulation_gate["provider_selection_source"] == "inferred"
     assert simulation_gate["provider_selection_reason"] == "workspace_artifact_available"
     assert simulation_artifact["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": ["workspace_artifact"],
+        "resolution": "inferred",
+        "selected_provider": "workspace_artifact",
+    }
     assert simulation_artifact["provider_selection_source"] == "inferred"
     assert simulation_artifact["provider_selection_reason"] == "workspace_artifact_available"
     assert simulation_artifact["simulation_status"] == "pass"
+
+
+def test_stage75_selector_resolves_multiple_applicable_providers_via_deterministic_precedence(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_selector_precedence")
+    prepared_file_plan = _infra_file_plan()
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="pass",
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_gate["provider_selection_source"] == "inferred"
+    assert simulation_gate["provider_selection_reason"] == "provider_precedence_resolved"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": ["infra_dry_run", "workspace_artifact"],
+        "resolution": "inferred",
+        "selected_provider": "workspace_artifact",
+    }
+    assert simulation_artifact["simulation_status"] == "pass"
+
+
+def test_stage75_selector_fails_closed_on_multiple_applicable_providers_without_precedence(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_selector_conflict")
+    prepared_file_plan = _infra_file_plan()
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose, "_SIMULATION_PROVIDER_PRECEDENCE", ())
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="pass",
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_resolution_status"] == "unresolved"
+    assert simulation_gate["provider_selection_source"] == "unresolved"
+    assert simulation_gate["provider_selection_reason"] == "simulation_provider_conflict"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": ["infra_dry_run", "workspace_artifact"],
+        "resolution": "conflict",
+        "selected_provider": None,
+    }
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "simulation_provider_conflict"
 
 
 def test_stage75_selector_returns_unresolved_when_no_provider_path_is_applicable(monkeypatch):
@@ -8723,6 +8878,11 @@ def test_stage75_selector_returns_unresolved_when_no_provider_path_is_applicable
     assert simulation_gate["provider_selection_source"] == "unresolved"
     assert simulation_gate["provider_selection_reason"] == "simulation_provider_unresolved"
     assert simulation_artifact["provider_name"] is None
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": [],
+        "resolution": "unresolved",
+        "selected_provider": None,
+    }
     assert simulation_artifact["provider_selection_source"] == "unresolved"
     assert simulation_artifact["provider_selection_reason"] == "simulation_provider_unresolved"
     assert simulation_artifact["simulation_status"] == "indeterminate"

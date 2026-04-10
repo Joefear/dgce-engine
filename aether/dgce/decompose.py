@@ -179,6 +179,7 @@ class SectionSimulationInput(BaseModel):
     provider_name: str | None = None
     provider_selection_reason: str | None = None
     provider_selection_source: str | None = None
+    provider_applicability: dict[str, Any] | None = None
     simulation_source: str = "external"
     simulation_timestamp: str = "1970-01-01T00:00:00Z"
 
@@ -2748,6 +2749,32 @@ def _validate_simulation_record_schema(payload: Any) -> None:
             _schema_error(artifact_name, f"findings[{index}].summary must not be empty")
     _expect_optional_str(_expect_required_field(artifact, "indeterminate_reason", artifact_name), artifact_name, "indeterminate_reason")
     _expect_optional_str(_expect_required_field(artifact, "provider_name", artifact_name), artifact_name, "provider_name")
+    provider_applicability = _expect_dict(
+        _expect_required_field(artifact, "provider_applicability", artifact_name),
+        artifact_name,
+        "provider_applicability",
+    )
+    applicable_providers = _expect_list(
+        _expect_required_field(provider_applicability, "applicable_providers", artifact_name),
+        artifact_name,
+        "provider_applicability.applicable_providers",
+    )
+    for index, provider_name in enumerate(applicable_providers):
+        _expect_str(provider_name, artifact_name, f"provider_applicability.applicable_providers[{index}]")
+        if _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(provider_name) is None:
+            _schema_error(artifact_name, f"provider_applicability.applicable_providers[{index}] must be a valid provider identifier")
+    _expect_optional_str(
+        _expect_required_field(provider_applicability, "selected_provider", artifact_name),
+        artifact_name,
+        "provider_applicability.selected_provider",
+    )
+    _expect_str(
+        _expect_required_field(provider_applicability, "resolution", artifact_name),
+        artifact_name,
+        "provider_applicability.resolution",
+    )
+    if set(provider_applicability.keys()) != {"applicable_providers", "resolution", "selected_provider"}:
+        _schema_error(artifact_name, "provider_applicability must contain only applicable_providers, selected_provider, and resolution")
     _expect_optional_str(
         _expect_required_field(artifact, "provider_selection_reason", artifact_name),
         artifact_name,
@@ -2770,6 +2797,17 @@ def _validate_simulation_record_schema(payload: Any) -> None:
         artifact["provider_selection_source"] not in _ALLOWED_SIMULATION_PROVIDER_SELECTION_SOURCES
     ):
         _schema_error(artifact_name, "provider_selection_source must be a supported Stage 7.5 provider selection source")
+    if provider_applicability["resolution"] not in _ALLOWED_SIMULATION_PROVIDER_APPLICABILITY_RESOLUTIONS:
+        _schema_error(artifact_name, "provider_applicability.resolution must be a supported applicability resolution")
+    if applicable_providers != sorted(set(applicable_providers)):
+        _schema_error(artifact_name, "provider_applicability.applicable_providers must be unique and deterministically ordered")
+    selected_provider = provider_applicability["selected_provider"]
+    if selected_provider is not None and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(selected_provider) is None:
+        _schema_error(artifact_name, "provider_applicability.selected_provider must be a valid provider identifier")
+    if provider_applicability["resolution"] in {"conflict", "unresolved"} and selected_provider is not None:
+        _schema_error(artifact_name, "provider_applicability.selected_provider must be null when resolution is conflict or unresolved")
+    if provider_applicability["resolution"] in {"explicit", "inferred"} and selected_provider not in applicable_providers:
+        _schema_error(artifact_name, "provider_applicability.selected_provider must appear in applicable_providers when resolution is explicit or inferred")
     if artifact["simulation_status"] not in _ALLOWED_SIMULATION_STATUSES:
         _schema_error(artifact_name, "simulation_status must be pass, fail, or indeterminate")
     if artifact["reason_code"] not in _ALLOWED_SIMULATION_REASON_CODES:
@@ -5518,10 +5556,18 @@ _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
     "preview_artifact_missing",
     "provider_exception",
     "provider_unavailable",
+    "simulation_provider_conflict",
     "simulation_provider_unresolved",
     "simulation_result_missing",
 }
 _ALLOWED_SIMULATION_PROVIDER_SELECTION_SOURCES = {"explicit", "inferred", "not_applicable", "unresolved"}
+_ALLOWED_SIMULATION_PROVIDER_APPLICABILITY_RESOLUTIONS = {
+    "conflict",
+    "explicit",
+    "forced_override",
+    "inferred",
+    "unresolved",
+}
 _ALLOWED_SIMULATION_REASON_CODES = {
     "artifact_invalid",
     "artifact_missing",
@@ -5532,6 +5578,7 @@ _ALLOWED_SIMULATION_REASON_CODES = {
     "provider_exception",
     "provider_unavailable",
     "simulation_fail",
+    "simulation_provider_conflict",
     "simulation_pass",
     "simulation_provider_unresolved",
     "simulation_result_missing",
@@ -5547,6 +5594,7 @@ _SIMULATION_REASON_SUMMARIES = {
     "provider_unavailable": "Selected provider was required but unavailable.",
     "simulation_fail": "Simulation produced concrete blocking findings.",
     "simulation_pass": "Simulation completed without blocking findings.",
+    "simulation_provider_conflict": "Multiple applicable simulation providers could not be resolved safely.",
     "simulation_provider_unresolved": "No applicable simulation provider could be resolved.",
     "simulation_result_missing": "Simulation result artifact was missing.",
 }
@@ -5576,6 +5624,7 @@ _SIMULATION_RECORD_ALLOWED_FIELDS = {
     "generated_by",
     "indeterminate_reason",
     "provider_name",
+    "provider_applicability",
     "provider_selection_reason",
     "provider_selection_source",
     "reason_code",
@@ -5590,6 +5639,7 @@ _SIMULATION_RECORD_ALLOWED_FIELDS = {
 _SIMULATION_FINDING_ALLOWED_FIELDS = {"code", "summary", "target"}
 _SIMULATION_PROVIDER_REGISTRY: dict[str, SimulationProviderCallable] = {}
 _SIMULATION_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+_SIMULATION_PROVIDER_PRECEDENCE = ("workspace_artifact", "infra_dry_run")
 _INFRA_DRY_RUN_PROVIDER_NAME = "infra_dry_run"
 _INFRA_DRY_RUN_PATH_PARTS = {
     "deploy",
@@ -5783,6 +5833,59 @@ def _build_simulation_trigger_artifact(
     return payload
 
 
+def _normalize_provider_applicability_metadata(
+    provider_applicability: dict[str, Any] | None,
+    *,
+    provider_name: str | None,
+    provider_selection_reason: str | None,
+    provider_selection_source: str | None,
+) -> dict[str, Any]:
+    payload = dict(provider_applicability or {})
+    raw_applicable_providers = payload.get("applicable_providers")
+    applicable_provider_items = raw_applicable_providers if isinstance(raw_applicable_providers, list) else []
+    applicable_providers = sorted(
+        {
+            str(name).strip()
+            for name in applicable_provider_items
+            if isinstance(name, str)
+            and str(name).strip()
+            and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(str(name).strip()) is not None
+        }
+    )
+    selected_provider = payload.get("selected_provider")
+    normalized_selected_provider = (
+        str(selected_provider).strip()
+        if isinstance(selected_provider, str)
+        and str(selected_provider).strip()
+        and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(str(selected_provider).strip()) is not None
+        else None
+    )
+    if normalized_selected_provider is None and provider_name is not None:
+        normalized_provider_name = str(provider_name).strip()
+        normalized_selected_provider = normalized_provider_name or None
+    resolution = payload.get("resolution")
+    if resolution not in _ALLOWED_SIMULATION_PROVIDER_APPLICABILITY_RESOLUTIONS:
+        if provider_selection_reason == "forced_override":
+            resolution = "forced_override"
+        elif provider_selection_source == "explicit" and normalized_selected_provider is not None:
+            resolution = "explicit"
+        elif provider_selection_source == "inferred" and normalized_selected_provider is not None:
+            resolution = "inferred"
+        elif provider_selection_reason == "simulation_provider_conflict":
+            resolution = "conflict"
+        else:
+            resolution = "unresolved"
+    if normalized_selected_provider is not None and resolution in {"explicit", "inferred"}:
+        applicable_providers = sorted(set(applicable_providers) | {normalized_selected_provider})
+    if resolution in {"conflict", "unresolved"}:
+        normalized_selected_provider = None
+    return {
+        "applicable_providers": applicable_providers,
+        "resolution": resolution,
+        "selected_provider": normalized_selected_provider,
+    }
+
+
 def _build_simulation_artifact(
     workspace_root: Path,
     section_id: str,
@@ -5795,6 +5898,12 @@ def _build_simulation_artifact(
     findings = _normalize_simulation_findings(simulation_input.findings)
     indeterminate_reason = (
         None if simulation_input.indeterminate_reason is None else str(simulation_input.indeterminate_reason).strip()
+    )
+    provider_applicability = _normalize_provider_applicability_metadata(
+        simulation_input.provider_applicability,
+        provider_name=simulation_input.provider_name,
+        provider_selection_reason=simulation_input.provider_selection_reason,
+        provider_selection_source=simulation_input.provider_selection_source,
     )
     reason_code, reason_summary = _normalize_simulation_reason_fields(
         simulation_status=simulation_status,
@@ -5826,6 +5935,7 @@ def _build_simulation_artifact(
             "provider_name": (
                 None if simulation_input.provider_name is None else str(simulation_input.provider_name).strip() or None
             ),
+            "provider_applicability": provider_applicability,
             "provider_selection_reason": (
                 None
                 if simulation_input.provider_selection_reason is None
@@ -5859,52 +5969,11 @@ def _load_valid_simulation_artifact(workspace_root: Path, section_id: str) -> di
         return None
     if not verify_artifact_fingerprint(simulation_path):
         return None
-    if str(payload.get("artifact_type")) != "simulation_record":
-        return None
-    if str(payload.get("contract_version")) != "dgce.simulation_record.v1":
+    try:
+        _validate_simulation_record_schema(payload)
+    except ValueError:
         return None
     if str(payload.get("section_id")) != section_id:
-        return None
-    if set(payload.keys()) != _SIMULATION_RECORD_ALLOWED_FIELDS:
-        return None
-    simulation_status = str(payload.get("simulation_status"))
-    if simulation_status not in _ALLOWED_SIMULATION_STATUSES:
-        return None
-    findings = payload.get("findings")
-    if not _are_valid_simulation_findings(findings):
-        return None
-    indeterminate_reason = payload.get("indeterminate_reason")
-    if indeterminate_reason is not None and not isinstance(indeterminate_reason, str):
-        return None
-    if payload.get("provider_name") is not None and not isinstance(payload.get("provider_name"), str):
-        return None
-    if payload.get("provider_selection_reason") is not None and not isinstance(payload.get("provider_selection_reason"), str):
-        return None
-    if payload.get("provider_selection_source") is not None and (
-        not isinstance(payload.get("provider_selection_source"), str)
-        or payload.get("provider_selection_source") not in _ALLOWED_SIMULATION_PROVIDER_SELECTION_SOURCES
-    ):
-        return None
-    reason_code = payload.get("reason_code")
-    reason_summary = payload.get("reason_summary")
-    if not isinstance(reason_code, str) or reason_code not in _ALLOWED_SIMULATION_REASON_CODES:
-        return None
-    if not isinstance(reason_summary, str) or not reason_summary.strip():
-        return None
-    expected_reason_code, expected_reason_summary = _normalize_simulation_reason_fields(
-        simulation_status=simulation_status,
-        findings=findings,
-        indeterminate_reason=indeterminate_reason,
-    )
-    if reason_code != expected_reason_code or reason_summary != expected_reason_summary:
-        return None
-    if simulation_status == "pass" and (findings or indeterminate_reason is not None):
-        return None
-    if simulation_status == "fail" and (not findings or indeterminate_reason is not None):
-        return None
-    if simulation_status == "indeterminate" and (
-        findings or indeterminate_reason not in _ALLOWED_SIMULATION_INDETERMINATE_REASONS
-    ):
         return None
     return payload
 
@@ -6202,7 +6271,119 @@ def _is_infra_dry_run_applicable(workspace_root: Path, section_id: str) -> bool:
 
 
 def _is_workspace_artifact_provider_applicable(workspace_root: Path, section_id: str) -> bool:
-    return _load_valid_simulation_artifact(workspace_root, section_id) is not None
+    return _load_workspace_artifact_provider_source(workspace_root, section_id)[0] == "ok"
+
+
+def _evaluate_simulation_provider_applicability(
+    workspace_root: Path,
+    section_id: str,
+    simulation_trigger_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    requested_provider = simulation_trigger_artifact.get("simulation_provider")
+    explicit_provider = None if requested_provider is None else str(requested_provider).strip() or None
+    applicable_providers = sorted(
+        provider_name
+        for provider_name, is_applicable in (
+            ("workspace_artifact", _is_workspace_artifact_provider_applicable(workspace_root, section_id)),
+            (_INFRA_DRY_RUN_PROVIDER_NAME, _is_infra_dry_run_applicable(workspace_root, section_id)),
+        )
+        if is_applicable
+    )
+
+    if explicit_provider is not None:
+        if _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(explicit_provider) is None:
+            return {
+                "applicable_providers": applicable_providers,
+                "explicit_provider": explicit_provider,
+                "provider_name": None,
+                "resolution": "unresolved",
+                "resolution_outcome": "unresolved",
+                "selection_reason": "explicit_provider_invalid",
+                "selection_source": "explicit",
+                "selection_status": "unresolved",
+            }
+        if explicit_provider not in _SIMULATION_PROVIDER_REGISTRY:
+            return {
+                "applicable_providers": applicable_providers,
+                "explicit_provider": explicit_provider,
+                "provider_name": None,
+                "resolution": "unresolved",
+                "resolution_outcome": "unresolved",
+                "selection_reason": "explicit_provider_unavailable",
+                "selection_source": "explicit",
+                "selection_status": "unresolved",
+            }
+        return {
+            "applicable_providers": applicable_providers,
+            "explicit_provider": explicit_provider,
+            "provider_name": explicit_provider,
+            "resolution": "explicit" if explicit_provider in applicable_providers else "forced_override",
+            "resolution_outcome": "selected",
+            "selection_reason": "explicit_provider_selected" if explicit_provider in applicable_providers else "forced_override",
+            "selection_source": "explicit",
+            "selection_status": "selected",
+        }
+
+    if not applicable_providers:
+        return {
+            "applicable_providers": [],
+            "explicit_provider": None,
+            "provider_name": None,
+            "resolution": "unresolved",
+            "resolution_outcome": "unresolved",
+            "selection_reason": "simulation_provider_unresolved",
+            "selection_source": "unresolved",
+            "selection_status": "unresolved",
+        }
+
+    if len(applicable_providers) == 1:
+        selected_provider = applicable_providers[0]
+        return {
+            "applicable_providers": applicable_providers,
+            "explicit_provider": None,
+            "provider_name": selected_provider,
+            "resolution": "inferred",
+            "resolution_outcome": "selected",
+            "selection_reason": (
+                "infra_dry_run_applicable"
+                if selected_provider == _INFRA_DRY_RUN_PROVIDER_NAME
+                else "workspace_artifact_available"
+            ),
+            "selection_source": "inferred",
+            "selection_status": "selected",
+        }
+
+    precedence_candidates = [provider_name for provider_name in _SIMULATION_PROVIDER_PRECEDENCE if provider_name in applicable_providers]
+    if precedence_candidates and len(precedence_candidates) == len(applicable_providers):
+        return {
+            "applicable_providers": applicable_providers,
+            "explicit_provider": None,
+            "provider_name": precedence_candidates[0],
+            "resolution": "inferred",
+            "resolution_outcome": "selected",
+            "selection_reason": "provider_precedence_resolved",
+            "selection_source": "inferred",
+            "selection_status": "selected",
+        }
+
+    return {
+        "applicable_providers": applicable_providers,
+        "explicit_provider": None,
+        "provider_name": None,
+        "resolution": "conflict",
+        "resolution_outcome": "conflict",
+        "selection_reason": "simulation_provider_conflict",
+        "selection_source": "unresolved",
+        "selection_status": "unresolved",
+    }
+
+
+def _provider_applicability_metadata(provider_selection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "applicable_providers": list(provider_selection.get("applicable_providers", [])),
+        "selected_provider": provider_selection.get("provider_name"),
+        "resolution": provider_selection.get("resolution", "unresolved"),
+    }
 
 
 def _select_stage75_simulation_provider(
@@ -6212,60 +6393,16 @@ def _select_stage75_simulation_provider(
 ) -> dict[str, Any]:
     if not bool(simulation_trigger_artifact.get("simulation_triggered")):
         return {
+            "applicable_providers": [],
+            "explicit_provider": None,
             "provider_name": None,
+            "resolution": "unresolved",
+            "resolution_outcome": "unresolved",
             "selection_reason": "simulation_not_triggered",
             "selection_source": "not_applicable",
             "selection_status": "not_applicable",
         }
-
-    requested_provider = simulation_trigger_artifact.get("simulation_provider")
-    normalized_requested_provider = (
-        None if requested_provider is None else str(requested_provider).strip() or None
-    )
-    if normalized_requested_provider is not None:
-        if _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(normalized_requested_provider) is None:
-            return {
-                "provider_name": None,
-                "selection_reason": "explicit_provider_invalid",
-                "selection_source": "explicit",
-                "selection_status": "unresolved",
-            }
-        if normalized_requested_provider in _SIMULATION_PROVIDER_REGISTRY:
-            return {
-                "provider_name": normalized_requested_provider,
-                "selection_reason": "explicit_provider_selected",
-                "selection_source": "explicit",
-                "selection_status": "selected",
-            }
-        return {
-            "provider_name": None,
-            "selection_reason": "explicit_provider_unavailable",
-            "selection_source": "explicit",
-            "selection_status": "unresolved",
-        }
-
-    if _is_infra_dry_run_applicable(workspace_root, section_id):
-        return {
-            "provider_name": _INFRA_DRY_RUN_PROVIDER_NAME,
-            "selection_reason": "infra_dry_run_applicable",
-            "selection_source": "inferred",
-            "selection_status": "selected",
-        }
-
-    if _is_workspace_artifact_provider_applicable(workspace_root, section_id):
-        return {
-            "provider_name": "workspace_artifact",
-            "selection_reason": "workspace_artifact_available",
-            "selection_source": "inferred",
-            "selection_status": "selected",
-        }
-
-    return {
-        "provider_name": None,
-        "selection_reason": "simulation_provider_unresolved",
-        "selection_source": "unresolved",
-        "selection_status": "unresolved",
-    }
+    return _evaluate_simulation_provider_applicability(workspace_root, section_id, simulation_trigger_artifact)
 
 
 def _execute_stage75_simulation_provider(
@@ -6294,6 +6431,11 @@ def _execute_stage75_simulation_provider(
     provider_selection = _select_stage75_simulation_provider(workspace_root, section_id, simulation_trigger_artifact)
     provider_name = provider_selection["provider_name"]
     if provider_selection["selection_status"] == "unresolved":
+        indeterminate_reason = (
+            "simulation_provider_conflict"
+            if provider_selection["selection_reason"] == "simulation_provider_conflict"
+            else "simulation_provider_unresolved"
+        )
         simulation_artifact = _write_json_with_artifact_fingerprint(
             workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
             _build_simulation_artifact(
@@ -6301,8 +6443,9 @@ def _execute_stage75_simulation_provider(
                 section_id,
                 simulation_input=SectionSimulationInput(
                     simulation_status="indeterminate",
-                    indeterminate_reason="simulation_provider_unresolved",
+                    indeterminate_reason=indeterminate_reason,
                     provider_name=None,
+                    provider_applicability=_provider_applicability_metadata(provider_selection),
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_selection",
@@ -6341,6 +6484,7 @@ def _execute_stage75_simulation_provider(
                     simulation_status="indeterminate",
                     indeterminate_reason="provider_unavailable",
                     provider_name=provider_name,
+                    provider_applicability=_provider_applicability_metadata(provider_selection),
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_registry",
@@ -6381,6 +6525,7 @@ def _execute_stage75_simulation_provider(
                     simulation_status="indeterminate",
                     indeterminate_reason="provider_exception",
                     provider_name=provider_name,
+                    provider_applicability=_provider_applicability_metadata(provider_selection),
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_execution",
@@ -6415,6 +6560,7 @@ def _execute_stage75_simulation_provider(
                     findings=list(provider_response_payload.get("findings", [])),
                     indeterminate_reason=provider_response_payload.get("indeterminate_reason"),
                     provider_name=provider_name,
+                    provider_applicability=_provider_applicability_metadata(provider_selection),
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_execution",
@@ -6432,6 +6578,7 @@ def _execute_stage75_simulation_provider(
                     simulation_status="indeterminate",
                     indeterminate_reason="invalid_provider_response",
                     provider_name=provider_name,
+                    provider_applicability=_provider_applicability_metadata(provider_selection),
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_execution",
