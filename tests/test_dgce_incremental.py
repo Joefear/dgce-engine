@@ -230,6 +230,17 @@ def _expected_section_summary(
         "latest_stage_status": latest_stage_status,
         "review_status": review_status,
         "section_id": section_id,
+        "simulation": {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": None,
+            "reason_code": None,
+            "reason_summary": None,
+            "simulation_provider": None,
+            "simulation_stage_applicable": False,
+            "simulation_status": None,
+            "simulation_triggered": False,
+        },
         "summary_sources": {
             "approval_status": "approval" if approval_status is not None else None,
             "latest_decision": (
@@ -242,7 +253,22 @@ def _expected_section_summary(
             "latest_stage": "lifecycle_trace",
             "latest_stage_status": "lifecycle_trace",
             "review_status": "review" if review_status is not None else None,
+            "simulation": None,
         },
+    }
+
+
+def _explicit_non_triggered_simulation_projection(simulation_provider=None):
+    return {
+        "findings_count": 0,
+        "finding_codes": [],
+        "provider_selection_source": "not_applicable",
+        "reason_code": None,
+        "reason_summary": None,
+        "simulation_provider": simulation_provider,
+        "simulation_stage_applicable": True,
+        "simulation_status": "skipped",
+        "simulation_triggered": False,
     }
 
 
@@ -321,6 +347,15 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "summary.approval_status_counts",
                 "summary.current_stage_counts",
                 "summary.review_status_counts",
@@ -363,6 +398,15 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -423,6 +467,15 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "sections[].navigation_links",
                 "summary.sections_with_approval",
                 "summary.sections_with_execution",
@@ -457,6 +510,15 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -548,6 +610,15 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["reporting", "sdk"],
@@ -8389,6 +8460,139 @@ def test_stage_7_5_artifact_exposure_remains_stable(monkeypatch):
     } in artifact_manifest["artifacts"]
 
 
+def test_stage_7_5_projection_shows_triggered_pass_in_workspace_views(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_stage75_projection_pass")
+
+    def passing_provider(_request):
+        return {"simulation_status": "pass", "findings": []}
+
+    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", passing_provider)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+    section_summary = next(entry for entry in dashboard["sections"] if entry["section_id"] == "mission-board")["section_summary"]
+    assert section_summary["simulation"] == {
+        "findings_count": 0,
+        "finding_codes": [],
+        "provider_selection_source": "explicit",
+        "reason_code": "simulation_pass",
+        "reason_summary": "Simulation completed without blocking findings.",
+        "simulation_provider": "workspace_artifact",
+        "simulation_stage_applicable": True,
+        "simulation_status": "pass",
+        "simulation_triggered": True,
+    }
+
+
+def test_stage_7_5_projection_shows_triggered_fail_with_compact_findings(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_stage75_projection_fail")
+
+    def failing_provider(_request):
+        return {
+            "simulation_status": "fail",
+            "findings": [
+                {"code": "second_code", "summary": "Second finding.", "target": "b.txt"},
+                {"code": "first_code", "summary": "First finding.", "target": "a.txt"},
+                {"code": "first_code", "summary": "First finding duplicate code.", "target": "c.txt"},
+            ],
+        }
+
+    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", failing_provider)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+    section_summary = next(entry for entry in workspace_summary["sections"] if entry["section_id"] == "mission-board")["section_summary"]
+    assert section_summary["simulation"] == {
+        "findings_count": 3,
+        "finding_codes": ["first_code", "second_code"],
+        "provider_selection_source": "explicit",
+        "reason_code": "simulation_fail",
+        "reason_summary": "Simulation produced concrete blocking findings.",
+        "simulation_provider": "workspace_artifact",
+        "simulation_stage_applicable": True,
+        "simulation_status": "fail",
+        "simulation_triggered": True,
+    }
+
+
+def test_stage_7_5_projection_shows_triggered_indeterminate_reason_fields():
+    project_root = _workspace_dir("dgce_incremental_stage75_projection_indeterminate")
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+    section_summary = next(entry for entry in workspace_index["sections"] if entry["section_id"] == "mission-board")["section_summary"]
+    assert section_summary["simulation"] == {
+        "findings_count": 0,
+        "finding_codes": [],
+        "provider_selection_source": "explicit",
+        "reason_code": "infra_candidate_absent",
+        "reason_summary": "No actionable infrastructure dry-run candidate was present.",
+        "simulation_provider": "infra_dry_run",
+        "simulation_stage_applicable": True,
+        "simulation_status": "indeterminate",
+        "simulation_triggered": True,
+    }
+
+
+def test_stage_7_5_projection_keeps_non_triggered_case_explicit():
+    project_root = _workspace_dir("dgce_incremental_stage75_projection_not_triggered")
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=False,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    section_summary = next(entry for entry in review_index["sections"] if entry["section_id"] == "mission-board")["section_summary"]
+    assert section_summary["simulation"] == {
+        "findings_count": 0,
+        "finding_codes": [],
+        "provider_selection_source": "not_applicable",
+        "reason_code": None,
+        "reason_summary": None,
+        "simulation_provider": "infra_dry_run",
+        "simulation_stage_applicable": True,
+        "simulation_status": "skipped",
+        "simulation_triggered": False,
+    }
+
+
 def test_run_section_with_workspace_alignment_outputs_are_deterministic(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     first_root = _workspace_dir("dgce_incremental_v2_7_repeat_a")
@@ -9254,15 +9458,30 @@ def test_dashboard_artifact_is_deterministic_for_repeated_governed_runs(monkeypa
                 },
                 "review_status": "review_available",
                 "section_id": "mission-board",
-                "section_summary": _expected_section_summary(
-                    section_id="mission-board",
-                    approval_status="superseded",
-                    decision_source="approval",
-                    latest_decision="create_only",
-                    latest_stage="outputs",
-                    latest_stage_status="success_create_only",
-                    review_status="review_available",
-                ),
+                "section_summary": {
+                    **_expected_section_summary(
+                        section_id="mission-board",
+                        approval_status="superseded",
+                        decision_source="approval",
+                        latest_decision="create_only",
+                        latest_stage="outputs",
+                        latest_stage_status="success_create_only",
+                        review_status="review_available",
+                    ),
+                    "simulation": _explicit_non_triggered_simulation_projection(),
+                    "summary_sources": {
+                        **_expected_section_summary(
+                            section_id="mission-board",
+                            approval_status="superseded",
+                            decision_source="approval",
+                            latest_decision="create_only",
+                            latest_stage="outputs",
+                            latest_stage_status="success_create_only",
+                            review_status="review_available",
+                        )["summary_sources"],
+                        "simulation": "simulation_trigger_record",
+                    },
+                },
                 "stage_status": "success_create_only",
             }
         ],
@@ -10165,15 +10384,30 @@ def test_run_section_with_workspace_workspace_index_is_deterministic_and_governe
     assert section_entry["latest_stage"] == "outputs"
     assert section_entry["latest_stage_status"] == "success_create_only"
     assert section_entry["latest_run_outcome_class"] == "success_create_only"
-    assert section_entry["section_summary"] == _expected_section_summary(
-        section_id="mission-board",
-        approval_status="superseded",
-        decision_source="approval",
-        latest_decision="create_only",
-        latest_stage="outputs",
-        latest_stage_status="success_create_only",
-        review_status="review_available",
-    )
+    assert section_entry["section_summary"] == {
+        **_expected_section_summary(
+            section_id="mission-board",
+            approval_status="superseded",
+            decision_source="approval",
+            latest_decision="create_only",
+            latest_stage="outputs",
+            latest_stage_status="success_create_only",
+            review_status="review_available",
+        ),
+        "simulation": _explicit_non_triggered_simulation_projection(),
+        "summary_sources": {
+            **_expected_section_summary(
+                section_id="mission-board",
+                approval_status="superseded",
+                decision_source="approval",
+                latest_decision="create_only",
+                latest_stage="outputs",
+                latest_stage_status="success_create_only",
+                review_status="review_available",
+            )["summary_sources"],
+            "simulation": "simulation_trigger_record",
+        },
+    }
     assert [link["artifact_role"] for link in section_entry["artifact_links"]] == [
         "preview",
         "review",
@@ -10461,15 +10695,30 @@ def test_dashboard_artifact_has_stable_multi_section_ordering_and_summary_counts
         latest_stage="preview",
         latest_stage_status="preview_blocked_modify_disabled",
     )
-    assert mission_entry["section_summary"] == _expected_section_summary(
-        section_id="mission-board",
-        approval_status="superseded",
-        decision_source="approval",
-        latest_decision="create_only",
-        latest_stage="outputs",
-        latest_stage_status="success_create_only",
-        review_status="review_available",
-    )
+    assert mission_entry["section_summary"] == {
+        **_expected_section_summary(
+            section_id="mission-board",
+            approval_status="superseded",
+            decision_source="approval",
+            latest_decision="create_only",
+            latest_stage="outputs",
+            latest_stage_status="success_create_only",
+            review_status="review_available",
+        ),
+        "simulation": _explicit_non_triggered_simulation_projection(),
+        "summary_sources": {
+            **_expected_section_summary(
+                section_id="mission-board",
+                approval_status="superseded",
+                decision_source="approval",
+                latest_decision="create_only",
+                latest_stage="outputs",
+                latest_stage_status="success_create_only",
+                review_status="review_available",
+            )["summary_sources"],
+            "simulation": "simulation_trigger_record",
+        },
+    }
 
 
 def test_artifact_manifest_has_stable_multi_section_ordering_and_correct_entries(monkeypatch):

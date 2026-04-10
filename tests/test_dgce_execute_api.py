@@ -2451,6 +2451,17 @@ class TestDGCEExecuteAPI:
                     "execution_status": "success",
                 }
             ],
+            "simulation": {
+                "findings_count": 0,
+                "finding_codes": [],
+                "provider_selection_source": "not_applicable",
+                "reason_code": None,
+                "reason_summary": None,
+                "simulation_provider": None,
+                "simulation_stage_applicable": True,
+                "simulation_status": "skipped",
+                "simulation_triggered": False,
+            },
         }
 
     def test_get_section_summary_reflects_failing_check_ids_deterministically_when_tampered(self, monkeypatch):
@@ -2505,6 +2516,17 @@ class TestDGCEExecuteAPI:
             "failing_check_ids": [],
             "bundle_count": 0,
             "bundle_references": [],
+            "simulation": {
+                "findings_count": 0,
+                "finding_codes": [],
+                "provider_selection_source": None,
+                "reason_code": None,
+                "reason_summary": None,
+                "simulation_provider": None,
+                "simulation_stage_applicable": False,
+                "simulation_status": None,
+                "simulation_triggered": False,
+            },
         }
 
     def test_get_section_summary_returns_not_found_for_unknown_section(self, monkeypatch):
@@ -2710,6 +2732,7 @@ class TestDGCEExecuteAPI:
             "bundle_count": summary["bundle_count"],
             "latest_bundle_fingerprint": latest_bundle_fingerprint,
             "bundle_references": bundle_refs,
+            "simulation": summary["simulation"],
             "is_executable": False,
             "has_been_executed": True,
             "has_provenance_issues": False,
@@ -2768,6 +2791,17 @@ class TestDGCEExecuteAPI:
             "bundle_count": 0,
             "latest_bundle_fingerprint": None,
             "bundle_references": [],
+            "simulation": {
+                "findings_count": 0,
+                "finding_codes": [],
+                "provider_selection_source": None,
+                "reason_code": None,
+                "reason_summary": None,
+                "simulation_provider": None,
+                "simulation_stage_applicable": False,
+                "simulation_status": None,
+                "simulation_triggered": False,
+            },
             "is_executable": True,
             "has_been_executed": False,
             "has_provenance_issues": False,
@@ -2953,6 +2987,47 @@ class TestDGCEExecuteAPI:
             "bundle_count": overview["bundle_count"],
             "latest_bundle_fingerprint": overview["latest_bundle_fingerprint"],
             "bundle_references": overview["bundle_references"],
+            "simulation": summary["simulation"],
+        }
+
+    def test_get_section_summary_exposes_triggered_fail_simulation_projection(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_summary_stage75_fail")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        def failing_provider(_request):
+            return {
+                "simulation_status": "fail",
+                "findings": [
+                    {"code": "infra_modify_candidate", "summary": "Infrastructure dry-run detected a modify candidate.", "target": "deploy/docker-compose.yaml"}
+                ],
+            }
+
+        monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", failing_provider)
+        dgce_decompose.execute_reserved_simulation_gate(
+            project_root,
+            "mission-board",
+            require_preflight_pass=True,
+            simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+                simulation_triggered=True,
+                simulation_provider="workspace_artifact",
+                simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+            ),
+        )
+
+        response = _get_section_summary(client, project_root, "mission-board")
+
+        assert response.status_code == 200
+        assert response.json()["simulation"] == {
+            "findings_count": 1,
+            "finding_codes": ["infra_modify_candidate"],
+            "provider_selection_source": "explicit",
+            "reason_code": "simulation_fail",
+            "reason_summary": "Simulation produced concrete blocking findings.",
+            "simulation_provider": "workspace_artifact",
+            "simulation_stage_applicable": True,
+            "simulation_status": "fail",
+            "simulation_triggered": True,
         }
 
     def test_get_section_dashboard_health_is_warning_for_partial_grounded_section(self, monkeypatch):

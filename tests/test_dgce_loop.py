@@ -92,6 +92,17 @@ def _expected_section_summary(
         "latest_stage_status": latest_stage_status,
         "review_status": review_status,
         "section_id": section_id,
+        "simulation": {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": None,
+            "reason_code": None,
+            "reason_summary": None,
+            "simulation_provider": None,
+            "simulation_stage_applicable": False,
+            "simulation_status": None,
+            "simulation_triggered": False,
+        },
         "summary_sources": {
             "approval_status": "approval" if approval_status is not None else None,
             "latest_decision": (
@@ -104,6 +115,7 @@ def _expected_section_summary(
             "latest_stage": "lifecycle_trace",
             "latest_stage_status": "lifecycle_trace",
             "review_status": "review" if review_status is not None else None,
+            "simulation": None,
         },
     }
 

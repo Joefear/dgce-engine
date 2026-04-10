@@ -11,6 +11,9 @@ from aether.dgce import run_dgce_section
 from aether.dgce.decompose import (
     SectionAlignmentInput,
     _build_alignment_artifact,
+    _build_section_simulation_projection,
+    _ensure_workspace,
+    _load_section_artifacts,
     _write_json,
     compute_json_payload_fingerprint,
 )
@@ -747,6 +750,7 @@ def get_section_operator_summary(project_root: Path, section_id: str) -> dict[st
         for check in verification["checks"]
         if check["status"] == "fail"
     ]
+    simulation = _build_section_simulation_projection(_load_section_artifacts(_ensure_workspace(project_root)["root"], section_id))
     return {
         "section_id": section_id,
         "approval_present": provenance["approval"]["approval_path"] is not None,
@@ -769,6 +773,7 @@ def get_section_operator_summary(project_root: Path, section_id: str) -> dict[st
         "failing_check_ids": failing_check_ids,
         "bundle_count": len(bundle_references),
         "bundle_references": bundle_references,
+        "simulation": simulation,
     }
 
 
@@ -862,6 +867,7 @@ def get_section_operator_overview(project_root: Path, section_id: str) -> dict[s
         "bundle_count": summary["bundle_count"],
         "latest_bundle_fingerprint": latest_bundle_fingerprint,
         "bundle_references": list(summary["bundle_references"]),
+        "simulation": dict(summary["simulation"]),
         "is_executable": bool(summary["approval_present"] and summary["execution_permitted"] is True),
         "has_been_executed": bool(summary["execution_present"]),
         "has_provenance_issues": bool(summary["verification_failure_count"] > 0),
@@ -933,6 +939,7 @@ def get_section_operator_dashboard(project_root: Path, section_id: str) -> dict[
         "bundle_count": overview["bundle_count"],
         "latest_bundle_fingerprint": overview["latest_bundle_fingerprint"],
         "bundle_references": list(overview["bundle_references"]),
+        "simulation": dict(summary["simulation"]),
     }
 
 

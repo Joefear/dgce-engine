@@ -1521,6 +1521,77 @@ def _build_section_navigation_links(artifact_paths: dict[str, str | None]) -> li
     ]
 
 
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> dict[str, Any]:
+    artifact_paths = section_artifacts["artifact_paths"]
+    payloads = section_artifacts["payloads"]
+    simulation_trigger_present = artifact_paths.get("simulation_trigger_path") is not None
+    simulation_present = artifact_paths.get("simulation_path") is not None
+    simulation_trigger_payload = payloads.get("simulation_trigger_path", {})
+    simulation_payload = payloads.get("simulation_path", {})
+
+    findings = simulation_payload.get("findings", []) if isinstance(simulation_payload, dict) else []
+    finding_codes = _dedupe_preserving_order(
+        [
+            str(finding.get("code"))
+            for finding in findings
+            if isinstance(finding, dict) and isinstance(finding.get("code"), str) and str(finding.get("code")).strip()
+        ]
+    )
+
+    if simulation_present:
+        simulation_triggered_value = simulation_trigger_payload.get("simulation_triggered")
+        simulation_triggered = simulation_triggered_value if isinstance(simulation_triggered_value, bool) else True
+        return {
+            "findings_count": len(findings) if isinstance(findings, list) else 0,
+            "finding_codes": finding_codes,
+            "provider_selection_source": simulation_payload.get("provider_selection_source"),
+            "reason_code": simulation_payload.get("reason_code"),
+            "reason_summary": simulation_payload.get("reason_summary"),
+            "simulation_provider": simulation_payload.get("provider_name"),
+            "simulation_stage_applicable": True,
+            "simulation_status": simulation_payload.get("simulation_status"),
+            "simulation_triggered": simulation_triggered,
+        }
+
+    if simulation_trigger_present:
+        simulation_triggered = bool(simulation_trigger_payload.get("simulation_triggered"))
+        requested_provider = simulation_trigger_payload.get("simulation_provider")
+        return {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": "not_applicable" if not simulation_triggered else None,
+            "reason_code": None,
+            "reason_summary": None,
+            "simulation_provider": requested_provider if isinstance(requested_provider, str) else None,
+            "simulation_stage_applicable": True,
+            "simulation_status": "skipped" if not simulation_triggered else None,
+            "simulation_triggered": simulation_triggered,
+        }
+
+    return {
+        "findings_count": 0,
+        "finding_codes": [],
+        "provider_selection_source": None,
+        "reason_code": None,
+        "reason_summary": None,
+        "simulation_provider": None,
+        "simulation_stage_applicable": False,
+        "simulation_status": None,
+        "simulation_triggered": False,
+    }
+
+
 def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
     return [
         {
@@ -1557,6 +1628,15 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "summary.approval_status_counts",
                 "summary.current_stage_counts",
                 "summary.review_status_counts",
@@ -1597,6 +1677,15 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -1655,6 +1744,15 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "sections[].navigation_links",
                 "summary.sections_with_approval",
                 "summary.sections_with_execution",
@@ -1687,6 +1785,15 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -1774,6 +1881,15 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.latest_stage_status",
                 "sections[].section_summary.review_status",
                 "sections[].section_summary.section_id",
+                "sections[].section_summary.simulation.findings_count",
+                "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.reason_code",
+                "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.simulation_provider",
+                "sections[].section_summary.simulation.simulation_stage_applicable",
+                "sections[].section_summary.simulation.simulation_status",
+                "sections[].section_summary.simulation.simulation_triggered",
             ],
         },
     ]
@@ -1841,6 +1957,7 @@ def _build_section_convergence_summary(section_artifacts: dict[str, Any], trace_
     payloads = section_artifacts["payloads"]
     preview_payload = payloads["preview_path"]
     approval_payload = payloads["approval_path"]
+    simulation_projection = _build_section_simulation_projection(section_artifacts)
     present_entries = [entry for entry in trace_entries if entry["artifact_present"]]
     latest_entry = present_entries[-1] if present_entries else None
     latest_decision = approval_payload.get("selected_mode") or preview_payload.get("recommended_mode")
@@ -1856,6 +1973,7 @@ def _build_section_convergence_summary(section_artifacts: dict[str, Any], trace_
         "latest_stage_status": latest_entry["stage_status"] if latest_entry else None,
         "review_status": "review_available" if artifact_paths.get("review_path") is not None else None,
         "section_id": section_id,
+        "simulation": simulation_projection,
         "summary_sources": {
             "approval_status": "approval" if artifact_paths.get("approval_path") is not None else None,
             "latest_decision": (
@@ -1868,6 +1986,13 @@ def _build_section_convergence_summary(section_artifacts: dict[str, Any], trace_
             "latest_stage": "lifecycle_trace",
             "latest_stage_status": "lifecycle_trace",
             "review_status": "review" if artifact_paths.get("review_path") is not None else None,
+            "simulation": (
+                "simulation_record"
+                if artifact_paths.get("simulation_path") is not None
+                else "simulation_trigger_record"
+                if artifact_paths.get("simulation_trigger_path") is not None
+                else None
+            ),
         },
     }
 
@@ -1971,8 +2096,37 @@ def _validate_section_summary_schema(summary: Any, artifact_name: str, field_nam
     _expect_optional_str(_expect_required_field(payload, "latest_stage_status", artifact_name), artifact_name, f"{field_name}.latest_stage_status")
     _expect_optional_str(_expect_required_field(payload, "review_status", artifact_name), artifact_name, f"{field_name}.review_status")
     _expect_str(_expect_required_field(payload, "section_id", artifact_name), artifact_name, f"{field_name}.section_id")
+    simulation_projection = _expect_dict(_expect_required_field(payload, "simulation", artifact_name), artifact_name, f"{field_name}.simulation")
+    _expect_bool(
+        _expect_required_field(simulation_projection, "simulation_stage_applicable", artifact_name),
+        artifact_name,
+        f"{field_name}.simulation.simulation_stage_applicable",
+    )
+    _expect_bool(
+        _expect_required_field(simulation_projection, "simulation_triggered", artifact_name),
+        artifact_name,
+        f"{field_name}.simulation.simulation_triggered",
+    )
+    for key in ("simulation_status", "simulation_provider", "provider_selection_source", "reason_code", "reason_summary"):
+        _expect_optional_str(
+            _expect_required_field(simulation_projection, key, artifact_name),
+            artifact_name,
+            f"{field_name}.simulation.{key}",
+        )
+    _expect_int(
+        _expect_required_field(simulation_projection, "findings_count", artifact_name),
+        artifact_name,
+        f"{field_name}.simulation.findings_count",
+    )
+    finding_codes = _expect_list(
+        _expect_required_field(simulation_projection, "finding_codes", artifact_name),
+        artifact_name,
+        f"{field_name}.simulation.finding_codes",
+    )
+    for index, code in enumerate(finding_codes):
+        _expect_str(code, artifact_name, f"{field_name}.simulation.finding_codes[{index}]")
     summary_sources = _expect_dict(_expect_required_field(payload, "summary_sources", artifact_name), artifact_name, f"{field_name}.summary_sources")
-    for source_key in ("approval_status", "latest_decision", "latest_stage", "latest_stage_status", "review_status"):
+    for source_key in ("approval_status", "latest_decision", "latest_stage", "latest_stage_status", "review_status", "simulation"):
         _expect_optional_str(_expect_required_field(summary_sources, source_key, artifact_name), artifact_name, f"{field_name}.summary_sources.{source_key}")
 
 
