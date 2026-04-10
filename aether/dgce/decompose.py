@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -5551,6 +5552,10 @@ _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
     "artifact_invalid",
     "artifact_missing",
     "dry_run_input_missing",
+    "external_command_input_missing",
+    "external_command_parse_error",
+    "external_command_timeout",
+    "external_command_unavailable",
     "infra_candidate_absent",
     "invalid_provider_response",
     "preview_artifact_missing",
@@ -5572,6 +5577,10 @@ _ALLOWED_SIMULATION_REASON_CODES = {
     "artifact_invalid",
     "artifact_missing",
     "dry_run_input_missing",
+    "external_command_input_missing",
+    "external_command_parse_error",
+    "external_command_timeout",
+    "external_command_unavailable",
     "infra_candidate_absent",
     "invalid_provider_response",
     "preview_artifact_missing",
@@ -5587,6 +5596,10 @@ _SIMULATION_REASON_SUMMARIES = {
     "artifact_invalid": "Workspace artifact provider input was invalid or failed verification.",
     "artifact_missing": "Workspace artifact provider input was missing.",
     "dry_run_input_missing": "Dry-run modeling input was missing or malformed.",
+    "external_command_input_missing": "Allowlisted external dry-run inputs were missing or unsupported.",
+    "external_command_parse_error": "Allowlisted external dry-run output could not be interpreted safely.",
+    "external_command_timeout": "Allowlisted external dry-run command timed out before producing reliable evidence.",
+    "external_command_unavailable": "Allowlisted external dry-run command was unavailable on this machine.",
     "infra_candidate_absent": "No actionable infrastructure dry-run candidate was present.",
     "invalid_provider_response": "Provider response could not be normalized into the sealed simulation evidence contract.",
     "preview_artifact_missing": "Preview artifact required for simulation modeling was missing.",
@@ -5639,8 +5652,10 @@ _SIMULATION_RECORD_ALLOWED_FIELDS = {
 _SIMULATION_FINDING_ALLOWED_FIELDS = {"code", "summary", "target"}
 _SIMULATION_PROVIDER_REGISTRY: dict[str, SimulationProviderCallable] = {}
 _SIMULATION_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
-_SIMULATION_PROVIDER_PRECEDENCE = ("workspace_artifact", "infra_dry_run")
+_SIMULATION_PROVIDER_PRECEDENCE = ("workspace_artifact", "infra_dry_run", "external_dry_run")
 _INFRA_DRY_RUN_PROVIDER_NAME = "infra_dry_run"
+_EXTERNAL_DRY_RUN_PROVIDER_NAME = "external_dry_run"
+_EXTERNAL_DRY_RUN_TIMEOUT_SECONDS = 5
 _INFRA_DRY_RUN_PATH_PARTS = {
     "deploy",
     "deployment",
@@ -5675,6 +5690,12 @@ _DEPLOYMENT_ARTIFACT_PATH_PARTS = {
 _RUNTIME_CONTROL_PATH_PARTS = {"systemd"}
 _RUNTIME_CONTROL_FILENAMES: set[str] = set()
 _RUNTIME_CONTROL_SUFFIXES = {".service"}
+_DOCKER_COMPOSE_FILENAMES = {
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+}
 
 
 def _default_workspace_artifact_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
@@ -5693,6 +5714,14 @@ def _default_infra_dry_run_provider(_request: Stage75SimulationProviderRequest) 
     }
 
 
+def _default_external_dry_run_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
+    return {
+        "findings": [],
+        "indeterminate_reason": "external_command_unavailable",
+        "simulation_status": "indeterminate",
+    }
+
+
 def register_stage75_simulation_provider(name: str, provider: SimulationProviderCallable) -> None:
     normalized_name = str(name).strip()
     if not normalized_name or _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(normalized_name) is None:
@@ -5706,6 +5735,7 @@ def unregister_stage75_simulation_provider(name: str) -> None:
 
 _SIMULATION_PROVIDER_REGISTRY["workspace_artifact"] = _default_workspace_artifact_provider
 _SIMULATION_PROVIDER_REGISTRY[_INFRA_DRY_RUN_PROVIDER_NAME] = _default_infra_dry_run_provider
+_SIMULATION_PROVIDER_REGISTRY[_EXTERNAL_DRY_RUN_PROVIDER_NAME] = _default_external_dry_run_provider
 
 
 def _ordered_simulation_trigger_reason_codes(reason_codes: list[str]) -> list[str]:
@@ -6188,6 +6218,114 @@ def _is_infra_dry_run_candidate_path(path_value: Any) -> bool:
     return False
 
 
+def _is_external_dry_run_candidate_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    return Path(normalized_path).name.lower() in _DOCKER_COMPOSE_FILENAMES
+
+
+def _external_dry_run_target_path(workspace_root: Path, section_id: str) -> Path | None:
+    preview_payload = _load_preview_artifact_for_stage75_provider(workspace_root, section_id)
+    if preview_payload is None:
+        return None
+    project_root = workspace_root.parent
+    previews = preview_payload.get("previews", [])
+    if not isinstance(previews, list):
+        return None
+    for entry in sorted(previews, key=lambda item: str(item.get("path", "")) if isinstance(item, dict) else ""):
+        if not isinstance(entry, dict):
+            continue
+        normalized_path = _normalize_alignment_path(entry.get("path"))
+        planned_action = str(entry.get("planned_action", "")).strip()
+        if normalized_path is None or planned_action not in {"create", "modify"}:
+            continue
+        if not _is_external_dry_run_candidate_path(normalized_path):
+            continue
+        candidate_path = project_root / Path(normalized_path)
+        if candidate_path.exists() and candidate_path.is_file():
+            return candidate_path
+    return None
+
+
+def _run_external_dry_run_provider(
+    workspace_root: Path,
+    section_id: str,
+) -> dict[str, Any]:
+    target_path = _external_dry_run_target_path(workspace_root, section_id)
+    if target_path is None:
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_input_missing",
+            "simulation_status": "indeterminate",
+        }
+
+    relative_target_path = target_path.relative_to(workspace_root.parent).as_posix()
+    command = ["docker", "compose", "-f", relative_target_path, "config"]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            cwd=str(workspace_root.parent),
+            shell=False,
+            text=True,
+            timeout=_EXTERNAL_DRY_RUN_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_unavailable",
+            "simulation_status": "indeterminate",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_timeout",
+            "simulation_status": "indeterminate",
+        }
+    except Exception:
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_parse_error",
+            "simulation_status": "indeterminate",
+        }
+
+    if int(completed.returncode) == 0:
+        return {
+            "findings": [],
+            "indeterminate_reason": None,
+            "simulation_status": "pass",
+        }
+
+    diagnostic_lines = _dedupe_preserving_order(
+        [
+            str(line).strip()
+            for line in (str(completed.stderr or "").splitlines() + str(completed.stdout or "").splitlines())
+            if str(line).strip()
+        ]
+    )
+    if not diagnostic_lines:
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_parse_error",
+            "simulation_status": "indeterminate",
+        }
+    normalized_findings = [
+        {
+            "code": "external_command_failed",
+            "summary": line,
+            "target": target_path.relative_to(workspace_root.parent).as_posix(),
+        }
+        for line in diagnostic_lines[:3]
+    ]
+    return {
+        "findings": normalized_findings,
+        "indeterminate_reason": None,
+        "simulation_status": "fail",
+    }
+
+
 def _load_simulation_provider_response_from_infra_dry_run_preview(
     workspace_root: Path,
     section_id: str,
@@ -6270,6 +6408,10 @@ def _is_infra_dry_run_applicable(workspace_root: Path, section_id: str) -> bool:
     )
 
 
+def _is_external_dry_run_applicable(workspace_root: Path, section_id: str) -> bool:
+    return _external_dry_run_target_path(workspace_root, section_id) is not None
+
+
 def _is_workspace_artifact_provider_applicable(workspace_root: Path, section_id: str) -> bool:
     return _load_workspace_artifact_provider_source(workspace_root, section_id)[0] == "ok"
 
@@ -6286,6 +6428,7 @@ def _evaluate_simulation_provider_applicability(
         for provider_name, is_applicable in (
             ("workspace_artifact", _is_workspace_artifact_provider_applicable(workspace_root, section_id)),
             (_INFRA_DRY_RUN_PROVIDER_NAME, _is_infra_dry_run_applicable(workspace_root, section_id)),
+            (_EXTERNAL_DRY_RUN_PROVIDER_NAME, _is_external_dry_run_applicable(workspace_root, section_id)),
         )
         if is_applicable
     )
@@ -6347,6 +6490,8 @@ def _evaluate_simulation_provider_applicability(
             "selection_reason": (
                 "infra_dry_run_applicable"
                 if selected_provider == _INFRA_DRY_RUN_PROVIDER_NAME
+                else "external_dry_run_applicable"
+                if selected_provider == _EXTERNAL_DRY_RUN_PROVIDER_NAME
                 else "workspace_artifact_available"
             ),
             "selection_source": "inferred",
@@ -6513,6 +6658,8 @@ def _execute_stage75_simulation_provider(
             provider_response_payload = _load_simulation_provider_response_from_workspace_artifact(workspace_root, section_id)
         elif provider is _default_infra_dry_run_provider:
             provider_response_payload = _load_simulation_provider_response_from_infra_dry_run_preview(workspace_root, section_id)
+        elif provider is _default_external_dry_run_provider:
+            provider_response_payload = _run_external_dry_run_provider(workspace_root, section_id)
         else:
             provider_raw_response = provider(provider_request)
     except Exception:
@@ -6548,7 +6695,11 @@ def _execute_stage75_simulation_provider(
         }
 
     try:
-        if provider not in {_default_workspace_artifact_provider, _default_infra_dry_run_provider}:
+        if provider not in {
+            _default_workspace_artifact_provider,
+            _default_infra_dry_run_provider,
+            _default_external_dry_run_provider,
+        }:
             provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
         simulation_artifact = _write_json_with_artifact_fingerprint(
             workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",

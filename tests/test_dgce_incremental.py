@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import aether.dgce.decompose as dgce_decompose
@@ -8282,6 +8283,309 @@ def test_infra_dry_run_provider_non_triggered_path_is_unchanged():
     assert trigger_artifact["trigger_reason_codes"] == []
     assert trigger_artifact["trigger_reason_summary"] is None
     assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
+
+
+def test_external_dry_run_provider_passes_for_valid_docker_compose_config(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_pass")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **kwargs):
+        assert command == ["docker", "compose", "-f", "deploy/docker-compose.yaml", "config"]
+        assert kwargs["shell"] is False
+        assert kwargs["cwd"] == str(project_root)
+        assert kwargs["timeout"] == dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS
+        return subprocess.CompletedProcess(command, 0, stdout="services:\n  app:\n    image: alpine:latest\n", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "external_dry_run"
+    assert simulation_artifact["provider_name"] == "external_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["reason_code"] == "simulation_pass"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_docker_compose_config(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_fail")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="services.app Additional property typo is not allowed\nservices.app.image must be a string\n",
+        )
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_blocked"] is True
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_command_failed",
+            "summary": "services.app Additional property typo is not allowed",
+            "target": "deploy/docker-compose.yaml",
+        },
+        {
+            "code": "external_command_failed",
+            "summary": "services.app.image must be a string",
+            "target": "deploy/docker-compose.yaml",
+        },
+    ]
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_command_is_unavailable(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_unavailable")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(_command, **_kwargs):
+        raise FileNotFoundError("docker not found")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unavailable"
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_command_times_out(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_timeout")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, timeout=dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_timeout"
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_malformed_command_output(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_parse_error")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_parse_error"
+
+
+def test_external_dry_run_provider_is_not_selected_when_not_applicable(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_stage75_external_not_applicable")
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="pass",
+            provider_name="workspace_artifact",
+            provider_selection_reason="test_seed",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["provider_applicability"]["applicable_providers"] == ["workspace_artifact"]
+
+
+def test_external_dry_run_provider_does_not_change_inferred_infra_selection_when_both_are_applicable(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_infra_precedence")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "infra_dry_run"
+    assert simulation_gate["provider_selection_reason"] == "provider_precedence_resolved"
+    assert simulation_artifact["provider_applicability"] == {
+        "applicable_providers": ["external_dry_run", "infra_dry_run"],
+        "resolution": "inferred",
+        "selected_provider": "infra_dry_run",
+    }
 
 
 def test_stage75_trigger_record_adds_infra_and_deployment_reason_codes_for_deployment_candidates(monkeypatch):
