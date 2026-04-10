@@ -5510,6 +5510,8 @@ _SIMULATION_TRIGGER_REASON_SUMMARY_FRAGMENTS = {
     "runtime_control": "runtime-control artifacts",
 }
 _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
+    "artifact_invalid",
+    "artifact_missing",
     "dry_run_input_missing",
     "infra_candidate_absent",
     "invalid_provider_response",
@@ -5521,6 +5523,8 @@ _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
 }
 _ALLOWED_SIMULATION_PROVIDER_SELECTION_SOURCES = {"explicit", "inferred", "not_applicable", "unresolved"}
 _ALLOWED_SIMULATION_REASON_CODES = {
+    "artifact_invalid",
+    "artifact_missing",
     "dry_run_input_missing",
     "infra_candidate_absent",
     "invalid_provider_response",
@@ -5533,6 +5537,8 @@ _ALLOWED_SIMULATION_REASON_CODES = {
     "simulation_result_missing",
 }
 _SIMULATION_REASON_SUMMARIES = {
+    "artifact_invalid": "Workspace artifact provider input was invalid or failed verification.",
+    "artifact_missing": "Workspace artifact provider input was missing.",
     "dry_run_input_missing": "Dry-run modeling input was missing or malformed.",
     "infra_candidate_absent": "No actionable infrastructure dry-run candidate was present.",
     "invalid_provider_response": "Provider response could not be normalized into the sealed simulation evidence contract.",
@@ -5624,7 +5630,7 @@ _RUNTIME_CONTROL_SUFFIXES = {".service"}
 def _default_workspace_artifact_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
     return {
         "findings": [],
-        "indeterminate_reason": "simulation_result_missing",
+        "indeterminate_reason": "artifact_missing",
         "simulation_status": "indeterminate",
     }
 
@@ -5903,6 +5909,30 @@ def _load_valid_simulation_artifact(workspace_root: Path, section_id: str) -> di
     return payload
 
 
+def _load_workspace_artifact_provider_source(
+    workspace_root: Path,
+    section_id: str,
+) -> tuple[str, dict[str, Any] | None]:
+    simulation_path = workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json"
+    if not simulation_path.exists():
+        return "artifact_missing", None
+    try:
+        payload = json.loads(simulation_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return "artifact_invalid", None
+    if not isinstance(payload, dict):
+        return "artifact_invalid", None
+    if not verify_artifact_fingerprint(simulation_path):
+        return "artifact_invalid", None
+    try:
+        _validate_simulation_record_schema(payload)
+    except ValueError:
+        return "artifact_invalid", None
+    if str(payload.get("section_id")) != section_id:
+        return "artifact_invalid", None
+    return "ok", payload
+
+
 def _build_simulation_provider_request(
     section_id: str,
     *,
@@ -6035,11 +6065,17 @@ def _load_simulation_provider_response_from_workspace_artifact(
     workspace_root: Path,
     section_id: str,
 ) -> dict[str, Any]:
-    simulation_artifact = _load_valid_simulation_artifact(workspace_root, section_id)
-    if simulation_artifact is None:
+    load_status, simulation_artifact = _load_workspace_artifact_provider_source(workspace_root, section_id)
+    if load_status == "artifact_missing":
         return {
             "findings": [],
-            "indeterminate_reason": "simulation_result_missing",
+            "indeterminate_reason": "artifact_missing",
+            "simulation_status": "indeterminate",
+        }
+    if load_status != "ok" or simulation_artifact is None:
+        return {
+            "findings": [],
+            "indeterminate_reason": "artifact_invalid",
             "simulation_status": "indeterminate",
         }
     return {

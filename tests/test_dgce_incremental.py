@@ -8405,11 +8405,17 @@ def test_stage75_trigger_record_sorts_multi_reason_codes_deterministically_for_m
 
 def test_stage75_selector_explicit_valid_provider_override_selects_requested_provider(monkeypatch):
     project_root = _workspace_dir("dgce_incremental_stage75_selector_explicit_valid")
-
-    def passing_provider(_request):
-        return {"simulation_status": "pass", "findings": []}
-
-    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", passing_provider)
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="pass",
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
 
     simulation_gate = execute_reserved_simulation_gate(
         project_root,
@@ -8432,6 +8438,162 @@ def test_stage75_selector_explicit_valid_provider_override_selects_requested_pro
     assert simulation_artifact["provider_selection_source"] == "explicit"
     assert simulation_artifact["provider_selection_reason"] == "explicit_provider_selected"
     assert simulation_artifact["simulation_status"] == "pass"
+
+
+def test_workspace_artifact_provider_returns_fail_with_normalized_findings_on_valid_seed_artifact():
+    project_root = _workspace_dir("dgce_incremental_stage75_workspace_provider_fail")
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="fail",
+            findings=["approved write set violates deterministic safe modify boundary"],
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "approved_write_set_violates_deterministic_safe_modify_boundary",
+            "summary": "approved write set violates deterministic safe modify boundary",
+            "target": None,
+        }
+    ]
+
+
+def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_missing():
+    project_root = _workspace_dir("dgce_incremental_stage75_workspace_provider_missing")
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["indeterminate_reason"] == "artifact_missing"
+    assert simulation_artifact["reason_code"] == "artifact_missing"
+
+
+def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_is_malformed():
+    project_root = _workspace_dir("dgce_incremental_stage75_workspace_provider_malformed")
+    simulation_path = project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json"
+    simulation_path.parent.mkdir(parents=True, exist_ok=True)
+    simulation_path.write_text("{not valid json", encoding="utf-8")
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(simulation_path.read_text(encoding="utf-8"))
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["indeterminate_reason"] == "artifact_invalid"
+    assert simulation_artifact["reason_code"] == "artifact_invalid"
+
+
+def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_structure_is_invalid():
+    project_root = _workspace_dir("dgce_incremental_stage75_workspace_provider_invalid_structure")
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="pass",
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    simulation_path = project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json"
+    payload = json.loads(simulation_path.read_text(encoding="utf-8"))
+    payload["unsupported_provider_blob"] = {"leak": True}
+    payload["artifact_fingerprint"] = dgce_decompose.compute_json_payload_fingerprint(payload)
+    simulation_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(simulation_path.read_text(encoding="utf-8"))
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["indeterminate_reason"] == "artifact_invalid"
+    assert simulation_artifact["reason_code"] == "artifact_invalid"
+
+
+@pytest.mark.parametrize("seeded_status", ["pass", "fail", "indeterminate"])
+def test_workspace_artifact_provider_always_emits_supported_statuses(seeded_status):
+    project_root = _workspace_dir(f"dgce_incremental_stage75_workspace_provider_status_{seeded_status}")
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status=seeded_status,
+            findings=["approved write set violates deterministic safe modify boundary"] if seeded_status == "fail" else [],
+            indeterminate_reason="simulation_result_missing" if seeded_status == "indeterminate" else None,
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    assert simulation_gate["simulation_status"] in {"pass", "fail", "indeterminate"}
 
 
 def test_stage75_selector_explicit_invalid_provider_override_fails_closed():
