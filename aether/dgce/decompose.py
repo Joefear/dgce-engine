@@ -1551,6 +1551,25 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
             if isinstance(finding, dict) and isinstance(finding.get("code"), str) and str(finding.get("code")).strip()
         ]
     )
+    provider_applicability = (
+        simulation_payload.get("provider_applicability")
+        if isinstance(simulation_payload.get("provider_applicability"), dict)
+        else {}
+    )
+    applicable_provider_items = provider_applicability.get("applicable_providers", [])
+    applicable_providers = sorted(
+        {
+            str(provider_name).strip()
+            for provider_name in applicable_provider_items
+            if isinstance(provider_name, str) and str(provider_name).strip()
+        }
+    )
+    selected_provider = provider_applicability.get("selected_provider")
+    projected_selected_provider = selected_provider if isinstance(selected_provider, str) and selected_provider.strip() else None
+    provider_resolution = provider_applicability.get("resolution")
+    projected_provider_resolution = (
+        provider_resolution if isinstance(provider_resolution, str) and provider_resolution.strip() else None
+    )
 
     if simulation_present:
         simulation_triggered_value = simulation_trigger_payload.get("simulation_triggered")
@@ -1571,6 +1590,9 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
             "simulation_stage_applicable": True,
             "simulation_status": simulation_payload.get("simulation_status"),
             "simulation_triggered": simulation_triggered,
+            "applicable_providers": applicable_providers,
+            "provider_resolution": projected_provider_resolution,
+            "selected_provider": projected_selected_provider,
             "trigger_reason_codes": normalized_trigger_reason_codes,
             "trigger_reason_summary": (
                 simulation_trigger_payload.get("trigger_reason_summary")
@@ -1592,6 +1614,9 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
             "simulation_stage_applicable": True,
             "simulation_status": "skipped" if not simulation_triggered else None,
             "simulation_triggered": simulation_triggered,
+            "applicable_providers": [],
+            "provider_resolution": None,
+            "selected_provider": None,
             "trigger_reason_codes": (
                 [
                     str(code)
@@ -1618,6 +1643,9 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         "simulation_stage_applicable": False,
         "simulation_status": None,
         "simulation_triggered": False,
+        "applicable_providers": [],
+        "provider_resolution": None,
+        "selected_provider": None,
         "trigger_reason_codes": [],
         "trigger_reason_summary": None,
     }
@@ -1642,8 +1670,10 @@ def _validate_section_simulation_projection(
         "simulation_status",
         "simulation_provider",
         "provider_selection_source",
+        "provider_resolution",
         "reason_code",
         "reason_summary",
+        "selected_provider",
         "trigger_reason_summary",
     ):
         _expect_optional_str(
@@ -1670,6 +1700,13 @@ def _validate_section_simulation_projection(
     )
     for index, code in enumerate(trigger_reason_codes):
         _expect_str(code, artifact_name, f"{field_name}.trigger_reason_codes[{index}]")
+    applicable_providers = _expect_list(
+        _expect_required_field(projection, "applicable_providers", artifact_name),
+        artifact_name,
+        f"{field_name}.applicable_providers",
+    )
+    for index, provider_name in enumerate(applicable_providers):
+        _expect_str(provider_name, artifact_name, f"{field_name}.applicable_providers[{index}]")
 
     findings_count = int(projection["findings_count"])
     if findings_count != len(finding_codes):
@@ -1678,13 +1715,17 @@ def _validate_section_simulation_projection(
     simulation_stage_applicable = bool(projection["simulation_stage_applicable"])
     simulation_triggered = bool(projection["simulation_triggered"])
     simulation_status = projection.get("simulation_status")
+    provider_resolution = projection.get("provider_resolution")
     provider_selection_source = projection.get("provider_selection_source")
+    selected_provider = projection.get("selected_provider")
 
     if not simulation_stage_applicable:
         if simulation_triggered or simulation_status is not None:
             _schema_error(artifact_name, f"{field_name} must remain non-triggered and status-free when simulation_stage_applicable is false")
         if provider_selection_source is not None:
             _schema_error(artifact_name, f"{field_name}.provider_selection_source must be null when simulation_stage_applicable is false")
+        if applicable_providers or provider_resolution is not None or selected_provider is not None:
+            _schema_error(artifact_name, f"{field_name} must not expose provider applicability metadata when simulation_stage_applicable is false")
         if trigger_reason_codes or projection.get("trigger_reason_summary") is not None:
             _schema_error(artifact_name, f"{field_name} must not expose trigger reason fields when simulation_stage_applicable is false")
         return
@@ -1698,6 +1739,8 @@ def _validate_section_simulation_projection(
             _schema_error(artifact_name, f"{field_name} must not expose findings when simulation_status is skipped")
         if projection.get("reason_code") is not None or projection.get("reason_summary") is not None:
             _schema_error(artifact_name, f"{field_name} must not expose reason fields when simulation_status is skipped")
+        if applicable_providers or provider_resolution is not None or selected_provider is not None:
+            _schema_error(artifact_name, f"{field_name} must not expose provider applicability metadata when simulation_status is skipped")
         if trigger_reason_codes or projection.get("trigger_reason_summary") is not None:
             _schema_error(artifact_name, f"{field_name} must not expose trigger reason fields when simulation_status is skipped")
         return
@@ -1706,6 +1749,14 @@ def _validate_section_simulation_projection(
         _schema_error(artifact_name, f"{field_name}.simulation_status must be skipped when simulation_triggered is false")
     if simulation_triggered is True and provider_selection_source == "not_applicable":
         _schema_error(artifact_name, f"{field_name}.provider_selection_source must not be not_applicable when simulation_triggered is true")
+    if applicable_providers != sorted(set(applicable_providers)):
+        _schema_error(artifact_name, f"{field_name}.applicable_providers must be unique and deterministically ordered")
+    if provider_resolution is not None and provider_resolution not in _ALLOWED_SIMULATION_PROVIDER_APPLICABILITY_RESOLUTIONS:
+        _schema_error(artifact_name, f"{field_name}.provider_resolution must be a supported applicability resolution when present")
+    if provider_resolution in {"explicit", "inferred"} and selected_provider not in applicable_providers:
+        _schema_error(artifact_name, f"{field_name}.selected_provider must appear in applicable_providers when provider_resolution is explicit or inferred")
+    if provider_resolution in {"conflict", "unresolved"} and selected_provider is not None:
+        _schema_error(artifact_name, f"{field_name}.selected_provider must be null when provider_resolution is conflict or unresolved")
 
 
 def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
@@ -1746,9 +1797,12 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.section_id",
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.applicable_providers",
                 "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
                 "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.selected_provider",
                 "sections[].section_summary.simulation.simulation_provider",
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
@@ -1797,9 +1851,12 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.section_id",
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.applicable_providers",
                 "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
                 "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.selected_provider",
                 "sections[].section_summary.simulation.simulation_provider",
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
@@ -1866,9 +1923,12 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.section_id",
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.applicable_providers",
                 "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
                 "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.selected_provider",
                 "sections[].section_summary.simulation.simulation_provider",
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
@@ -1909,9 +1969,12 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.section_id",
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.applicable_providers",
                 "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
                 "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.selected_provider",
                 "sections[].section_summary.simulation.simulation_provider",
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
@@ -2007,9 +2070,12 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.section_id",
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
+                "sections[].section_summary.simulation.applicable_providers",
                 "sections[].section_summary.simulation.provider_selection_source",
+                "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
                 "sections[].section_summary.simulation.reason_summary",
+                "sections[].section_summary.simulation.selected_provider",
                 "sections[].section_summary.simulation.simulation_provider",
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",

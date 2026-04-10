@@ -2452,11 +2452,14 @@ class TestDGCEExecuteAPI:
                 }
             ],
             "simulation": {
+                "applicable_providers": [],
                 "findings_count": 0,
                 "finding_codes": [],
                 "provider_selection_source": "not_applicable",
+                "provider_resolution": None,
                 "reason_code": None,
                 "reason_summary": None,
+                "selected_provider": None,
                 "simulation_provider": None,
                 "simulation_stage_applicable": True,
                 "simulation_status": "skipped",
@@ -2519,11 +2522,14 @@ class TestDGCEExecuteAPI:
             "bundle_count": 0,
             "bundle_references": [],
             "simulation": {
+                "applicable_providers": [],
                 "findings_count": 0,
                 "finding_codes": [],
                 "provider_selection_source": None,
+                "provider_resolution": None,
                 "reason_code": None,
                 "reason_summary": None,
+                "selected_provider": None,
                 "simulation_provider": None,
                 "simulation_stage_applicable": False,
                 "simulation_status": None,
@@ -2796,11 +2802,14 @@ class TestDGCEExecuteAPI:
             "latest_bundle_fingerprint": None,
             "bundle_references": [],
             "simulation": {
+                "applicable_providers": [],
                 "findings_count": 0,
                 "finding_codes": [],
                 "provider_selection_source": None,
+                "provider_resolution": None,
                 "reason_code": None,
                 "reason_summary": None,
+                "selected_provider": None,
                 "simulation_provider": None,
                 "simulation_stage_applicable": False,
                 "simulation_status": None,
@@ -3025,11 +3034,14 @@ class TestDGCEExecuteAPI:
 
         assert response.status_code == 200
         assert response.json()["simulation"] == {
+            "applicable_providers": [],
             "findings_count": 1,
             "finding_codes": ["infra_modify_candidate"],
             "provider_selection_source": "explicit",
+            "provider_resolution": "forced_override",
             "reason_code": "simulation_fail",
             "reason_summary": "Simulation produced concrete blocking findings.",
+            "selected_provider": "workspace_artifact",
             "simulation_provider": "workspace_artifact",
             "simulation_stage_applicable": True,
             "simulation_status": "fail",
@@ -3062,11 +3074,14 @@ class TestDGCEExecuteAPI:
         assert overview.status_code == 200
         assert dashboard.status_code == 200
         assert summary.json()["simulation"] == {
+            "applicable_providers": [],
             "findings_count": 0,
             "finding_codes": [],
             "provider_selection_source": "not_applicable",
+            "provider_resolution": None,
             "reason_code": None,
             "reason_summary": None,
+            "selected_provider": None,
             "simulation_provider": "infra_dry_run",
             "simulation_stage_applicable": True,
             "simulation_status": "skipped",
