@@ -3030,6 +3030,43 @@ class TestDGCEExecuteAPI:
             "simulation_triggered": True,
         }
 
+    def test_get_section_operator_surfaces_share_skipped_simulation_projection(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_stage75_skipped_consistency")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+
+        dgce_decompose.execute_reserved_simulation_gate(
+            project_root,
+            "mission-board",
+            require_preflight_pass=True,
+            simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+                simulation_triggered=False,
+                simulation_provider="infra_dry_run",
+                simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+            ),
+        )
+
+        summary = _get_section_summary(client, project_root, "mission-board")
+        overview = _get_section_overview(client, project_root, "mission-board")
+        dashboard = _get_section_dashboard(client, project_root, "mission-board")
+
+        assert summary.status_code == 200
+        assert overview.status_code == 200
+        assert dashboard.status_code == 200
+        assert summary.json()["simulation"] == {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": "not_applicable",
+            "reason_code": None,
+            "reason_summary": None,
+            "simulation_provider": "infra_dry_run",
+            "simulation_stage_applicable": True,
+            "simulation_status": "skipped",
+            "simulation_triggered": False,
+        }
+        assert overview.json()["simulation"] == summary.json()["simulation"]
+        assert dashboard.json()["simulation"] == summary.json()["simulation"]
+
     def test_get_section_dashboard_health_is_warning_for_partial_grounded_section(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_dashboard_warning")
         _mark_section_ready(project_root)

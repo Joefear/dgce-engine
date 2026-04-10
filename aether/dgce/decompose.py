@@ -1541,10 +1541,11 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
     simulation_payload = payloads.get("simulation_path", {})
 
     findings = simulation_payload.get("findings", []) if isinstance(simulation_payload, dict) else []
+    normalized_findings = findings if isinstance(findings, list) else []
     finding_codes = _dedupe_preserving_order(
         [
             str(finding.get("code"))
-            for finding in findings
+            for finding in normalized_findings
             if isinstance(finding, dict) and isinstance(finding.get("code"), str) and str(finding.get("code")).strip()
         ]
     )
@@ -1553,7 +1554,7 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         simulation_triggered_value = simulation_trigger_payload.get("simulation_triggered")
         simulation_triggered = simulation_triggered_value if isinstance(simulation_triggered_value, bool) else True
         return {
-            "findings_count": len(findings) if isinstance(findings, list) else 0,
+            "findings_count": len(finding_codes),
             "finding_codes": finding_codes,
             "provider_selection_source": simulation_payload.get("provider_selection_source"),
             "reason_code": simulation_payload.get("reason_code"),
@@ -1590,6 +1591,73 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         "simulation_status": None,
         "simulation_triggered": False,
     }
+
+
+def _validate_section_simulation_projection(
+    projection: dict[str, Any],
+    artifact_name: str,
+    field_name: str,
+) -> None:
+    _expect_bool(
+        _expect_required_field(projection, "simulation_stage_applicable", artifact_name),
+        artifact_name,
+        f"{field_name}.simulation_stage_applicable",
+    )
+    _expect_bool(
+        _expect_required_field(projection, "simulation_triggered", artifact_name),
+        artifact_name,
+        f"{field_name}.simulation_triggered",
+    )
+    for key in ("simulation_status", "simulation_provider", "provider_selection_source", "reason_code", "reason_summary"):
+        _expect_optional_str(
+            _expect_required_field(projection, key, artifact_name),
+            artifact_name,
+            f"{field_name}.{key}",
+        )
+    _expect_int(
+        _expect_required_field(projection, "findings_count", artifact_name),
+        artifact_name,
+        f"{field_name}.findings_count",
+    )
+    finding_codes = _expect_list(
+        _expect_required_field(projection, "finding_codes", artifact_name),
+        artifact_name,
+        f"{field_name}.finding_codes",
+    )
+    for index, code in enumerate(finding_codes):
+        _expect_str(code, artifact_name, f"{field_name}.finding_codes[{index}]")
+
+    findings_count = int(projection["findings_count"])
+    if findings_count != len(finding_codes):
+        _schema_error(artifact_name, f"{field_name}.findings_count must match finding_codes length")
+
+    simulation_stage_applicable = bool(projection["simulation_stage_applicable"])
+    simulation_triggered = bool(projection["simulation_triggered"])
+    simulation_status = projection.get("simulation_status")
+    provider_selection_source = projection.get("provider_selection_source")
+
+    if not simulation_stage_applicable:
+        if simulation_triggered or simulation_status is not None:
+            _schema_error(artifact_name, f"{field_name} must remain non-triggered and status-free when simulation_stage_applicable is false")
+        if provider_selection_source is not None:
+            _schema_error(artifact_name, f"{field_name}.provider_selection_source must be null when simulation_stage_applicable is false")
+        return
+
+    if simulation_status == "skipped":
+        if simulation_triggered:
+            _schema_error(artifact_name, f"{field_name}.simulation_triggered must be false when simulation_status is skipped")
+        if provider_selection_source != "not_applicable":
+            _schema_error(artifact_name, f"{field_name}.provider_selection_source must be not_applicable when simulation_status is skipped")
+        if finding_codes or findings_count != 0:
+            _schema_error(artifact_name, f"{field_name} must not expose findings when simulation_status is skipped")
+        if projection.get("reason_code") is not None or projection.get("reason_summary") is not None:
+            _schema_error(artifact_name, f"{field_name} must not expose reason fields when simulation_status is skipped")
+        return
+
+    if simulation_triggered is False and simulation_status is not None:
+        _schema_error(artifact_name, f"{field_name}.simulation_status must be skipped when simulation_triggered is false")
+    if simulation_triggered is True and provider_selection_source == "not_applicable":
+        _schema_error(artifact_name, f"{field_name}.provider_selection_source must not be not_applicable when simulation_triggered is true")
 
 
 def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
@@ -2097,34 +2165,7 @@ def _validate_section_summary_schema(summary: Any, artifact_name: str, field_nam
     _expect_optional_str(_expect_required_field(payload, "review_status", artifact_name), artifact_name, f"{field_name}.review_status")
     _expect_str(_expect_required_field(payload, "section_id", artifact_name), artifact_name, f"{field_name}.section_id")
     simulation_projection = _expect_dict(_expect_required_field(payload, "simulation", artifact_name), artifact_name, f"{field_name}.simulation")
-    _expect_bool(
-        _expect_required_field(simulation_projection, "simulation_stage_applicable", artifact_name),
-        artifact_name,
-        f"{field_name}.simulation.simulation_stage_applicable",
-    )
-    _expect_bool(
-        _expect_required_field(simulation_projection, "simulation_triggered", artifact_name),
-        artifact_name,
-        f"{field_name}.simulation.simulation_triggered",
-    )
-    for key in ("simulation_status", "simulation_provider", "provider_selection_source", "reason_code", "reason_summary"):
-        _expect_optional_str(
-            _expect_required_field(simulation_projection, key, artifact_name),
-            artifact_name,
-            f"{field_name}.simulation.{key}",
-        )
-    _expect_int(
-        _expect_required_field(simulation_projection, "findings_count", artifact_name),
-        artifact_name,
-        f"{field_name}.simulation.findings_count",
-    )
-    finding_codes = _expect_list(
-        _expect_required_field(simulation_projection, "finding_codes", artifact_name),
-        artifact_name,
-        f"{field_name}.simulation.finding_codes",
-    )
-    for index, code in enumerate(finding_codes):
-        _expect_str(code, artifact_name, f"{field_name}.simulation.finding_codes[{index}]")
+    _validate_section_simulation_projection(simulation_projection, artifact_name, f"{field_name}.simulation")
     summary_sources = _expect_dict(_expect_required_field(payload, "summary_sources", artifact_name), artifact_name, f"{field_name}.summary_sources")
     for source_key in ("approval_status", "latest_decision", "latest_stage", "latest_stage_status", "review_status", "simulation"):
         _expect_optional_str(_expect_required_field(summary_sources, source_key, artifact_name), artifact_name, f"{field_name}.summary_sources.{source_key}")

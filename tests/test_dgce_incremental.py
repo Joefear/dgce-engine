@@ -8523,7 +8523,7 @@ def test_stage_7_5_projection_shows_triggered_fail_with_compact_findings(monkeyp
     workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
     section_summary = next(entry for entry in workspace_summary["sections"] if entry["section_id"] == "mission-board")["section_summary"]
     assert section_summary["simulation"] == {
-        "findings_count": 3,
+        "findings_count": 2,
         "finding_codes": ["first_code", "second_code"],
         "provider_selection_source": "explicit",
         "reason_code": "simulation_fail",
@@ -8591,6 +8591,145 @@ def test_stage_7_5_projection_keeps_non_triggered_case_explicit():
         "simulation_status": "skipped",
         "simulation_triggered": False,
     }
+
+
+def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_mixed_states(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_projection_mixed_consistency")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    sections = [
+        ("alpha-section", "Alpha Section"),
+        ("beta-section", "Beta Section"),
+        ("gamma-section", "Gamma Section"),
+        ("delta-section", "Delta Section"),
+        ("epsilon-section", "Epsilon Section"),
+    ]
+    for _section_id, title in sections:
+        run_section_with_workspace(_section_named(title), project_root, incremental_mode="incremental_v2_2")
+
+    execute_reserved_simulation_gate(
+        project_root,
+        "beta-section",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=False,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_simulation(
+        project_root,
+        "gamma-section",
+        simulation=SectionSimulationInput(
+            simulation_status="pass",
+            provider_name="workspace_artifact",
+            provider_selection_reason="test_seed",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_simulation(
+        project_root,
+        "delta-section",
+        simulation=SectionSimulationInput(
+            simulation_status="fail",
+            findings=[
+                {"code": "duplicate_code", "summary": "Duplicate one.", "target": "a.txt"},
+                {"code": "duplicate_code", "summary": "Duplicate two.", "target": "b.txt"},
+                {"code": "distinct_code", "summary": "Distinct.", "target": "c.txt"},
+            ],
+            provider_name="workspace_artifact",
+            provider_selection_reason="test_seed",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+    record_section_simulation(
+        project_root,
+        "epsilon-section",
+        simulation=SectionSimulationInput(
+            simulation_status="indeterminate",
+            indeterminate_reason="simulation_provider_unresolved",
+            provider_selection_reason="simulation_provider_unresolved",
+            provider_selection_source="unresolved",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+    workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+    dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+
+    def _section_simulation(payload, section_id):
+        return next(entry for entry in payload["sections"] if entry["section_id"] == section_id)["section_summary"]["simulation"]
+
+    expected = {
+        "alpha-section": {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": None,
+            "reason_code": None,
+            "reason_summary": None,
+            "simulation_provider": None,
+            "simulation_stage_applicable": False,
+            "simulation_status": None,
+            "simulation_triggered": False,
+        },
+        "beta-section": {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": "not_applicable",
+            "reason_code": None,
+            "reason_summary": None,
+            "simulation_provider": "infra_dry_run",
+            "simulation_stage_applicable": True,
+            "simulation_status": "skipped",
+            "simulation_triggered": False,
+        },
+        "gamma-section": {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": "explicit",
+            "reason_code": "simulation_pass",
+            "reason_summary": "Simulation completed without blocking findings.",
+            "simulation_provider": "workspace_artifact",
+            "simulation_stage_applicable": True,
+            "simulation_status": "pass",
+            "simulation_triggered": True,
+        },
+        "delta-section": {
+            "findings_count": 2,
+            "finding_codes": ["duplicate_code", "distinct_code"],
+            "provider_selection_source": "explicit",
+            "reason_code": "simulation_fail",
+            "reason_summary": "Simulation produced concrete blocking findings.",
+            "simulation_provider": "workspace_artifact",
+            "simulation_stage_applicable": True,
+            "simulation_status": "fail",
+            "simulation_triggered": True,
+        },
+        "epsilon-section": {
+            "findings_count": 0,
+            "finding_codes": [],
+            "provider_selection_source": "unresolved",
+            "reason_code": "simulation_provider_unresolved",
+            "reason_summary": "No applicable simulation provider could be resolved.",
+            "simulation_provider": None,
+            "simulation_stage_applicable": True,
+            "simulation_status": "indeterminate",
+            "simulation_triggered": True,
+        },
+    }
+    for section_id, projection in expected.items():
+        assert _section_simulation(review_index, section_id) == projection
+        assert _section_simulation(workspace_summary, section_id) == projection
+        assert _section_simulation(workspace_index, section_id) == projection
+        assert _section_simulation(dashboard, section_id) == projection
 
 
 def test_run_section_with_workspace_alignment_outputs_are_deterministic(monkeypatch):
