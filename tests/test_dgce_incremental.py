@@ -254,6 +254,8 @@ def _expected_section_summary(
             "simulation_stage_applicable": False,
             "simulation_status": None,
             "simulation_triggered": False,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         },
         "summary_sources": {
             "approval_status": "approval" if approval_status is not None else None,
@@ -283,6 +285,8 @@ def _explicit_non_triggered_simulation_projection(simulation_provider=None):
         "simulation_stage_applicable": True,
         "simulation_status": "skipped",
         "simulation_triggered": False,
+        "trigger_reason_codes": [],
+        "trigger_reason_summary": None,
     }
 
 
@@ -370,6 +374,8 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "summary.approval_status_counts",
                 "summary.current_stage_counts",
                 "summary.review_status_counts",
@@ -421,6 +427,8 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -490,6 +498,8 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "sections[].navigation_links",
                 "summary.sections_with_approval",
                 "summary.sections_with_execution",
@@ -533,6 +543,8 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -633,6 +645,8 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
             ],
             "contract_stability": "supported",
             "consumer_scopes": ["reporting", "sdk"],
@@ -8631,6 +8645,8 @@ def test_stage_7_5_projection_shows_triggered_pass_in_workspace_views(monkeypatc
         "simulation_stage_applicable": True,
         "simulation_status": "pass",
         "simulation_triggered": True,
+        "trigger_reason_codes": ["policy_required_simulation"],
+        "trigger_reason_summary": _expected_trigger_reason_summary("policy_required_simulation"),
     }
 
 
@@ -8672,6 +8688,8 @@ def test_stage_7_5_projection_shows_triggered_fail_with_compact_findings(monkeyp
         "simulation_stage_applicable": True,
         "simulation_status": "fail",
         "simulation_triggered": True,
+        "trigger_reason_codes": ["policy_required_simulation"],
+        "trigger_reason_summary": _expected_trigger_reason_summary("policy_required_simulation"),
     }
 
 
@@ -8701,6 +8719,8 @@ def test_stage_7_5_projection_shows_triggered_indeterminate_reason_fields():
         "simulation_stage_applicable": True,
         "simulation_status": "indeterminate",
         "simulation_triggered": True,
+        "trigger_reason_codes": ["policy_required_simulation"],
+        "trigger_reason_summary": _expected_trigger_reason_summary("policy_required_simulation"),
     }
 
 
@@ -8730,7 +8750,57 @@ def test_stage_7_5_projection_keeps_non_triggered_case_explicit():
         "simulation_stage_applicable": True,
         "simulation_status": "skipped",
         "simulation_triggered": False,
+        "trigger_reason_codes": [],
+        "trigger_reason_summary": None,
     }
+
+
+def test_stage_7_5_trigger_reason_projection_remains_consistent_across_workspace_surfaces(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_stage75_projection_trigger_reason_consistency")
+
+    def failing_provider(_request):
+        return {
+            "simulation_status": "fail",
+            "findings": [
+                {"code": "infra_modify_candidate", "summary": "Infrastructure dry-run detected a modify candidate.", "target": "deploy/docker-compose.yaml"}
+            ],
+        }
+
+    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", failing_provider)
+    run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    expected_projection = {
+        "findings_count": 1,
+        "finding_codes": ["infra_modify_candidate"],
+        "provider_selection_source": "explicit",
+        "reason_code": "simulation_fail",
+        "reason_summary": "Simulation produced concrete blocking findings.",
+        "simulation_provider": "workspace_artifact",
+        "simulation_stage_applicable": True,
+        "simulation_status": "fail",
+        "simulation_triggered": True,
+        "trigger_reason_codes": ["policy_required_simulation"],
+        "trigger_reason_summary": _expected_trigger_reason_summary("policy_required_simulation"),
+    }
+
+    review_index = json.loads((project_root / ".dce" / "reviews" / "index.json").read_text(encoding="utf-8"))
+    workspace_summary = json.loads((project_root / ".dce" / "workspace_summary.json").read_text(encoding="utf-8"))
+    workspace_index = json.loads((project_root / ".dce" / "workspace_index.json").read_text(encoding="utf-8"))
+    dashboard = json.loads((project_root / ".dce" / "dashboard.json").read_text(encoding="utf-8"))
+
+    for surface in (review_index, workspace_summary, workspace_index, dashboard):
+        section_summary = next(entry for entry in surface["sections"] if entry["section_id"] == "mission-board")["section_summary"]
+        assert section_summary["simulation"] == expected_projection
 
 
 def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_mixed_states(monkeypatch):
@@ -8819,6 +8889,8 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "simulation_stage_applicable": False,
             "simulation_status": None,
             "simulation_triggered": False,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         },
         "beta-section": {
             "findings_count": 0,
@@ -8830,6 +8902,8 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "simulation_stage_applicable": True,
             "simulation_status": "skipped",
             "simulation_triggered": False,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         },
         "gamma-section": {
             "findings_count": 0,
@@ -8841,6 +8915,8 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "simulation_stage_applicable": True,
             "simulation_status": "pass",
             "simulation_triggered": True,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         },
         "delta-section": {
             "findings_count": 2,
@@ -8852,6 +8928,8 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "simulation_stage_applicable": True,
             "simulation_status": "fail",
             "simulation_triggered": True,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         },
         "epsilon-section": {
             "findings_count": 0,
@@ -8863,6 +8941,8 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "simulation_stage_applicable": True,
             "simulation_status": "indeterminate",
             "simulation_triggered": True,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         },
     }
     for section_id, projection in expected.items():

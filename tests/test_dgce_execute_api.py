@@ -2461,6 +2461,8 @@ class TestDGCEExecuteAPI:
                 "simulation_stage_applicable": True,
                 "simulation_status": "skipped",
                 "simulation_triggered": False,
+                "trigger_reason_codes": [],
+                "trigger_reason_summary": None,
             },
         }
 
@@ -2526,6 +2528,8 @@ class TestDGCEExecuteAPI:
                 "simulation_stage_applicable": False,
                 "simulation_status": None,
                 "simulation_triggered": False,
+                "trigger_reason_codes": [],
+                "trigger_reason_summary": None,
             },
         }
 
@@ -2801,6 +2805,8 @@ class TestDGCEExecuteAPI:
                 "simulation_stage_applicable": False,
                 "simulation_status": None,
                 "simulation_triggered": False,
+                "trigger_reason_codes": [],
+                "trigger_reason_summary": None,
             },
             "is_executable": True,
             "has_been_executed": False,
@@ -3028,6 +3034,8 @@ class TestDGCEExecuteAPI:
             "simulation_stage_applicable": True,
             "simulation_status": "fail",
             "simulation_triggered": True,
+            "trigger_reason_codes": ["policy_required_simulation"],
+            "trigger_reason_summary": "Simulation was required due to governance policy requirements.",
         }
 
     def test_get_section_operator_surfaces_share_skipped_simulation_projection(self, monkeypatch):
@@ -3063,6 +3071,8 @@ class TestDGCEExecuteAPI:
             "simulation_stage_applicable": True,
             "simulation_status": "skipped",
             "simulation_triggered": False,
+            "trigger_reason_codes": [],
+            "trigger_reason_summary": None,
         }
         assert overview.json()["simulation"] == summary.json()["simulation"]
         assert dashboard.json()["simulation"] == summary.json()["simulation"]

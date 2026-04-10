@@ -1553,6 +1553,12 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
     if simulation_present:
         simulation_triggered_value = simulation_trigger_payload.get("simulation_triggered")
         simulation_triggered = simulation_triggered_value if isinstance(simulation_triggered_value, bool) else True
+        trigger_reason_codes = simulation_trigger_payload.get("trigger_reason_codes")
+        normalized_trigger_reason_codes = (
+            [str(code) for code in trigger_reason_codes if isinstance(code, str) and str(code).strip()]
+            if isinstance(trigger_reason_codes, list)
+            else []
+        )
         return {
             "findings_count": len(finding_codes),
             "finding_codes": finding_codes,
@@ -1563,6 +1569,12 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
             "simulation_stage_applicable": True,
             "simulation_status": simulation_payload.get("simulation_status"),
             "simulation_triggered": simulation_triggered,
+            "trigger_reason_codes": normalized_trigger_reason_codes,
+            "trigger_reason_summary": (
+                simulation_trigger_payload.get("trigger_reason_summary")
+                if isinstance(simulation_trigger_payload.get("trigger_reason_summary"), str)
+                else None
+            ),
         }
 
     if simulation_trigger_present:
@@ -1578,6 +1590,20 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
             "simulation_stage_applicable": True,
             "simulation_status": "skipped" if not simulation_triggered else None,
             "simulation_triggered": simulation_triggered,
+            "trigger_reason_codes": (
+                [
+                    str(code)
+                    for code in simulation_trigger_payload.get("trigger_reason_codes", [])
+                    if isinstance(code, str) and str(code).strip()
+                ]
+                if simulation_triggered and isinstance(simulation_trigger_payload.get("trigger_reason_codes"), list)
+                else []
+            ),
+            "trigger_reason_summary": (
+                simulation_trigger_payload.get("trigger_reason_summary")
+                if simulation_triggered and isinstance(simulation_trigger_payload.get("trigger_reason_summary"), str)
+                else None
+            ),
         }
 
     return {
@@ -1590,6 +1616,8 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         "simulation_stage_applicable": False,
         "simulation_status": None,
         "simulation_triggered": False,
+        "trigger_reason_codes": [],
+        "trigger_reason_summary": None,
     }
 
 
@@ -1608,7 +1636,14 @@ def _validate_section_simulation_projection(
         artifact_name,
         f"{field_name}.simulation_triggered",
     )
-    for key in ("simulation_status", "simulation_provider", "provider_selection_source", "reason_code", "reason_summary"):
+    for key in (
+        "simulation_status",
+        "simulation_provider",
+        "provider_selection_source",
+        "reason_code",
+        "reason_summary",
+        "trigger_reason_summary",
+    ):
         _expect_optional_str(
             _expect_required_field(projection, key, artifact_name),
             artifact_name,
@@ -1626,6 +1661,13 @@ def _validate_section_simulation_projection(
     )
     for index, code in enumerate(finding_codes):
         _expect_str(code, artifact_name, f"{field_name}.finding_codes[{index}]")
+    trigger_reason_codes = _expect_list(
+        _expect_required_field(projection, "trigger_reason_codes", artifact_name),
+        artifact_name,
+        f"{field_name}.trigger_reason_codes",
+    )
+    for index, code in enumerate(trigger_reason_codes):
+        _expect_str(code, artifact_name, f"{field_name}.trigger_reason_codes[{index}]")
 
     findings_count = int(projection["findings_count"])
     if findings_count != len(finding_codes):
@@ -1641,6 +1683,8 @@ def _validate_section_simulation_projection(
             _schema_error(artifact_name, f"{field_name} must remain non-triggered and status-free when simulation_stage_applicable is false")
         if provider_selection_source is not None:
             _schema_error(artifact_name, f"{field_name}.provider_selection_source must be null when simulation_stage_applicable is false")
+        if trigger_reason_codes or projection.get("trigger_reason_summary") is not None:
+            _schema_error(artifact_name, f"{field_name} must not expose trigger reason fields when simulation_stage_applicable is false")
         return
 
     if simulation_status == "skipped":
@@ -1652,6 +1696,8 @@ def _validate_section_simulation_projection(
             _schema_error(artifact_name, f"{field_name} must not expose findings when simulation_status is skipped")
         if projection.get("reason_code") is not None or projection.get("reason_summary") is not None:
             _schema_error(artifact_name, f"{field_name} must not expose reason fields when simulation_status is skipped")
+        if trigger_reason_codes or projection.get("trigger_reason_summary") is not None:
+            _schema_error(artifact_name, f"{field_name} must not expose trigger reason fields when simulation_status is skipped")
         return
 
     if simulation_triggered is False and simulation_status is not None:
@@ -1705,6 +1751,8 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "summary.approval_status_counts",
                 "summary.current_stage_counts",
                 "summary.review_status_counts",
@@ -1754,6 +1802,8 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -1821,6 +1871,8 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "sections[].navigation_links",
                 "summary.sections_with_approval",
                 "summary.sections_with_execution",
@@ -1862,6 +1914,8 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
                 "sections[].trace_summary.available_artifact_count",
                 "sections[].trace_summary.approval_status",
                 "sections[].trace_summary.completed_stage_count",
@@ -1958,6 +2012,8 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.simulation_stage_applicable",
                 "sections[].section_summary.simulation.simulation_status",
                 "sections[].section_summary.simulation.simulation_triggered",
+                "sections[].section_summary.simulation.trigger_reason_codes",
+                "sections[].section_summary.simulation.trigger_reason_summary",
             ],
         },
     ]
