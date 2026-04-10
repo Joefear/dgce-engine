@@ -7687,6 +7687,121 @@ def test_run_section_with_workspace_simulation_result_contract_controls_gate(mon
         assert result.execution_outcome["simulation_status"] == simulation_status
 
 
+def test_stage75_pass_artifact_has_normalized_reason_fields(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_stage75_normalized_pass")
+
+    def passing_provider(_request):
+        return {
+            "simulation_status": "pass",
+            "findings": [],
+            "provider_debug_blob": {"should_not": "escape"},
+        }
+
+    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", passing_provider)
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_artifact["reason_code"] == "simulation_pass"
+    assert simulation_artifact["reason_summary"] == "Simulation completed without blocking findings."
+    assert simulation_artifact["findings"] == []
+    assert simulation_artifact["indeterminate_reason"] is None
+    assert "provider_debug_blob" not in simulation_artifact
+    assert set(simulation_artifact.keys()) == {
+        "artifact_type",
+        "artifact_fingerprint",
+        "contract_version",
+        "findings",
+        "generated_by",
+        "indeterminate_reason",
+        "provider_name",
+        "provider_selection_reason",
+        "provider_selection_source",
+        "reason_code",
+        "reason_summary",
+        "schema_version",
+        "section_id",
+        "simulation_fingerprint",
+        "simulation_source",
+        "simulation_status",
+        "simulation_timestamp",
+    }
+
+
+def test_stage75_indeterminate_artifact_has_normalized_reason_fields():
+    project_root = _workspace_dir("dgce_incremental_stage75_normalized_indeterminate")
+
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="infra_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "preview_artifact_missing"
+    assert simulation_artifact["reason_summary"] == "Preview artifact required for simulation modeling was missing."
+    assert simulation_artifact["findings"] == []
+
+
+def test_stage75_fail_artifact_normalizes_factual_findings_with_stable_codes(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_stage75_normalized_fail")
+
+    def failing_provider(_request):
+        return {
+            "simulation_status": "fail",
+            "findings": [
+                {
+                    "code": "approved write set violates deterministic safe modify boundary",
+                    "summary": "Approved write set violates deterministic safe modify boundary.",
+                    "target": "deploy/docker-compose.yaml",
+                }
+            ],
+        }
+
+    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", failing_provider)
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["reason_summary"] == "Simulation produced concrete blocking findings."
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "approved_write_set_violates_deterministic_safe_modify_boundary",
+            "summary": "Approved write set violates deterministic safe modify boundary.",
+            "target": "deploy/docker-compose.yaml",
+        }
+    ]
+
+
 def test_execute_reserved_simulation_gate_preserves_skip_behavior_without_provider_execution(monkeypatch):
     project_root = _workspace_dir("dgce_incremental_v2_9_simulation_skip_provider")
     provider_calls: list[dict] = []
@@ -7800,6 +7915,10 @@ def test_execute_reserved_simulation_gate_fail_closes_invalid_provider_response(
     assert simulation_gate["simulation_blocked"] is True
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["indeterminate_reason"] == "invalid_provider_response"
+    assert simulation_artifact["reason_code"] == "invalid_provider_response"
+    assert simulation_artifact["reason_summary"] == (
+        "Provider response could not be normalized into the sealed simulation evidence contract."
+    )
 
 
 def test_execute_reserved_simulation_gate_blocks_on_provider_fail_with_findings(monkeypatch):
@@ -7829,7 +7948,15 @@ def test_execute_reserved_simulation_gate_blocks_on_provider_fail_with_findings(
     )
     assert simulation_gate["simulation_blocked"] is True
     assert simulation_artifact["simulation_status"] == "fail"
-    assert simulation_artifact["findings"] == ["approved write set violates deterministic safe modify boundary"]
+    assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["reason_summary"] == "Simulation produced concrete blocking findings."
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "approved_write_set_violates_deterministic_safe_modify_boundary",
+            "summary": "approved write set violates deterministic safe modify boundary",
+            "target": None,
+        }
+    ]
 
 
 def test_execute_reserved_simulation_gate_allows_stage_8_when_provider_passes(monkeypatch):
@@ -7859,6 +7986,42 @@ def test_execute_reserved_simulation_gate_allows_stage_8_when_provider_passes(mo
     )
     assert simulation_gate["simulation_blocked"] is False
     assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["reason_code"] == "simulation_pass"
+    assert simulation_artifact["reason_summary"] == "Simulation completed without blocking findings."
+    assert simulation_artifact["findings"] == []
+
+
+def test_execute_reserved_simulation_gate_fail_closes_malformed_provider_findings(monkeypatch):
+    project_root = _workspace_dir("dgce_incremental_v2_9_simulation_provider_bad_findings")
+
+    def invalid_provider(_request):
+        return {
+            "simulation_status": "fail",
+            "findings": [{"code": "bad_payload_without_summary"}],
+        }
+
+    monkeypatch.setitem(dgce_decompose._SIMULATION_PROVIDER_REGISTRY, "workspace_artifact", invalid_provider)
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="workspace_artifact",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_blocked"] is True
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "invalid_provider_response"
+    assert simulation_artifact["reason_summary"] == (
+        "Provider response could not be normalized into the sealed simulation evidence contract."
+    )
     assert simulation_artifact["findings"] == []
 
 
@@ -7904,6 +8067,7 @@ def test_infra_dry_run_provider_passes_for_create_only_infra_candidate(monkeypat
     assert result.execution_outcome["status"] == "success"
     assert simulation_artifact["provider_name"] == "infra_dry_run"
     assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["reason_code"] == "simulation_pass"
     assert simulation_artifact["findings"] == []
 
 
@@ -7955,8 +8119,13 @@ def test_infra_dry_run_provider_fails_for_modify_infra_candidate(monkeypatch):
     assert result.execution_outcome["simulation_status"] == "fail"
     assert simulation_artifact["provider_name"] == "infra_dry_run"
     assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["reason_code"] == "simulation_fail"
     assert simulation_artifact["findings"] == [
-        "infrastructure dry-run detected modify candidate: deploy/docker-compose.yaml"
+        {
+            "code": "infra_modify_candidate",
+            "summary": "Infrastructure dry-run detected a modify candidate.",
+            "target": "deploy/docker-compose.yaml",
+        }
     ]
 
 
@@ -7980,6 +8149,8 @@ def test_infra_dry_run_provider_returns_indeterminate_when_preview_input_missing
     assert simulation_gate["simulation_blocked"] is True
     assert simulation_artifact["provider_name"] == "infra_dry_run"
     assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "preview_artifact_missing"
+    assert simulation_artifact["reason_summary"] == "Preview artifact required for simulation modeling was missing."
     assert simulation_artifact["indeterminate_reason"] == "preview_artifact_missing"
 
 

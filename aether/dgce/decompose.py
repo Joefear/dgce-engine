@@ -174,7 +174,7 @@ class SectionSimulationInput(BaseModel):
     """Deterministic Stage 7.5 simulation result input produced outside DGCE."""
 
     simulation_status: Literal["pass", "fail", "indeterminate"]
-    findings: List[str] = Field(default_factory=list)
+    findings: List[Any] = Field(default_factory=list)
     indeterminate_reason: str | None = None
     provider_name: str | None = None
     provider_selection_reason: str | None = None
@@ -198,7 +198,7 @@ class Stage75SimulationProviderResponse(BaseModel):
     """Strict Stage 7.5 provider response contract."""
 
     simulation_status: Literal["pass", "fail", "indeterminate"]
-    findings: List[str] = Field(default_factory=list)
+    findings: List[Any] = Field(default_factory=list)
     indeterminate_reason: str | None = None
 
 
@@ -2448,13 +2448,31 @@ def _validate_simulation_record_schema(payload: Any) -> None:
     artifact_name = "simulation_record"
     artifact = _expect_dict(payload, artifact_name, artifact_name)
     _validate_artifact_metadata(artifact, artifact_name, "simulation_record")
+    unexpected_fields = sorted(set(artifact.keys()) - _SIMULATION_RECORD_ALLOWED_FIELDS)
+    if unexpected_fields:
+        _schema_error(artifact_name, f"unexpected fields are not allowed: {', '.join(unexpected_fields)}")
     _expect_str(_expect_required_field(artifact, "contract_version", artifact_name), artifact_name, "contract_version")
     _expect_str(_expect_required_field(artifact, "section_id", artifact_name), artifact_name, "section_id")
     findings = _expect_list(_expect_required_field(artifact, "findings", artifact_name), artifact_name, "findings")
     for index, finding in enumerate(findings):
-        _expect_str(finding, artifact_name, f"findings[{index}]")
-        if not str(finding).strip():
-            _schema_error(artifact_name, f"findings[{index}] must not be empty")
+        finding_payload = _expect_dict(finding, artifact_name, f"findings[{index}]")
+        _expect_str(_expect_required_field(finding_payload, "code", artifact_name), artifact_name, f"findings[{index}].code")
+        _expect_str(
+            _expect_required_field(finding_payload, "summary", artifact_name),
+            artifact_name,
+            f"findings[{index}].summary",
+        )
+        _expect_optional_str(
+            _expect_required_field(finding_payload, "target", artifact_name),
+            artifact_name,
+            f"findings[{index}].target",
+        )
+        if set(finding_payload.keys()) != _SIMULATION_FINDING_ALLOWED_FIELDS:
+            _schema_error(artifact_name, f"findings[{index}] must contain only code, summary, and target")
+        if _normalize_simulation_finding_code(finding_payload["code"]) != finding_payload["code"]:
+            _schema_error(artifact_name, f"findings[{index}].code must be normalized")
+        if not finding_payload["summary"].strip():
+            _schema_error(artifact_name, f"findings[{index}].summary must not be empty")
     _expect_optional_str(_expect_required_field(artifact, "indeterminate_reason", artifact_name), artifact_name, "indeterminate_reason")
     _expect_optional_str(_expect_required_field(artifact, "provider_name", artifact_name), artifact_name, "provider_name")
     _expect_optional_str(
@@ -2467,6 +2485,8 @@ def _validate_simulation_record_schema(payload: Any) -> None:
         artifact_name,
         "provider_selection_source",
     )
+    _expect_str(_expect_required_field(artifact, "reason_code", artifact_name), artifact_name, "reason_code")
+    _expect_str(_expect_required_field(artifact, "reason_summary", artifact_name), artifact_name, "reason_summary")
     _expect_str(_expect_required_field(artifact, "simulation_status", artifact_name), artifact_name, "simulation_status")
     _expect_str(_expect_required_field(artifact, "simulation_source", artifact_name), artifact_name, "simulation_source")
     _expect_str(_expect_required_field(artifact, "simulation_timestamp", artifact_name), artifact_name, "simulation_timestamp")
@@ -2479,6 +2499,19 @@ def _validate_simulation_record_schema(payload: Any) -> None:
         _schema_error(artifact_name, "provider_selection_source must be a supported Stage 7.5 provider selection source")
     if artifact["simulation_status"] not in _ALLOWED_SIMULATION_STATUSES:
         _schema_error(artifact_name, "simulation_status must be pass, fail, or indeterminate")
+    if artifact["reason_code"] not in _ALLOWED_SIMULATION_REASON_CODES:
+        _schema_error(artifact_name, "reason_code must be a supported Stage 7.5 simulation reason code")
+    if not artifact["reason_summary"].strip():
+        _schema_error(artifact_name, "reason_summary must not be empty")
+    expected_reason_code, expected_reason_summary = _normalize_simulation_reason_fields(
+        simulation_status=str(artifact["simulation_status"]),
+        findings=findings,
+        indeterminate_reason=artifact["indeterminate_reason"],
+    )
+    if artifact["reason_code"] != expected_reason_code:
+        _schema_error(artifact_name, "reason_code must match normalized simulation evidence")
+    if artifact["reason_summary"] != expected_reason_summary:
+        _schema_error(artifact_name, "reason_summary must match normalized simulation evidence")
     if artifact["simulation_status"] == "pass":
         if findings:
             _schema_error(artifact_name, "findings must be empty when simulation_status is pass")
@@ -5190,6 +5223,50 @@ _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
     "simulation_result_missing",
 }
 _ALLOWED_SIMULATION_PROVIDER_SELECTION_SOURCES = {"explicit", "inferred", "not_applicable", "unresolved"}
+_ALLOWED_SIMULATION_REASON_CODES = {
+    "dry_run_input_missing",
+    "infra_candidate_absent",
+    "invalid_provider_response",
+    "preview_artifact_missing",
+    "provider_exception",
+    "provider_unavailable",
+    "simulation_fail",
+    "simulation_pass",
+    "simulation_provider_unresolved",
+    "simulation_result_missing",
+}
+_SIMULATION_REASON_SUMMARIES = {
+    "dry_run_input_missing": "Dry-run modeling input was missing or malformed.",
+    "infra_candidate_absent": "No actionable infrastructure dry-run candidate was present.",
+    "invalid_provider_response": "Provider response could not be normalized into the sealed simulation evidence contract.",
+    "preview_artifact_missing": "Preview artifact required for simulation modeling was missing.",
+    "provider_exception": "Provider execution raised an exception before producing reliable evidence.",
+    "provider_unavailable": "Selected provider was required but unavailable.",
+    "simulation_fail": "Simulation produced concrete blocking findings.",
+    "simulation_pass": "Simulation completed without blocking findings.",
+    "simulation_provider_unresolved": "No applicable simulation provider could be resolved.",
+    "simulation_result_missing": "Simulation result artifact was missing.",
+}
+_SIMULATION_RECORD_ALLOWED_FIELDS = {
+    "artifact_type",
+    "artifact_fingerprint",
+    "contract_version",
+    "findings",
+    "generated_by",
+    "indeterminate_reason",
+    "provider_name",
+    "provider_selection_reason",
+    "provider_selection_source",
+    "reason_code",
+    "reason_summary",
+    "schema_version",
+    "section_id",
+    "simulation_fingerprint",
+    "simulation_source",
+    "simulation_status",
+    "simulation_timestamp",
+}
+_SIMULATION_FINDING_ALLOWED_FIELDS = {"code", "summary", "target"}
 _SIMULATION_PROVIDER_REGISTRY: dict[str, SimulationProviderCallable] = {}
 _SIMULATION_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 _INFRA_DRY_RUN_PROVIDER_NAME = "infra_dry_run"
@@ -5288,9 +5365,14 @@ def _build_simulation_artifact(
     simulation_status = str(simulation_input.simulation_status).strip().lower()
     if simulation_status not in _ALLOWED_SIMULATION_STATUSES:
         raise ValueError(f"Unsupported simulation status: {simulation_input.simulation_status}")
-    findings = [str(finding).strip() for finding in simulation_input.findings if str(finding).strip()]
+    findings = _normalize_simulation_findings(simulation_input.findings)
     indeterminate_reason = (
         None if simulation_input.indeterminate_reason is None else str(simulation_input.indeterminate_reason).strip()
+    )
+    reason_code, reason_summary = _normalize_simulation_reason_fields(
+        simulation_status=simulation_status,
+        findings=findings,
+        indeterminate_reason=indeterminate_reason,
     )
     if simulation_status == "pass":
         if findings:
@@ -5327,6 +5409,8 @@ def _build_simulation_artifact(
                 if simulation_input.provider_selection_source is None
                 else str(simulation_input.provider_selection_source).strip() or None
             ),
+            "reason_code": reason_code,
+            "reason_summary": reason_summary,
             "simulation_status": simulation_status,
             "simulation_source": str(simulation_input.simulation_source),
             "simulation_timestamp": str(simulation_input.simulation_timestamp),
@@ -5354,11 +5438,13 @@ def _load_valid_simulation_artifact(workspace_root: Path, section_id: str) -> di
         return None
     if str(payload.get("section_id")) != section_id:
         return None
+    if set(payload.keys()) != _SIMULATION_RECORD_ALLOWED_FIELDS:
+        return None
     simulation_status = str(payload.get("simulation_status"))
     if simulation_status not in _ALLOWED_SIMULATION_STATUSES:
         return None
     findings = payload.get("findings")
-    if not isinstance(findings, list) or any(not isinstance(entry, str) or not entry.strip() for entry in findings):
+    if not _are_valid_simulation_findings(findings):
         return None
     indeterminate_reason = payload.get("indeterminate_reason")
     if indeterminate_reason is not None and not isinstance(indeterminate_reason, str):
@@ -5371,6 +5457,19 @@ def _load_valid_simulation_artifact(workspace_root: Path, section_id: str) -> di
         not isinstance(payload.get("provider_selection_source"), str)
         or payload.get("provider_selection_source") not in _ALLOWED_SIMULATION_PROVIDER_SELECTION_SOURCES
     ):
+        return None
+    reason_code = payload.get("reason_code")
+    reason_summary = payload.get("reason_summary")
+    if not isinstance(reason_code, str) or reason_code not in _ALLOWED_SIMULATION_REASON_CODES:
+        return None
+    if not isinstance(reason_summary, str) or not reason_summary.strip():
+        return None
+    expected_reason_code, expected_reason_summary = _normalize_simulation_reason_fields(
+        simulation_status=simulation_status,
+        findings=findings,
+        indeterminate_reason=indeterminate_reason,
+    )
+    if reason_code != expected_reason_code or reason_summary != expected_reason_summary:
         return None
     if simulation_status == "pass" and (findings or indeterminate_reason is not None):
         return None
@@ -5402,6 +5501,94 @@ def _build_simulation_provider_request(
         simulation_trigger_timestamp=str(simulation_trigger_artifact.get("simulation_trigger_timestamp")),
         trigger_source=str(simulation_trigger_artifact.get("trigger_source")),
     )
+
+
+def _normalize_simulation_finding_code(value: str) -> str:
+    normalized = "".join(character.lower() if character.isalnum() else "_" for character in value.strip())
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_") or "simulation_finding"
+
+
+def _normalize_simulation_findings(findings: list[Any]) -> list[dict[str, Any]]:
+    normalized_findings: list[dict[str, Any]] = []
+    for index, finding in enumerate(findings):
+        if isinstance(finding, str):
+            summary = finding.strip()
+            if not summary:
+                raise ValueError(f"Simulation finding at index {index} must not be empty")
+            normalized_findings.append(
+                {
+                    "code": _normalize_simulation_finding_code(summary),
+                    "summary": summary,
+                    "target": None,
+                }
+            )
+            continue
+        if isinstance(finding, dict):
+            code = finding.get("code")
+            summary = finding.get("summary")
+            if not isinstance(code, str) or not code.strip():
+                raise ValueError(f"Simulation finding at index {index} must provide a non-empty code")
+            if not isinstance(summary, str) or not summary.strip():
+                raise ValueError(f"Simulation finding at index {index} must provide a non-empty summary")
+            target = finding.get("target")
+            if target is not None and (not isinstance(target, str) or not target.strip()):
+                raise ValueError(f"Simulation finding at index {index} target must be null or a non-empty string")
+            normalized_findings.append(
+                {
+                    "code": _normalize_simulation_finding_code(code),
+                    "summary": summary.strip(),
+                    "target": None if target is None else str(target).strip(),
+                }
+            )
+            continue
+        raise ValueError(f"Simulation finding at index {index} must be a string or object")
+    return sorted(
+        normalized_findings,
+        key=lambda finding: (
+            str(finding.get("target") or ""),
+            str(finding.get("code") or ""),
+            str(finding.get("summary") or ""),
+        ),
+    )
+
+
+def _are_valid_simulation_findings(findings: Any) -> bool:
+    if not isinstance(findings, list):
+        return False
+    for finding in findings:
+        if not isinstance(finding, dict):
+            return False
+        code = finding.get("code")
+        summary = finding.get("summary")
+        target = finding.get("target")
+        if not isinstance(code, str) or _normalize_simulation_finding_code(code) != code:
+            return False
+        if not isinstance(summary, str) or not summary.strip():
+            return False
+        if target is not None and (not isinstance(target, str) or not target.strip()):
+            return False
+        if set(finding.keys()) != _SIMULATION_FINDING_ALLOWED_FIELDS:
+            return False
+    return True
+
+
+def _normalize_simulation_reason_fields(
+    *,
+    simulation_status: str,
+    findings: list[dict[str, Any]],
+    indeterminate_reason: str | None,
+) -> tuple[str, str]:
+    if simulation_status == "pass":
+        return "simulation_pass", _SIMULATION_REASON_SUMMARIES["simulation_pass"]
+    if simulation_status == "fail":
+        if not findings:
+            raise ValueError("Fail simulation record requires normalized findings")
+        return "simulation_fail", _SIMULATION_REASON_SUMMARIES["simulation_fail"]
+    if indeterminate_reason not in _ALLOWED_SIMULATION_INDETERMINATE_REASONS:
+        raise ValueError(f"Unsupported indeterminate simulation reason: {indeterminate_reason}")
+    return indeterminate_reason, _SIMULATION_REASON_SUMMARIES[indeterminate_reason]
 
 
 def _resolve_stage75_simulation_provider(
@@ -5510,7 +5697,7 @@ def _load_simulation_provider_response_from_infra_dry_run_preview(
             "simulation_status": "indeterminate",
         }
 
-    findings: list[str] = []
+    normalized_findings: list[dict[str, Any]] = []
     for entry in sorted(actionable_candidates, key=lambda item: str(item.get("path", ""))):
         path_value = entry.get("path")
         planned_action = str(entry.get("planned_action", "")).strip()
@@ -5521,11 +5708,17 @@ def _load_simulation_provider_response_from_infra_dry_run_preview(
                 "simulation_status": "indeterminate",
             }
         if planned_action == "modify":
-            findings.append(f"infrastructure dry-run detected modify candidate: {Path(path_value).as_posix()}")
+            normalized_findings.append(
+                {
+                    "code": "infra_modify_candidate",
+                    "summary": "Infrastructure dry-run detected a modify candidate.",
+                    "target": Path(path_value).as_posix(),
+                }
+            )
 
-    if findings:
+    if normalized_findings:
         return {
-            "findings": findings,
+            "findings": normalized_findings,
             "indeterminate_reason": None,
             "simulation_status": "fail",
         }
