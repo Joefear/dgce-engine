@@ -6817,6 +6817,11 @@ def _is_external_sql_migration_unsupported_path(path_value: Any) -> bool:
     return not _is_external_sql_migration_candidate_path(normalized_path)
 
 
+# Phase 5 external_dry_run inventory is intentionally bounded to compose,
+# dockerfile, k8s, terraform, and sql_migration. Resolution uses only
+# explicit preview-known inputs, permits exactly one active external family,
+# fails closed on mixed families, emits only compact normalized findings,
+# maps unknown diagnostics to parse_error, and never leaks raw tool output.
 def _resolve_external_dry_run_targets(
     workspace_root: Path,
     section_id: str,

@@ -436,6 +436,127 @@ def test_stage75_contract_lock_forced_override_invariants():
     assert projection["simulation_provider"] == "infra_dry_run"
 
 
+@pytest.mark.parametrize(
+    ("case_name", "prepared_file_plan", "materialize_inputs"),
+    [
+        (
+            "compose",
+            FilePlan(
+                project_name="DGCE",
+                files=[{"path": "deploy/compose.yml", "purpose": "Compose manifest", "source": "expected_targets"}],
+            ),
+            lambda project_root: (
+                (project_root / "deploy").mkdir(parents=True, exist_ok=True),
+                (project_root / "deploy" / "compose.yml").write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8"),
+            ),
+        ),
+        (
+            "dockerfile",
+            FilePlan(
+                project_name="DGCE",
+                files=[{"path": "Dockerfile.dev", "purpose": "Dockerfile", "source": "expected_targets"}],
+            ),
+            lambda project_root: (
+                project_root.mkdir(parents=True, exist_ok=True),
+                (project_root / "Dockerfile.dev").write_text("FROM alpine:latest\n", encoding="utf-8"),
+            ),
+        ),
+        (
+            "k8s",
+            FilePlan(
+                project_name="DGCE",
+                files=[{"path": "deploy/config.yaml", "purpose": "Kubernetes manifest", "source": "expected_targets"}],
+            ),
+            lambda project_root: (
+                (project_root / "deploy").mkdir(parents=True, exist_ok=True),
+                (project_root / "deploy" / "config.yaml").write_text("apiVersion: v1\nkind: Service\nmetadata:\n  name: app\n", encoding="utf-8"),
+            ),
+        ),
+        (
+            "terraform",
+            FilePlan(
+                project_name="DGCE",
+                files=[
+                    {"path": "infra/terraform/main.tf", "purpose": "Terraform module", "source": "expected_targets"},
+                    {"path": "ops/terraform/main.tf", "purpose": "Terraform module", "source": "expected_targets"},
+                ],
+            ),
+            lambda project_root: (
+                (project_root / "infra" / "terraform").mkdir(parents=True, exist_ok=True),
+                (project_root / "infra" / "terraform" / "main.tf").write_text('resource "null_resource" "example" {}\n', encoding="utf-8"),
+                (project_root / "ops" / "terraform").mkdir(parents=True, exist_ok=True),
+                (project_root / "ops" / "terraform" / "main.tf").write_text('resource "null_resource" "example_two" {}\n', encoding="utf-8"),
+            ),
+        ),
+        (
+            "sql_migration",
+            FilePlan(
+                project_name="DGCE",
+                files=[{"path": "sql/query.sql", "purpose": "SQL migration", "source": "expected_targets"}],
+            ),
+            lambda project_root: (
+                (project_root / "sql").mkdir(parents=True, exist_ok=True),
+                (project_root / "sql" / "query.sql").write_text("SELECT 1;\n", encoding="utf-8"),
+            ),
+        ),
+    ],
+)
+def test_stage75_contract_lock_external_forced_override_projection_is_consistent_across_families(
+    monkeypatch,
+    case_name,
+    prepared_file_plan,
+    materialize_inputs,
+):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir(f"dgce_stage75_contract_lock_external_forced_override_{case_name}")
+    materialize_inputs(project_root)
+
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+    _record_basic_approval(project_root, selected_mode="create_only")
+
+    execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = _read_simulation_artifact(project_root)
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["provider_name"] == "external_dry_run"
+    assert simulation_artifact["reason_code"] in {"external_command_unsupported", "external_command_input_missing"}
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["findings"] == []
+    assert "stdout" not in simulation_artifact
+    assert "stderr" not in simulation_artifact
+
+    projections = _all_simulation_projections(project_root)
+    first_projection = next(iter(projections.values()))
+    for projection in projections.values():
+        assert projection == first_projection
+        _assert_simulation_projection_invariants(projection)
+        assert projection["simulation_status"] == "indeterminate"
+        assert projection["simulation_provider"] == "external_dry_run"
+        assert projection["selected_provider"] == "external_dry_run"
+        assert projection["provider_resolution"] == "forced_override"
+        assert projection["provider_execution_state"] == "forced_override"
+        assert projection["provider_execution_summary"] == "external dry-run forced override applied"
+        assert projection["findings_count"] == 0
+        assert projection["finding_codes"] == []
+        assert projection["reason_code"] in {"external_command_unsupported", "external_command_input_missing"}
+        assert projection["provider_execution_target"] is None
+
+
 def test_stage75_contract_lock_multi_provider_conflict_is_fail_closed(monkeypatch):
     _patch_stub_executor(monkeypatch)
     project_root = _workspace_dir("dgce_stage75_contract_lock_conflict")
