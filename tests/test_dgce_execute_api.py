@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import subprocess
 
 from fastapi.testclient import TestClient
 import pytest
@@ -2453,6 +2454,7 @@ class TestDGCEExecuteAPI:
             ],
             "simulation": {
                 "applicable_providers": [],
+                "advisory_provider": None,
                 "findings_count": 0,
                 "finding_codes": [],
                 "provider_execution_state": "not_run",
@@ -2526,6 +2528,7 @@ class TestDGCEExecuteAPI:
             "bundle_references": [],
             "simulation": {
                 "applicable_providers": [],
+                "advisory_provider": None,
                 "findings_count": 0,
                 "finding_codes": [],
                 "provider_execution_state": "not_run",
@@ -2809,6 +2812,7 @@ class TestDGCEExecuteAPI:
             "bundle_references": [],
             "simulation": {
                 "applicable_providers": [],
+                "advisory_provider": None,
                 "findings_count": 0,
                 "finding_codes": [],
                 "provider_execution_state": "not_run",
@@ -3044,6 +3048,7 @@ class TestDGCEExecuteAPI:
         assert response.status_code == 200
         assert response.json()["simulation"] == {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 1,
             "finding_codes": ["infra_modify_candidate"],
             "provider_execution_state": "forced_override",
@@ -3087,6 +3092,7 @@ class TestDGCEExecuteAPI:
         assert dashboard.status_code == 200
         assert summary.json()["simulation"] == {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "not_run",
@@ -3104,6 +3110,60 @@ class TestDGCEExecuteAPI:
             "trigger_reason_codes": [],
             "trigger_reason_summary": None,
         }
+        assert overview.json()["simulation"] == summary.json()["simulation"]
+        assert dashboard.json()["simulation"] == summary.json()["simulation"]
+
+    def test_get_section_summary_exposes_advisory_provider_when_stage75_composition_is_recorded(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_section_stage75_advisory_projection")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        prepared_file_plan = FilePlan(
+            project_name="DGCE",
+            files=[
+                {
+                    "path": "deploy/docker-compose.yaml",
+                    "purpose": "Infrastructure dry-run candidate.",
+                    "source": "system_component",
+                }
+            ],
+        )
+        compose_path = project_root / "deploy" / "docker-compose.yaml"
+        compose_path.parent.mkdir(parents=True, exist_ok=True)
+        compose_path.write_text("version: '3'\nservices: {}\n", encoding="utf-8")
+
+        def fake_run(self, executor_name, content):
+            return _stub_executor_result(content)
+
+        def fake_subprocess_run(command, **_kwargs):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="services.app.image must be a string\n")
+
+        monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+        monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+        run_section_with_workspace(
+            _section(),
+            project_root,
+            incremental_mode="incremental_v2_2",
+            allow_safe_modify=True,
+            prepared_file_plan=prepared_file_plan,
+        )
+        dgce_decompose.execute_reserved_simulation_gate(
+            project_root,
+            "mission-board",
+            require_preflight_pass=True,
+            simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+                simulation_triggered=True,
+                simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+            ),
+        )
+
+        summary = _get_section_summary(client, project_root, "mission-board")
+        overview = _get_section_overview(client, project_root, "mission-board")
+        dashboard = _get_section_dashboard(client, project_root, "mission-board")
+
+        assert summary.status_code == 200
+        assert summary.json()["simulation"]["simulation_provider"] == "infra_dry_run"
+        assert summary.json()["simulation"]["advisory_provider"] == "external_dry_run"
+        assert summary.json()["simulation"]["finding_codes"] == ["external_command_failed", "infra_modify_candidate"]
         assert overview.json()["simulation"] == summary.json()["simulation"]
         assert dashboard.json()["simulation"] == summary.json()["simulation"]
 

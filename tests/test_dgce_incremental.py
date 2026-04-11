@@ -247,6 +247,7 @@ def _expected_section_summary(
         "section_id": section_id,
         "simulation": {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "not_run",
@@ -284,6 +285,7 @@ def _expected_section_summary(
 def _explicit_non_triggered_simulation_projection(simulation_provider=None):
     return {
         "applicable_providers": [],
+        "advisory_provider": None,
         "findings_count": 0,
         "finding_codes": [],
         "provider_execution_state": "not_run",
@@ -381,6 +383,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -440,6 +443,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -517,6 +521,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -568,6 +573,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -676,6 +682,7 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -7865,6 +7872,16 @@ def test_stage75_pass_artifact_has_normalized_reason_fields(monkeypatch):
     assert simulation_artifact["provider_execution_state"] == "forced_override"
     assert simulation_artifact["provider_execution_summary"] == "workspace artifact forced override applied"
     assert simulation_artifact["provider_execution_target"] is None
+    assert simulation_artifact["provider_composition"] == {
+        "authoritative_provider": "workspace_artifact",
+        "advisory_provider": None,
+        "composition_mode": "authoritative_only",
+    }
+    assert simulation_artifact["advisory_execution"] == {
+        "state": "not_run",
+        "summary": "simulation not executed",
+        "target": None,
+    }
     assert "provider_debug_blob" not in simulation_artifact
     assert set(simulation_artifact.keys()) == {
         "artifact_type",
@@ -7875,9 +7892,11 @@ def test_stage75_pass_artifact_has_normalized_reason_fields(monkeypatch):
         "indeterminate_reason",
         "provider_name",
         "provider_applicability",
+        "provider_composition",
         "provider_execution_state",
         "provider_execution_summary",
         "provider_execution_target",
+        "advisory_execution",
         "provider_selection_reason",
         "provider_selection_source",
         "reason_code",
@@ -9329,6 +9348,254 @@ def test_stage75_selector_returns_unresolved_when_no_provider_path_is_applicable
     assert simulation_artifact["indeterminate_reason"] == "simulation_provider_unresolved"
 
 
+def test_stage75_authoritative_only_baseline_records_authoritative_only_composition(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_authoritative_only_composition")
+    prepared_file_plan = _infra_file_plan()
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+    record_section_approval(
+        project_root,
+        "mission-board",
+        SectionApprovalInput(approval_status="approved", selected_mode="create_only", approval_timestamp="2026-03-26T00:00:00Z"),
+    )
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert result.run_outcome_class == "success_create_only"
+    assert simulation_artifact["provider_composition"] == {
+        "authoritative_provider": "infra_dry_run",
+        "advisory_provider": None,
+        "composition_mode": "authoritative_only",
+    }
+    assert simulation_artifact["advisory_execution"] == {
+        "state": "not_run",
+        "summary": "simulation not executed",
+        "target": None,
+    }
+
+
+def test_stage75_composition_appends_advisory_findings_without_changing_authoritative_fail(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_composition_infra_external")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("version: '3'\nservices: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="services.app.image must be a string\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["provider_composition"] == {
+        "authoritative_provider": "infra_dry_run",
+        "advisory_provider": "external_dry_run",
+        "composition_mode": "authoritative_plus_advisory",
+    }
+    assert simulation_artifact["advisory_execution"] == {
+        "state": "executed",
+        "summary": "docker compose config executed with blocking findings",
+        "target": "deploy/docker-compose.yaml",
+    }
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_command_failed",
+            "provider": "external_dry_run",
+            "summary": "services.app.image must be a string",
+            "target": "deploy/docker-compose.yaml",
+        },
+        {
+            "code": "infra_modify_candidate",
+            "provider": "infra_dry_run",
+            "summary": "Infrastructure dry-run detected a modify candidate.",
+            "target": "deploy/docker-compose.yaml",
+        },
+    ]
+
+
+def test_stage75_composition_ignores_advisory_failure_without_changing_authoritative_fail(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_composition_advisory_failure")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("version: '3'\nservices: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, timeout=dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "infra_dry_run"
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["provider_composition"] == {
+        "authoritative_provider": "infra_dry_run",
+        "advisory_provider": "external_dry_run",
+        "composition_mode": "authoritative_plus_advisory",
+    }
+    assert simulation_artifact["advisory_execution"] == {
+        "state": "timeout",
+        "summary": "external command timed out",
+        "target": "deploy/docker-compose.yaml",
+    }
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "infra_modify_candidate",
+            "provider": "infra_dry_run",
+            "summary": "Infrastructure dry-run detected a modify candidate.",
+            "target": "deploy/docker-compose.yaml",
+        }
+    ]
+
+
+def test_stage75_composition_workspace_authoritative_with_external_advisory_is_deterministic(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_composition_workspace_external")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("version: '3'\nservices: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="services.app Additional property typo is not allowed\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        allow_safe_modify=True,
+        prepared_file_plan=prepared_file_plan,
+    )
+    record_section_simulation(
+        project_root,
+        "mission-board",
+        simulation=SectionSimulationInput(
+            simulation_status="fail",
+            findings=["approved write set violates deterministic safe modify boundary"],
+            provider_name="workspace_artifact",
+            provider_selection_reason="seeded_workspace_artifact",
+            provider_selection_source="explicit",
+            simulation_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "workspace_artifact"
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["provider_composition"] == {
+        "authoritative_provider": "workspace_artifact",
+        "advisory_provider": "infra_dry_run",
+        "composition_mode": "authoritative_plus_advisory",
+    }
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "approved_write_set_violates_deterministic_safe_modify_boundary",
+            "provider": "workspace_artifact",
+            "summary": "approved write set violates deterministic safe modify boundary",
+            "target": None,
+        },
+        {
+            "code": "infra_modify_candidate",
+            "provider": "infra_dry_run",
+            "summary": "Infrastructure dry-run detected a modify candidate.",
+            "target": "deploy/docker-compose.yaml",
+        },
+    ]
+
+
 def test_stage_7_5_remains_outside_canonical_lifecycle_order():
     assert dgce_decompose.DGCE_LIFECYCLE_ORDER == [
         "preview",
@@ -9399,6 +9666,7 @@ def test_stage_7_5_projection_shows_triggered_pass_in_workspace_views(monkeypatc
     section_summary = next(entry for entry in dashboard["sections"] if entry["section_id"] == "mission-board")["section_summary"]
     assert section_summary["simulation"] == {
         "applicable_providers": [],
+        "advisory_provider": None,
         "findings_count": 0,
         "finding_codes": [],
         "provider_execution_state": "forced_override",
@@ -9448,6 +9716,7 @@ def test_stage_7_5_projection_shows_triggered_fail_with_compact_findings(monkeyp
     section_summary = next(entry for entry in workspace_summary["sections"] if entry["section_id"] == "mission-board")["section_summary"]
     assert section_summary["simulation"] == {
         "applicable_providers": [],
+        "advisory_provider": None,
         "findings_count": 2,
         "finding_codes": ["first_code", "second_code"],
         "provider_execution_state": "forced_override",
@@ -9485,6 +9754,7 @@ def test_stage_7_5_projection_shows_triggered_indeterminate_reason_fields():
     section_summary = next(entry for entry in workspace_index["sections"] if entry["section_id"] == "mission-board")["section_summary"]
     assert section_summary["simulation"] == {
         "applicable_providers": [],
+        "advisory_provider": None,
         "findings_count": 0,
         "finding_codes": [],
         "provider_execution_state": "forced_override",
@@ -9522,6 +9792,7 @@ def test_stage_7_5_projection_keeps_non_triggered_case_explicit():
     section_summary = next(entry for entry in review_index["sections"] if entry["section_id"] == "mission-board")["section_summary"]
     assert section_summary["simulation"] == {
         "applicable_providers": [],
+        "advisory_provider": None,
         "findings_count": 0,
         "finding_codes": [],
         "provider_execution_state": "not_run",
@@ -9567,6 +9838,7 @@ def test_stage_7_5_trigger_reason_projection_remains_consistent_across_workspace
 
     expected_projection = {
         "applicable_providers": [],
+        "advisory_provider": None,
         "findings_count": 1,
         "finding_codes": ["infra_modify_candidate"],
         "provider_execution_state": "forced_override",
@@ -9673,6 +9945,7 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
     expected = {
         "alpha-section": {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "not_run",
@@ -9692,6 +9965,7 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
         },
         "beta-section": {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "not_run",
@@ -9711,6 +9985,7 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
         },
         "gamma-section": {
             "applicable_providers": ["workspace_artifact"],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "executed",
@@ -9730,6 +10005,7 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
         },
         "delta-section": {
             "applicable_providers": ["workspace_artifact"],
+            "advisory_provider": None,
             "findings_count": 2,
             "finding_codes": ["duplicate_code", "distinct_code"],
             "provider_execution_state": "executed",
@@ -9749,6 +10025,7 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
         },
         "epsilon-section": {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "not_run",

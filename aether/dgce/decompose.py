@@ -181,7 +181,11 @@ class SectionSimulationInput(BaseModel):
     provider_selection_reason: str | None = None
     provider_selection_source: str | None = None
     provider_applicability: dict[str, Any] | None = None
+    provider_composition: dict[str, Any] | None = None
     provider_execution_target: str | None = None
+    advisory_execution_state: str | None = None
+    advisory_execution_summary: str | None = None
+    advisory_execution_target: str | None = None
     simulation_source: str = "external"
     simulation_timestamp: str = "1970-01-01T00:00:00Z"
 
@@ -1557,6 +1561,11 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         if isinstance(simulation_payload.get("provider_applicability"), dict)
         else {}
     )
+    provider_composition = (
+        simulation_payload.get("provider_composition")
+        if isinstance(simulation_payload.get("provider_composition"), dict)
+        else {}
+    )
     applicable_provider_items = provider_applicability.get("applicable_providers", [])
     applicable_providers = sorted(
         {
@@ -1584,6 +1593,11 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         return {
             "findings_count": len(finding_codes),
             "finding_codes": finding_codes,
+            "advisory_provider": (
+                provider_composition.get("advisory_provider")
+                if isinstance(provider_composition.get("advisory_provider"), str) and provider_composition.get("advisory_provider")
+                else None
+            ),
             "provider_selection_source": simulation_payload.get("provider_selection_source"),
             "provider_execution_state": simulation_payload.get("provider_execution_state"),
             "provider_execution_summary": simulation_payload.get("provider_execution_summary"),
@@ -1611,6 +1625,7 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
         return {
             "findings_count": 0,
             "finding_codes": [],
+            "advisory_provider": None,
             "provider_selection_source": "not_applicable" if not simulation_triggered else None,
             "provider_execution_state": "not_run",
             "provider_execution_summary": "simulation not executed",
@@ -1643,6 +1658,7 @@ def _build_section_simulation_projection(section_artifacts: dict[str, Any]) -> d
     return {
         "findings_count": 0,
         "finding_codes": [],
+        "advisory_provider": None,
         "provider_selection_source": None,
         "provider_execution_state": "not_run",
         "provider_execution_summary": "simulation not executed",
@@ -1677,6 +1693,7 @@ def _validate_section_simulation_projection(
         f"{field_name}.simulation_triggered",
     )
     for key in (
+        "advisory_provider",
         "provider_execution_state",
         "provider_execution_summary",
         "provider_execution_target",
@@ -1735,6 +1752,7 @@ def _validate_section_simulation_projection(
     provider_resolution = projection.get("provider_resolution")
     provider_selection_source = projection.get("provider_selection_source")
     selected_provider = projection.get("selected_provider")
+    advisory_provider = projection.get("advisory_provider")
 
     if provider_execution_state not in _ALLOWED_SIMULATION_PROVIDER_EXECUTION_STATES:
         _schema_error(artifact_name, f"{field_name}.provider_execution_state must be a supported Stage 7.5 provider execution state")
@@ -1750,6 +1768,8 @@ def _validate_section_simulation_projection(
             _schema_error(artifact_name, f"{field_name} must remain non-triggered and status-free when simulation_stage_applicable is false")
         if provider_selection_source is not None:
             _schema_error(artifact_name, f"{field_name}.provider_selection_source must be null when simulation_stage_applicable is false")
+        if advisory_provider is not None:
+            _schema_error(artifact_name, f"{field_name}.advisory_provider must be null when simulation_stage_applicable is false")
         if provider_execution_state != "not_run" or provider_execution_target is not None:
             _schema_error(artifact_name, f"{field_name} must expose only not_run execution metadata when simulation_stage_applicable is false")
         if applicable_providers or provider_resolution is not None or selected_provider is not None:
@@ -1761,6 +1781,8 @@ def _validate_section_simulation_projection(
     if simulation_status == "skipped":
         if simulation_triggered:
             _schema_error(artifact_name, f"{field_name}.simulation_triggered must be false when simulation_status is skipped")
+        if advisory_provider is not None:
+            _schema_error(artifact_name, f"{field_name}.advisory_provider must be null when simulation_status is skipped")
         if provider_selection_source != "not_applicable":
             _schema_error(artifact_name, f"{field_name}.provider_selection_source must be not_applicable when simulation_status is skipped")
         if finding_codes or findings_count != 0:
@@ -1828,6 +1850,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -1885,6 +1908,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -1960,6 +1984,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -2009,6 +2034,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -2113,6 +2139,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.advisory_provider",
                 "sections[].section_summary.simulation.provider_execution_state",
                 "sections[].section_summary.simulation.provider_execution_summary",
                 "sections[].section_summary.simulation.provider_execution_target",
@@ -2853,14 +2880,47 @@ def _validate_simulation_record_schema(payload: Any) -> None:
             artifact_name,
             f"findings[{index}].target",
         )
-        if set(finding_payload.keys()) != _SIMULATION_FINDING_ALLOWED_FIELDS:
-            _schema_error(artifact_name, f"findings[{index}] must contain only code, summary, and target")
+        if "provider" in finding_payload:
+            _expect_optional_str(
+                _expect_required_field(finding_payload, "provider", artifact_name),
+                artifact_name,
+                f"findings[{index}].provider",
+            )
+        if set(finding_payload.keys()) not in (
+            _SIMULATION_FINDING_ALLOWED_FIELDS - {"provider"},
+            _SIMULATION_FINDING_ALLOWED_FIELDS,
+        ):
+            _schema_error(artifact_name, f"findings[{index}] must contain only code, summary, target, and optional provider")
         if _normalize_simulation_finding_code(finding_payload["code"]) != finding_payload["code"]:
             _schema_error(artifact_name, f"findings[{index}].code must be normalized")
         if not finding_payload["summary"].strip():
             _schema_error(artifact_name, f"findings[{index}].summary must not be empty")
+        if finding_payload.get("provider") is not None and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(finding_payload["provider"]) is None:
+            _schema_error(artifact_name, f"findings[{index}].provider must be a valid provider identifier when present")
     _expect_optional_str(_expect_required_field(artifact, "indeterminate_reason", artifact_name), artifact_name, "indeterminate_reason")
     _expect_optional_str(_expect_required_field(artifact, "provider_name", artifact_name), artifact_name, "provider_name")
+    provider_composition = _expect_dict(
+        _expect_required_field(artifact, "provider_composition", artifact_name),
+        artifact_name,
+        "provider_composition",
+    )
+    _expect_optional_str(
+        _expect_required_field(provider_composition, "authoritative_provider", artifact_name),
+        artifact_name,
+        "provider_composition.authoritative_provider",
+    )
+    _expect_optional_str(
+        _expect_required_field(provider_composition, "advisory_provider", artifact_name),
+        artifact_name,
+        "provider_composition.advisory_provider",
+    )
+    _expect_str(
+        _expect_required_field(provider_composition, "composition_mode", artifact_name),
+        artifact_name,
+        "provider_composition.composition_mode",
+    )
+    if set(provider_composition.keys()) != _SIMULATION_PROVIDER_COMPOSITION_ALLOWED_FIELDS:
+        _schema_error(artifact_name, "provider_composition must contain only authoritative_provider, advisory_provider, and composition_mode")
     provider_applicability = _expect_dict(
         _expect_required_field(artifact, "provider_applicability", artifact_name),
         artifact_name,
@@ -2904,6 +2964,20 @@ def _validate_simulation_record_schema(payload: Any) -> None:
         artifact_name,
         "provider_execution_target",
     )
+    advisory_execution = _expect_dict(
+        _expect_required_field(artifact, "advisory_execution", artifact_name),
+        artifact_name,
+        "advisory_execution",
+    )
+    _expect_str(_expect_required_field(advisory_execution, "state", artifact_name), artifact_name, "advisory_execution.state")
+    _expect_str(_expect_required_field(advisory_execution, "summary", artifact_name), artifact_name, "advisory_execution.summary")
+    _expect_optional_str(
+        _expect_required_field(advisory_execution, "target", artifact_name),
+        artifact_name,
+        "advisory_execution.target",
+    )
+    if set(advisory_execution.keys()) != _SIMULATION_ADVISORY_EXECUTION_ALLOWED_FIELDS:
+        _schema_error(artifact_name, "advisory_execution must contain only state, summary, and target")
     _expect_str(_expect_required_field(artifact, "reason_code", artifact_name), artifact_name, "reason_code")
     _expect_str(_expect_required_field(artifact, "reason_summary", artifact_name), artifact_name, "reason_summary")
     _expect_str(_expect_required_field(artifact, "simulation_status", artifact_name), artifact_name, "simulation_status")
@@ -2924,6 +2998,24 @@ def _validate_simulation_record_schema(payload: Any) -> None:
         _schema_error(artifact_name, "provider_execution_target must be normalized when present")
     if artifact["provider_execution_target"] is not None and Path(artifact["provider_execution_target"]).is_absolute():
         _schema_error(artifact_name, "provider_execution_target must be bounded and relative when present")
+    if provider_composition["composition_mode"] not in {"authoritative_only", "authoritative_plus_advisory"}:
+        _schema_error(artifact_name, "provider_composition.composition_mode must be authoritative_only or authoritative_plus_advisory")
+    if provider_composition["authoritative_provider"] is not None and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(provider_composition["authoritative_provider"]) is None:
+        _schema_error(artifact_name, "provider_composition.authoritative_provider must be a valid provider identifier when present")
+    if provider_composition["advisory_provider"] is not None and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(provider_composition["advisory_provider"]) is None:
+        _schema_error(artifact_name, "provider_composition.advisory_provider must be a valid provider identifier when present")
+    if provider_composition["composition_mode"] == "authoritative_only" and provider_composition["advisory_provider"] is not None:
+        _schema_error(artifact_name, "provider_composition.advisory_provider must be null when composition_mode is authoritative_only")
+    if provider_composition["composition_mode"] == "authoritative_plus_advisory" and provider_composition["advisory_provider"] is None:
+        _schema_error(artifact_name, "provider_composition.advisory_provider must be populated when composition_mode is authoritative_plus_advisory")
+    if advisory_execution["state"] not in _ALLOWED_SIMULATION_PROVIDER_EXECUTION_STATES:
+        _schema_error(artifact_name, "advisory_execution.state must be a supported Stage 7.5 provider execution state")
+    if not advisory_execution["summary"].strip():
+        _schema_error(artifact_name, "advisory_execution.summary must not be empty")
+    if advisory_execution["target"] is not None and _normalize_alignment_path(advisory_execution["target"]) != advisory_execution["target"]:
+        _schema_error(artifact_name, "advisory_execution.target must be normalized when present")
+    if advisory_execution["target"] is not None and Path(advisory_execution["target"]).is_absolute():
+        _schema_error(artifact_name, "advisory_execution.target must be bounded and relative when present")
     if provider_applicability["resolution"] not in _ALLOWED_SIMULATION_PROVIDER_APPLICABILITY_RESOLUTIONS:
         _schema_error(artifact_name, "provider_applicability.resolution must be a supported applicability resolution")
     if applicable_providers != sorted(set(applicable_providers)):
@@ -2964,6 +3056,20 @@ def _validate_simulation_record_schema(payload: Any) -> None:
         _schema_error(artifact_name, "provider_execution_summary must match normalized execution trace evidence")
     if artifact["provider_execution_target"] != expected_execution_target:
         _schema_error(artifact_name, "provider_execution_target must match normalized execution trace evidence")
+    if provider_composition["authoritative_provider"] != artifact["provider_name"]:
+        _schema_error(artifact_name, "provider_composition.authoritative_provider must match provider_name")
+    if provider_composition["advisory_provider"] is None:
+        if any(finding.get("provider") not in {None, artifact["provider_name"]} for finding in findings):
+            _schema_error(artifact_name, "findings must not attribute a non-authoritative provider when no advisory provider is recorded")
+        if advisory_execution["state"] != "not_run" or advisory_execution["target"] is not None:
+            _schema_error(artifact_name, "advisory_execution must remain not_run when no advisory provider is recorded")
+    else:
+        if provider_composition["advisory_provider"] == artifact["provider_name"]:
+            _schema_error(artifact_name, "provider_composition.advisory_provider must differ from provider_name")
+        if any(finding.get("provider") is None for finding in findings):
+            _schema_error(artifact_name, "findings must include provider attribution when advisory composition is recorded")
+        if any(finding.get("provider") not in {artifact["provider_name"], provider_composition["advisory_provider"]} for finding in findings):
+            _schema_error(artifact_name, "findings provider attribution must match recorded authoritative/advisory providers")
     if artifact["simulation_status"] == "pass":
         if findings:
             _schema_error(artifact_name, "findings must be empty when simulation_status is pass")
@@ -5803,6 +5909,7 @@ _SIMULATION_TRIGGER_RECORD_ALLOWED_FIELDS = {
     "trigger_source",
 }
 _SIMULATION_RECORD_ALLOWED_FIELDS = {
+    "advisory_execution",
     "artifact_type",
     "artifact_fingerprint",
     "contract_version",
@@ -5811,6 +5918,7 @@ _SIMULATION_RECORD_ALLOWED_FIELDS = {
     "indeterminate_reason",
     "provider_name",
     "provider_applicability",
+    "provider_composition",
     "provider_execution_state",
     "provider_execution_summary",
     "provider_execution_target",
@@ -5825,7 +5933,9 @@ _SIMULATION_RECORD_ALLOWED_FIELDS = {
     "simulation_status",
     "simulation_timestamp",
 }
-_SIMULATION_FINDING_ALLOWED_FIELDS = {"code", "summary", "target"}
+_SIMULATION_FINDING_ALLOWED_FIELDS = {"code", "provider", "summary", "target"}
+_SIMULATION_PROVIDER_COMPOSITION_ALLOWED_FIELDS = {"advisory_provider", "authoritative_provider", "composition_mode"}
+_SIMULATION_ADVISORY_EXECUTION_ALLOWED_FIELDS = {"state", "summary", "target"}
 _SIMULATION_PROVIDER_REGISTRY: dict[str, SimulationProviderCallable] = {}
 _SIMULATION_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 _SIMULATION_PROVIDER_PRECEDENCE = ("workspace_artifact", "infra_dry_run", "external_dry_run")
@@ -6092,6 +6202,35 @@ def _normalize_provider_applicability_metadata(
     }
 
 
+def _normalize_provider_composition_metadata(
+    provider_composition: dict[str, Any] | None,
+    *,
+    authoritative_provider: str | None,
+) -> dict[str, Any]:
+    normalized_authoritative_provider = (
+        str(authoritative_provider).strip()
+        if isinstance(authoritative_provider, str) and str(authoritative_provider).strip()
+        else None
+    )
+    payload = dict(provider_composition or {})
+    advisory_provider = payload.get("advisory_provider")
+    normalized_advisory_provider = (
+        str(advisory_provider).strip()
+        if isinstance(advisory_provider, str)
+        and str(advisory_provider).strip()
+        and _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(str(advisory_provider).strip()) is not None
+        else None
+    )
+    if normalized_advisory_provider == normalized_authoritative_provider:
+        normalized_advisory_provider = None
+    composition_mode = "authoritative_plus_advisory" if normalized_advisory_provider is not None else "authoritative_only"
+    return {
+        "authoritative_provider": normalized_authoritative_provider,
+        "advisory_provider": normalized_advisory_provider,
+        "composition_mode": composition_mode,
+    }
+
+
 def _build_simulation_artifact(
     workspace_root: Path,
     section_id: str,
@@ -6111,6 +6250,10 @@ def _build_simulation_artifact(
         provider_selection_reason=simulation_input.provider_selection_reason,
         provider_selection_source=simulation_input.provider_selection_source,
     )
+    provider_composition = _normalize_provider_composition_metadata(
+        simulation_input.provider_composition,
+        authoritative_provider=simulation_input.provider_name,
+    )
     reason_code, reason_summary = _normalize_simulation_reason_fields(
         simulation_status=simulation_status,
         findings=findings,
@@ -6123,6 +6266,17 @@ def _build_simulation_artifact(
         provider_applicability=provider_applicability,
         provider_selection_source=simulation_input.provider_selection_source,
         provider_execution_target=simulation_input.provider_execution_target,
+    )
+    advisory_execution_target = _normalize_simulation_provider_execution_target(simulation_input.advisory_execution_target)
+    advisory_execution_state = (
+        str(simulation_input.advisory_execution_state).strip()
+        if isinstance(simulation_input.advisory_execution_state, str) and str(simulation_input.advisory_execution_state).strip()
+        else "not_run"
+    )
+    advisory_execution_summary = (
+        str(simulation_input.advisory_execution_summary).strip()
+        if isinstance(simulation_input.advisory_execution_summary, str) and str(simulation_input.advisory_execution_summary).strip()
+        else _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["not_run"]
     )
     if simulation_status == "pass":
         if findings:
@@ -6150,9 +6304,15 @@ def _build_simulation_artifact(
                 None if simulation_input.provider_name is None else str(simulation_input.provider_name).strip() or None
             ),
             "provider_applicability": provider_applicability,
+            "provider_composition": provider_composition,
             "provider_execution_state": provider_execution_state,
             "provider_execution_summary": provider_execution_summary,
             "provider_execution_target": provider_execution_target,
+            "advisory_execution": {
+                "state": advisory_execution_state,
+                "summary": advisory_execution_summary,
+                "target": advisory_execution_target,
+            },
             "provider_selection_reason": (
                 None
                 if simulation_input.provider_selection_reason is None
@@ -6272,19 +6432,24 @@ def _normalize_simulation_findings(findings: list[Any]) -> list[dict[str, Any]]:
             target = finding.get("target")
             if target is not None and (not isinstance(target, str) or not target.strip()):
                 raise ValueError(f"Simulation finding at index {index} target must be null or a non-empty string")
-            normalized_findings.append(
-                {
-                    "code": _normalize_simulation_finding_code(code),
-                    "summary": summary.strip(),
-                    "target": None if target is None else str(target).strip(),
-                }
-            )
+            provider = finding.get("provider")
+            if provider is not None and (not isinstance(provider, str) or not provider.strip() or _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(provider.strip()) is None):
+                raise ValueError(f"Simulation finding at index {index} provider must be null or a valid provider identifier")
+            normalized_finding = {
+                "code": _normalize_simulation_finding_code(code),
+                "summary": summary.strip(),
+                "target": None if target is None else str(target).strip(),
+            }
+            if provider is not None:
+                normalized_finding["provider"] = str(provider).strip()
+            normalized_findings.append(normalized_finding)
             continue
         raise ValueError(f"Simulation finding at index {index} must be a string or object")
     return sorted(
         normalized_findings,
         key=lambda finding: (
             str(finding.get("target") or ""),
+            str(finding.get("provider") or ""),
             str(finding.get("code") or ""),
             str(finding.get("summary") or ""),
         ),
@@ -6300,13 +6465,23 @@ def _are_valid_simulation_findings(findings: Any) -> bool:
         code = finding.get("code")
         summary = finding.get("summary")
         target = finding.get("target")
+        provider = finding.get("provider")
         if not isinstance(code, str) or _normalize_simulation_finding_code(code) != code:
             return False
         if not isinstance(summary, str) or not summary.strip():
             return False
         if target is not None and (not isinstance(target, str) or not target.strip()):
             return False
-        if set(finding.keys()) != _SIMULATION_FINDING_ALLOWED_FIELDS:
+        if provider is not None and (
+            not isinstance(provider, str)
+            or not provider.strip()
+            or _SIMULATION_PROVIDER_NAME_PATTERN.fullmatch(provider.strip()) is None
+        ):
+            return False
+        if set(finding.keys()) not in (
+            _SIMULATION_FINDING_ALLOWED_FIELDS - {"provider"},
+            _SIMULATION_FINDING_ALLOWED_FIELDS,
+        ):
             return False
     return True
 
@@ -6385,6 +6560,55 @@ def _normalize_simulation_provider_execution_trace(
         return "not_run", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["not_run"], None
     summary_key = f"executed:unknown:{simulation_status}"
     return "executed", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES[summary_key], normalized_target
+
+
+def _select_stage75_advisory_provider(provider_selection: dict[str, Any]) -> str | None:
+    authoritative_provider = provider_selection.get("provider_name")
+    applicable_providers = [
+        provider_name
+        for provider_name in provider_selection.get("applicable_providers", [])
+        if provider_name != authoritative_provider
+    ]
+    if not applicable_providers:
+        return None
+    precedence_candidates = [
+        provider_name for provider_name in _SIMULATION_PROVIDER_PRECEDENCE if provider_name in applicable_providers
+    ]
+    if len(precedence_candidates) != len(applicable_providers):
+        return None
+    return precedence_candidates[0] if precedence_candidates else None
+
+
+def _normalize_provider_response_payload(
+    provider: SimulationProviderCallable,
+    provider_request: Stage75SimulationProviderRequest,
+    *,
+    provider_name: str,
+    workspace_root: Path,
+    section_id: str,
+) -> dict[str, Any]:
+    provider_raw_response: Stage75SimulationProviderResponse | dict[str, Any]
+    if provider is _default_workspace_artifact_provider:
+        provider_response_payload = _load_simulation_provider_response_from_workspace_artifact(workspace_root, section_id)
+    elif provider is _default_infra_dry_run_provider:
+        provider_response_payload = _load_simulation_provider_response_from_infra_dry_run_preview(workspace_root, section_id)
+    elif provider is _default_external_dry_run_provider:
+        provider_response_payload = _run_external_dry_run_provider(workspace_root, section_id)
+    else:
+        provider_raw_response = provider(provider_request)
+        provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
+    return {
+        "findings": list(provider_response_payload.get("findings", [])),
+        "indeterminate_reason": provider_response_payload.get("indeterminate_reason"),
+        "provider_execution_target": provider_response_payload.get("provider_execution_target"),
+        "simulation_status": provider_response_payload["simulation_status"],
+    }
+
+
+def _findings_with_provider(findings: list[dict[str, Any]], provider_name: str | None) -> list[dict[str, Any]]:
+    if provider_name is None:
+        return [dict(finding) for finding in findings]
+    return [{**dict(finding), "provider": provider_name} for finding in findings]
 
 
 def _resolve_stage75_simulation_provider(
@@ -6910,15 +7134,13 @@ def _execute_stage75_simulation_provider(
 
     provider = provider_resolution["provider"]
     try:
-        provider_raw_response: Stage75SimulationProviderResponse | dict[str, Any]
-        if provider is _default_workspace_artifact_provider:
-            provider_response_payload = _load_simulation_provider_response_from_workspace_artifact(workspace_root, section_id)
-        elif provider is _default_infra_dry_run_provider:
-            provider_response_payload = _load_simulation_provider_response_from_infra_dry_run_preview(workspace_root, section_id)
-        elif provider is _default_external_dry_run_provider:
-            provider_response_payload = _run_external_dry_run_provider(workspace_root, section_id)
-        else:
-            provider_raw_response = provider(provider_request)
+        provider_response_payload = _normalize_provider_response_payload(
+            provider,
+            provider_request,
+            provider_name=provider_name,
+            workspace_root=workspace_root,
+            section_id=section_id,
+        )
     except Exception:
         simulation_artifact = _write_json_with_artifact_fingerprint(
             workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
@@ -6930,6 +7152,7 @@ def _execute_stage75_simulation_provider(
                     indeterminate_reason="provider_exception",
                     provider_name=provider_name,
                     provider_applicability=_provider_applicability_metadata(provider_selection),
+                    provider_composition={"advisory_provider": None},
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_execution",
@@ -6952,12 +7175,58 @@ def _execute_stage75_simulation_provider(
         }
 
     try:
-        if provider not in {
-            _default_workspace_artifact_provider,
-            _default_infra_dry_run_provider,
-            _default_external_dry_run_provider,
-        }:
-            provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
+        authoritative_findings = _normalize_simulation_findings(list(provider_response_payload.get("findings", [])))
+        advisory_provider_name = (
+            _select_stage75_advisory_provider(provider_selection)
+            if str(provider_response_payload["simulation_status"]) == "fail"
+            and provider_selection.get("selection_source") == "inferred"
+            else None
+        )
+        advisory_findings: list[dict[str, Any]] = []
+        advisory_execution_state = "not_run"
+        advisory_execution_summary = _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["not_run"]
+        advisory_execution_target = None
+        if advisory_provider_name is not None:
+            advisory_request = _build_simulation_provider_request(
+                section_id,
+                require_preflight_pass=require_preflight_pass,
+                selected_provider_name=advisory_provider_name,
+                simulation_trigger_artifact=simulation_trigger_artifact,
+            )
+            advisory_resolution = _resolve_stage75_simulation_provider(advisory_provider_name)
+            if advisory_resolution["resolution_status"] == "resolved":
+                try:
+                    advisory_response_payload = _normalize_provider_response_payload(
+                        advisory_resolution["provider"],
+                        advisory_request,
+                        provider_name=advisory_provider_name,
+                        workspace_root=workspace_root,
+                        section_id=section_id,
+                    )
+                    advisory_execution_state, advisory_execution_summary, advisory_execution_target = _normalize_simulation_provider_execution_trace(
+                        simulation_status=str(advisory_response_payload["simulation_status"]),
+                        indeterminate_reason=advisory_response_payload.get("indeterminate_reason"),
+                        provider_name=advisory_provider_name,
+                        provider_applicability={
+                            "applicable_providers": [advisory_provider_name],
+                            "resolution": "inferred",
+                            "selected_provider": advisory_provider_name,
+                        },
+                        provider_selection_source="inferred",
+                        provider_execution_target=advisory_response_payload.get("provider_execution_target"),
+                    )
+                    advisory_findings = _findings_with_provider(
+                        _normalize_simulation_findings(list(advisory_response_payload.get("findings", []))),
+                        advisory_provider_name,
+                    )
+                except Exception:
+                    advisory_execution_state = "not_run"
+                    advisory_execution_summary = _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["not_run"]
+                    advisory_execution_target = None
+            else:
+                advisory_execution_state = "not_run"
+                advisory_execution_summary = _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["not_run"]
+                advisory_execution_target = None
         simulation_artifact = _write_json_with_artifact_fingerprint(
             workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
             _build_simulation_artifact(
@@ -6965,11 +7234,19 @@ def _execute_stage75_simulation_provider(
                 section_id,
                 simulation_input=SectionSimulationInput(
                     simulation_status=provider_response_payload["simulation_status"],
-                    findings=list(provider_response_payload.get("findings", [])),
+                    findings=(
+                        _findings_with_provider(authoritative_findings, provider_name) + advisory_findings
+                        if advisory_provider_name is not None
+                        else authoritative_findings
+                    ),
                     indeterminate_reason=provider_response_payload.get("indeterminate_reason"),
                     provider_name=provider_name,
                     provider_applicability=_provider_applicability_metadata(provider_selection),
+                    provider_composition={"advisory_provider": advisory_provider_name},
                     provider_execution_target=provider_response_payload.get("provider_execution_target"),
+                    advisory_execution_state=advisory_execution_state,
+                    advisory_execution_summary=advisory_execution_summary,
+                    advisory_execution_target=advisory_execution_target,
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_execution",
@@ -6988,6 +7265,7 @@ def _execute_stage75_simulation_provider(
                     indeterminate_reason="invalid_provider_response",
                     provider_name=provider_name,
                     provider_applicability=_provider_applicability_metadata(provider_selection),
+                    provider_composition={"advisory_provider": None},
                     provider_selection_reason=provider_selection["selection_reason"],
                     provider_selection_source=provider_selection["selection_source"],
                     simulation_source="provider_execution",

@@ -94,6 +94,7 @@ def _expected_section_summary(
         "section_id": section_id,
         "simulation": {
             "applicable_providers": [],
+            "advisory_provider": None,
             "findings_count": 0,
             "finding_codes": [],
             "provider_execution_state": "not_run",
