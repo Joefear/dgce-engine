@@ -104,6 +104,20 @@ def _k8s_file_plan(*paths: str) -> FilePlan:
     )
 
 
+def _terraform_file_plan(*paths: str) -> FilePlan:
+    return FilePlan(
+        project_name="DGCE",
+        files=[
+            {
+                "path": path,
+                "purpose": "Terraform module",
+                "source": "expected_targets",
+            }
+            for path in paths
+        ],
+    )
+
+
 def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
     fragments = {
         "deployment_artifact": "deployment artifacts",
@@ -9348,6 +9362,347 @@ def test_external_dry_run_provider_returns_indeterminate_for_unparseable_k8s_dia
     assert simulation_artifact["provider_execution_state"] == "input_invalid"
     assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
     assert simulation_artifact["provider_execution_target"] == "k8s/deployment.yaml"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_passes_for_valid_terraform_module(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_pass")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf")
+    tf_path = project_root / "infra" / "terraform" / "main.tf"
+    tf_path.parent.mkdir(parents=True, exist_ok=True)
+    tf_path.write_text('terraform {}\noutput "x" { value = "ok" }\n', encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_subprocess_run(command, **kwargs):
+        calls.append((command, kwargs["cwd"]))
+        assert kwargs["shell"] is False
+        assert kwargs["timeout"] == dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert calls == [
+        (["terraform", "init", "-backend=false"], str(project_root / "infra" / "terraform")),
+        (["terraform", "validate"], str(project_root / "infra" / "terraform")),
+    ]
+    assert simulation_gate["provider_name"] == "external_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "terraform validation executed successfully"
+    assert simulation_artifact["provider_execution_target"] == "infra/terraform"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_terraform_block(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_schema_fail")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf")
+    tf_path = project_root / "infra" / "terraform" / "main.tf"
+    tf_path.parent.mkdir(parents=True, exist_ok=True)
+    tf_path.write_text("terraform {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    call_index = {"value": 0}
+
+    def fake_subprocess_run(command, **_kwargs):
+        call_index["value"] += 1
+        if call_index["value"] == 1:
+            return subprocess.CompletedProcess(command, 0, stdout="init ok", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr='Unsupported argument; An argument named "bad" is not expected here.\n')
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["provider_execution_summary"] == "terraform validation executed with blocking findings"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_terraform_schema_invalid",
+            "summary": "Terraform validation reported an invalid configuration block or attribute.",
+            "target": "infra/terraform/main.tf",
+        }
+    ]
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_missing_required_terraform_argument(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_required_fail")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf")
+    tf_path = project_root / "infra" / "terraform" / "main.tf"
+    tf_path.parent.mkdir(parents=True, exist_ok=True)
+    tf_path.write_text("terraform {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    call_index = {"value": 0}
+
+    def fake_subprocess_run(command, **_kwargs):
+        call_index["value"] += 1
+        if call_index["value"] == 1:
+            return subprocess.CompletedProcess(command, 0, stdout="init ok", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr='Missing required argument; The argument "value" is required.\n')
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_terraform_required_field_missing",
+            "summary": "Terraform validation reported a missing required argument or block.",
+            "target": "infra/terraform/main.tf",
+        }
+    ]
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_terraform_reference(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_reference_fail")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf")
+    tf_path = project_root / "infra" / "terraform" / "main.tf"
+    tf_path.parent.mkdir(parents=True, exist_ok=True)
+    tf_path.write_text("terraform {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    call_index = {"value": 0}
+
+    def fake_subprocess_run(command, **_kwargs):
+        call_index["value"] += 1
+        if call_index["value"] == 1:
+            return subprocess.CompletedProcess(command, 0, stdout="init ok", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="Reference to undeclared resource\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_terraform_reference_invalid",
+            "summary": "Terraform validation reported an invalid or unresolved reference.",
+            "target": "infra/terraform/main.tf",
+        }
+    ]
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unsupported_terraform_shape(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_unsupported")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf", "ops/terraform/main.tf")
+    first_path = project_root / "infra" / "terraform" / "main.tf"
+    second_path = project_root / "ops" / "terraform" / "main.tf"
+    first_path.parent.mkdir(parents=True, exist_ok=True)
+    second_path.parent.mkdir(parents=True, exist_ok=True)
+    first_path.write_text("terraform {}\n", encoding="utf-8")
+    second_path.write_text("terraform {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_explicit_terraform_input_is_missing(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_input_missing")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_input_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unparseable_terraform_diagnostics(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_terraform_parse_error")
+    prepared_file_plan = _terraform_file_plan("infra/terraform/main.tf")
+    tf_path = project_root / "infra" / "terraform" / "main.tf"
+    tf_path.parent.mkdir(parents=True, exist_ok=True)
+    tf_path.write_text("terraform {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    call_index = {"value": 0}
+
+    def fake_subprocess_run(command, **_kwargs):
+        call_index["value"] += 1
+        if call_index["value"] == 1:
+            return subprocess.CompletedProcess(command, 0, stdout="init ok", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="terraform validation failed mysteriously\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_parse_error"
+    assert simulation_artifact["provider_execution_state"] == "input_invalid"
+    assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
+    assert simulation_artifact["provider_execution_target"] == "infra/terraform"
     assert simulation_artifact["findings"] == []
 
 
