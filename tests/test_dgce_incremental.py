@@ -90,6 +90,20 @@ def _dockerfile_file_plan(*paths: str) -> FilePlan:
     )
 
 
+def _k8s_file_plan(*paths: str) -> FilePlan:
+    return FilePlan(
+        project_name="DGCE",
+        files=[
+            {
+                "path": path,
+                "purpose": "Kubernetes manifest",
+                "source": "expected_targets",
+            }
+            for path in paths
+        ],
+    )
+
+
 def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
     fragments = {
         "deployment_artifact": "deployment artifacts",
@@ -9058,6 +9072,282 @@ def test_external_dry_run_provider_returns_indeterminate_for_unparseable_dockerf
     assert simulation_artifact["provider_execution_state"] == "input_invalid"
     assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
     assert simulation_artifact["provider_execution_target"] == "Dockerfile"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_passes_for_valid_k8s_manifest(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_k8s_pass")
+    prepared_file_plan = _k8s_file_plan("k8s/deployment.yaml")
+    manifest_path = project_root / "k8s" / "deployment.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\nspec: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **kwargs):
+        assert command == ["kubectl", "apply", "--dry-run=client", "-f", "k8s/deployment.yaml"]
+        assert kwargs["shell"] is False
+        assert kwargs["cwd"] == str(project_root)
+        assert kwargs["timeout"] == dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS
+        return subprocess.CompletedProcess(command, 0, stdout="deployment.apps/app created (dry run)", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "external_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "kubectl client dry-run executed successfully"
+    assert simulation_artifact["provider_execution_target"] == "k8s/deployment.yaml"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_k8s_schema(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_k8s_schema_fail")
+    prepared_file_plan = _k8s_file_plan("k8s/deployment.yaml")
+    manifest_path = project_root / "k8s" / "deployment.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\nspec: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="error validating data: ValidationError(Deployment.spec): invalid value\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["provider_execution_summary"] == "kubectl client dry-run executed with blocking findings"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_k8s_schema_invalid",
+            "summary": "Kubernetes validation reported a schema violation.",
+            "target": "k8s/deployment.yaml",
+        }
+    ]
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_missing_required_k8s_field(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_k8s_required_fail")
+    prepared_file_plan = _k8s_file_plan("k8s/service.yaml")
+    manifest_path = project_root / "k8s" / "service.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("apiVersion: v1\nkind: Service\nmetadata:\n  name: app\nspec: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="spec.ports: Required value\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_k8s_required_field_missing",
+            "summary": "Kubernetes validation reported a missing required field.",
+            "target": "k8s/service.yaml",
+        }
+    ]
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_k8s_kind(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_k8s_kind_fail")
+    prepared_file_plan = _k8s_file_plan("kubernetes/resource.yaml")
+    manifest_path = project_root / "kubernetes" / "resource.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("apiVersion: apps/v1\nkind: Deploymnt\nmetadata:\n  name: app\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="error: unable to recognize \"resource.yaml\": no matches for kind \"Deploymnt\"\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_k8s_resource_kind_invalid",
+            "summary": "Kubernetes validation reported an invalid or unknown resource kind.",
+            "target": "kubernetes/resource.yaml",
+        }
+    ]
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unsupported_yaml_input(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_yaml_unsupported")
+    prepared_file_plan = _k8s_file_plan("deploy/config.yaml")
+    yaml_path = project_root / "deploy" / "config.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text("key: value\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unparseable_k8s_diagnostics(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_k8s_parse_error")
+    prepared_file_plan = _k8s_file_plan("k8s/deployment.yaml")
+    manifest_path = project_root / "k8s" / "deployment.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\nspec: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="kubectl validation failed mysteriously\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_parse_error"
+    assert simulation_artifact["provider_execution_state"] == "input_invalid"
+    assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
+    assert simulation_artifact["provider_execution_target"] == "k8s/deployment.yaml"
     assert simulation_artifact["findings"] == []
 
 

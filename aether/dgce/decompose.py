@@ -5877,6 +5877,9 @@ _SIMULATION_PROVIDER_EXECUTION_SUMMARIES = {
     "executed:external_dry_run:fail": "docker compose config executed with blocking findings",
     "executed:external_dry_run:indeterminate": "docker compose config executed without reliable result",
     "executed:external_dry_run:pass": "docker compose config executed successfully",
+    "executed:external_k8s:fail": "kubectl client dry-run executed with blocking findings",
+    "executed:external_k8s:indeterminate": "kubectl client dry-run executed without reliable result",
+    "executed:external_k8s:pass": "kubectl client dry-run executed successfully",
     "executed:infra_dry_run:fail": "infra dry-run executed with blocking findings",
     "executed:infra_dry_run:indeterminate": "infra dry-run executed without reliable result",
     "executed:infra_dry_run:pass": "infra dry-run executed successfully",
@@ -6564,6 +6567,8 @@ def _normalize_simulation_provider_execution_trace(
         external_execution_family = "external_dry_run"
         if normalized_target is not None and Path(normalized_target).name == _DOCKERFILE_FILENAME:
             external_execution_family = "external_dockerfile"
+        elif normalized_target is not None and _is_external_k8s_candidate_path(normalized_target):
+            external_execution_family = "external_k8s"
         summary_key = f"executed:{external_execution_family}:{simulation_status}"
         return "executed", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES[summary_key], normalized_target
     if normalized_provider_name == "workspace_artifact":
@@ -6737,6 +6742,28 @@ def _is_external_dockerfile_unsupported_path(path_value: Any) -> bool:
     return path_name.startswith("Dockerfile") and path_name != _DOCKERFILE_FILENAME
 
 
+def _is_external_k8s_candidate_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path = Path(normalized_path)
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        return False
+    return bool({part.lower() for part in path.parts} & {"k8s", "kubernetes"})
+
+
+def _is_external_k8s_unsupported_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path = Path(normalized_path)
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        return False
+    if _is_external_dry_run_candidate_path(normalized_path):
+        return False
+    return not _is_external_k8s_candidate_path(normalized_path)
+
+
 def _resolve_external_dry_run_targets(
     workspace_root: Path,
     section_id: str,
@@ -6750,6 +6777,7 @@ def _resolve_external_dry_run_targets(
         return "unsupported", None, []
     compose_candidate_paths: list[Path] = []
     dockerfile_candidate_paths: list[Path] = []
+    k8s_candidate_paths: list[Path] = []
     seen_paths: set[tuple[str, str]] = set()
     for entry in sorted(previews, key=lambda item: str(item.get("path", "")) if isinstance(item, dict) else ""):
         if not isinstance(entry, dict):
@@ -6764,11 +6792,15 @@ def _resolve_external_dry_run_targets(
             return "unsupported", None, []
         if _is_external_dockerfile_unsupported_path(normalized_path):
             return "unsupported", None, []
+        if _is_external_k8s_unsupported_path(normalized_path):
+            return "unsupported", None, []
         target_kind: str | None = None
         if _is_external_dry_run_candidate_path(normalized_path):
             target_kind = "compose"
         elif Path(normalized_path).name == _DOCKERFILE_FILENAME:
             target_kind = "dockerfile"
+        elif _is_external_k8s_candidate_path(normalized_path):
+            target_kind = "k8s"
         if target_kind is None:
             continue
         if (target_kind, normalized_path) in seen_paths:
@@ -6783,9 +6815,12 @@ def _resolve_external_dry_run_targets(
             return "unsupported", None, []
         if target_kind == "compose":
             compose_candidate_paths.append(candidate_path)
-        else:
+        elif target_kind == "dockerfile":
             dockerfile_candidate_paths.append(candidate_path)
-    if compose_candidate_paths and dockerfile_candidate_paths:
+        else:
+            k8s_candidate_paths.append(candidate_path)
+    active_target_kinds = sum(bool(paths) for paths in (compose_candidate_paths, dockerfile_candidate_paths, k8s_candidate_paths))
+    if active_target_kinds > 1:
         return "unsupported", None, []
     if len(dockerfile_candidate_paths) > 1:
         return "unsupported", None, []
@@ -6793,6 +6828,8 @@ def _resolve_external_dry_run_targets(
         return "ok", "compose", compose_candidate_paths
     if dockerfile_candidate_paths:
         return "ok", "dockerfile", dockerfile_candidate_paths
+    if k8s_candidate_paths:
+        return "ok", "k8s", k8s_candidate_paths
     return "input_missing", None, []
 
 
@@ -6891,6 +6928,54 @@ def _normalize_external_dockerfile_findings(
     return findings if findings else None
 
 
+def _normalize_external_k8s_findings(
+    *,
+    diagnostics: list[str],
+    target_paths: list[Path],
+    workspace_root: Path,
+) -> list[dict[str, Any]] | None:
+    findings: list[dict[str, Any]] = []
+    primary_target = (
+        target_paths[0].relative_to(workspace_root.parent).as_posix()
+        if len(target_paths) == 1
+        else None
+    )
+    for line in diagnostics[:3]:
+        normalized_line = " ".join(str(line).split()).strip()
+        lower_line = normalized_line.lower()
+        if not normalized_line:
+            continue
+        if "unknown kind" in lower_line or "no matches for kind" in lower_line or "the server doesn't have a resource type" in lower_line:
+            findings.append(
+                {
+                    "code": "external_k8s_resource_kind_invalid",
+                    "summary": "Kubernetes validation reported an invalid or unknown resource kind.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        if "required value" in lower_line or "missing required field" in lower_line:
+            findings.append(
+                {
+                    "code": "external_k8s_required_field_missing",
+                    "summary": "Kubernetes validation reported a missing required field.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        if "validationerror" in lower_line or "invalid value" in lower_line or "error validating data" in lower_line:
+            findings.append(
+                {
+                    "code": "external_k8s_schema_invalid",
+                    "summary": "Kubernetes validation reported a schema violation.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        return None
+    return findings if findings else None
+
+
 def _run_external_dry_run_provider(
     workspace_root: Path,
     section_id: str,
@@ -6914,6 +6999,10 @@ def _run_external_dry_run_provider(
     relative_target_paths = [target_path.relative_to(workspace_root.parent).as_posix() for target_path in target_paths]
     if target_kind == "dockerfile":
         command = ["docker", "build", "--no-cache", "--progress=plain", "-f", relative_target_paths[0], "."]
+    elif target_kind == "k8s":
+        command = ["kubectl", "apply", "--dry-run=client"]
+        for relative_target_path in relative_target_paths:
+            command.extend(["-f", relative_target_path])
     else:
         command = ["docker", "compose"]
         for relative_target_path in relative_target_paths:
@@ -6976,6 +7065,12 @@ def _run_external_dry_run_provider(
         }
     if target_kind == "dockerfile":
         normalized_findings = _normalize_external_dockerfile_findings(
+            diagnostics=diagnostic_lines,
+            target_paths=target_paths,
+            workspace_root=workspace_root,
+        )
+    elif target_kind == "k8s":
+        normalized_findings = _normalize_external_k8s_findings(
             diagnostics=diagnostic_lines,
             target_paths=target_paths,
             workspace_root=workspace_root,
