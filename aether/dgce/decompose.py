@@ -5871,6 +5871,9 @@ _SIMULATION_REASON_SUMMARIES = {
 }
 _SIMULATION_PROVIDER_EXECUTION_SUMMARIES = {
     "artifact_invalid": "workspace artifact invalid",
+    "executed:external_dockerfile:fail": "docker build validation executed with blocking findings",
+    "executed:external_dockerfile:indeterminate": "docker build validation executed without reliable result",
+    "executed:external_dockerfile:pass": "docker build validation executed successfully",
     "executed:external_dry_run:fail": "docker compose config executed with blocking findings",
     "executed:external_dry_run:indeterminate": "docker compose config executed without reliable result",
     "executed:external_dry_run:pass": "docker compose config executed successfully",
@@ -5984,6 +5987,7 @@ _DOCKER_COMPOSE_FILENAMES = {
     "docker-compose.yaml",
     "docker-compose.yml",
 }
+_DOCKERFILE_FILENAME = "Dockerfile"
 
 
 def _default_workspace_artifact_provider(_request: Stage75SimulationProviderRequest) -> dict[str, Any]:
@@ -6557,7 +6561,10 @@ def _normalize_simulation_provider_execution_trace(
             return "timeout", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["timeout"], normalized_target
         if indeterminate_reason in {"external_command_input_missing", "external_command_parse_error", "external_command_unsupported"}:
             return "input_invalid", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["input_invalid"], normalized_target
-        summary_key = f"executed:external_dry_run:{simulation_status}"
+        external_execution_family = "external_dry_run"
+        if normalized_target is not None and Path(normalized_target).name == _DOCKERFILE_FILENAME:
+            external_execution_family = "external_dockerfile"
+        summary_key = f"executed:{external_execution_family}:{simulation_status}"
         return "executed", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES[summary_key], normalized_target
     if normalized_provider_name == "workspace_artifact":
         summary_key = f"executed:workspace_artifact:{simulation_status}"
@@ -6722,46 +6729,71 @@ def _is_external_dry_run_unsupported_path(path_value: Any) -> bool:
     return "compose" in path_name and path_name.endswith((".yaml", ".yml")) and path_name not in _DOCKER_COMPOSE_FILENAMES
 
 
+def _is_external_dockerfile_unsupported_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path_name = Path(normalized_path).name
+    return path_name.startswith("Dockerfile") and path_name != _DOCKERFILE_FILENAME
+
+
 def _resolve_external_dry_run_targets(
     workspace_root: Path,
     section_id: str,
-) -> tuple[str, list[Path]]:
+) -> tuple[str, str | None, list[Path]]:
     preview_payload = _load_preview_artifact_for_stage75_provider(workspace_root, section_id)
     if preview_payload is None:
-        return "input_missing", []
+        return "input_missing", None, []
     project_root = workspace_root.parent
     previews = preview_payload.get("previews", [])
     if not isinstance(previews, list):
-        return "unsupported", []
-    candidate_paths: list[Path] = []
-    seen_paths: set[str] = set()
+        return "unsupported", None, []
+    compose_candidate_paths: list[Path] = []
+    dockerfile_candidate_paths: list[Path] = []
+    seen_paths: set[tuple[str, str]] = set()
     for entry in sorted(previews, key=lambda item: str(item.get("path", "")) if isinstance(item, dict) else ""):
         if not isinstance(entry, dict):
-            return "unsupported", []
+            return "unsupported", None, []
         normalized_path = _normalize_alignment_path(entry.get("path"))
         planned_action = str(entry.get("planned_action", "")).strip()
         if planned_action not in {"create", "modify"}:
             continue
         if normalized_path is None:
-            return "unsupported", []
+            return "unsupported", None, []
         if _is_external_dry_run_unsupported_path(normalized_path):
-            return "unsupported", []
-        if not _is_external_dry_run_candidate_path(normalized_path):
+            return "unsupported", None, []
+        if _is_external_dockerfile_unsupported_path(normalized_path):
+            return "unsupported", None, []
+        target_kind: str | None = None
+        if _is_external_dry_run_candidate_path(normalized_path):
+            target_kind = "compose"
+        elif Path(normalized_path).name == _DOCKERFILE_FILENAME:
+            target_kind = "dockerfile"
+        if target_kind is None:
             continue
-        if normalized_path in seen_paths:
+        if (target_kind, normalized_path) in seen_paths:
             continue
-        seen_paths.add(normalized_path)
+        seen_paths.add((target_kind, normalized_path))
         candidate_path = project_root / Path(normalized_path)
         if not candidate_path.exists() or not candidate_path.is_file():
-            return "input_missing", []
+            return "input_missing", None, []
         try:
             candidate_path.relative_to(project_root)
         except ValueError:
-            return "unsupported", []
-        candidate_paths.append(candidate_path)
-    if not candidate_paths:
-        return "input_missing", []
-    return "ok", candidate_paths
+            return "unsupported", None, []
+        if target_kind == "compose":
+            compose_candidate_paths.append(candidate_path)
+        else:
+            dockerfile_candidate_paths.append(candidate_path)
+    if compose_candidate_paths and dockerfile_candidate_paths:
+        return "unsupported", None, []
+    if len(dockerfile_candidate_paths) > 1:
+        return "unsupported", None, []
+    if compose_candidate_paths:
+        return "ok", "compose", compose_candidate_paths
+    if dockerfile_candidate_paths:
+        return "ok", "dockerfile", dockerfile_candidate_paths
+    return "input_missing", None, []
 
 
 def _normalize_external_dry_run_findings(
@@ -6811,11 +6843,59 @@ def _normalize_external_dry_run_findings(
     return findings if findings else None
 
 
+def _normalize_external_dockerfile_findings(
+    *,
+    diagnostics: list[str],
+    target_paths: list[Path],
+    workspace_root: Path,
+) -> list[dict[str, Any]] | None:
+    findings: list[dict[str, Any]] = []
+    primary_target = (
+        target_paths[0].relative_to(workspace_root.parent).as_posix()
+        if len(target_paths) == 1
+        else None
+    )
+    for line in diagnostics[:3]:
+        normalized_line = " ".join(str(line).split()).strip()
+        upper_line = normalized_line.upper()
+        if not normalized_line:
+            continue
+        if "UNKNOWN INSTRUCTION" in upper_line or "INVALID INSTRUCTION" in upper_line:
+            findings.append(
+                {
+                    "code": "external_dockerfile_instruction_invalid",
+                    "summary": "Dockerfile validation reported an invalid or unknown instruction.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        if "MISSING FROM" in upper_line or "MUST CONTAIN A FROM INSTRUCTION" in upper_line or "NO BUILD STAGE IN CURRENT CONTEXT" in upper_line:
+            findings.append(
+                {
+                    "code": "external_dockerfile_missing_required",
+                    "summary": "Dockerfile validation reported a missing required instruction.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        if "FAILED TO PARSE" in upper_line or "MALFORMED" in upper_line or "INVALID ARG" in upper_line or "INVALID REFERENCE FORMAT" in upper_line:
+            findings.append(
+                {
+                    "code": "external_dockerfile_argument_error",
+                    "summary": "Dockerfile validation reported an invalid argument or malformed directive.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        return None
+    return findings if findings else None
+
+
 def _run_external_dry_run_provider(
     workspace_root: Path,
     section_id: str,
 ) -> dict[str, Any]:
-    target_status, target_paths = _resolve_external_dry_run_targets(workspace_root, section_id)
+    target_status, target_kind, target_paths = _resolve_external_dry_run_targets(workspace_root, section_id)
     if target_status == "unsupported":
         return {
             "findings": [],
@@ -6832,10 +6912,13 @@ def _run_external_dry_run_provider(
         }
 
     relative_target_paths = [target_path.relative_to(workspace_root.parent).as_posix() for target_path in target_paths]
-    command = ["docker", "compose"]
-    for relative_target_path in relative_target_paths:
-        command.extend(["-f", relative_target_path])
-    command.append("config")
+    if target_kind == "dockerfile":
+        command = ["docker", "build", "--no-cache", "--progress=plain", "-f", relative_target_paths[0], "."]
+    else:
+        command = ["docker", "compose"]
+        for relative_target_path in relative_target_paths:
+            command.extend(["-f", relative_target_path])
+        command.append("config")
     execution_target = relative_target_paths[0] if len(relative_target_paths) == 1 else None
     try:
         completed = subprocess.run(
@@ -6891,11 +6974,18 @@ def _run_external_dry_run_provider(
             "provider_execution_target": execution_target,
             "simulation_status": "indeterminate",
         }
-    normalized_findings = _normalize_external_dry_run_findings(
-        diagnostics=diagnostic_lines,
-        target_paths=target_paths,
-        workspace_root=workspace_root,
-    )
+    if target_kind == "dockerfile":
+        normalized_findings = _normalize_external_dockerfile_findings(
+            diagnostics=diagnostic_lines,
+            target_paths=target_paths,
+            workspace_root=workspace_root,
+        )
+    else:
+        normalized_findings = _normalize_external_dry_run_findings(
+            diagnostics=diagnostic_lines,
+            target_paths=target_paths,
+            workspace_root=workspace_root,
+        )
     if normalized_findings is None:
         return {
             "findings": [],

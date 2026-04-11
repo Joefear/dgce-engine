@@ -76,6 +76,20 @@ def _compose_file_plan(*paths: str) -> FilePlan:
     )
 
 
+def _dockerfile_file_plan(*paths: str) -> FilePlan:
+    return FilePlan(
+        project_name="DGCE",
+        files=[
+            {
+                "path": path,
+                "purpose": "Dockerfile",
+                "source": "expected_targets",
+            }
+            for path in paths
+        ],
+    )
+
+
 def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
     fragments = {
         "deployment_artifact": "deployment artifacts",
@@ -8822,6 +8836,229 @@ def test_external_dry_run_provider_returns_indeterminate_for_unsupported_compose
     assert simulation_artifact["provider_execution_state"] == "forced_override"
     assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
     assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_passes_for_valid_dockerfile(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_dockerfile_pass")
+    prepared_file_plan = _dockerfile_file_plan("Dockerfile")
+    dockerfile_path = project_root / "Dockerfile"
+    project_root.mkdir(parents=True, exist_ok=True)
+    dockerfile_path.write_text("FROM alpine:latest\nRUN echo hello\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **kwargs):
+        assert command == ["docker", "build", "--no-cache", "--progress=plain", "-f", "Dockerfile", "."]
+        assert kwargs["shell"] is False
+        assert kwargs["cwd"] == str(project_root)
+        assert kwargs["timeout"] == dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS
+        return subprocess.CompletedProcess(command, 0, stdout="build ok", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "external_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "docker build validation executed successfully"
+    assert simulation_artifact["provider_execution_target"] == "Dockerfile"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_dockerfile(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_dockerfile_fail")
+    prepared_file_plan = _dockerfile_file_plan("Dockerfile")
+    dockerfile_path = project_root / "Dockerfile"
+    project_root.mkdir(parents=True, exist_ok=True)
+    dockerfile_path.write_text("FROOOM alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="unknown instruction: FROOOM\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_blocked"] is True
+    assert simulation_artifact["simulation_status"] == "fail"
+    assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "docker build validation executed with blocking findings"
+    assert simulation_artifact["provider_execution_target"] == "Dockerfile"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_dockerfile_instruction_invalid",
+            "summary": "Dockerfile validation reported an invalid or unknown instruction.",
+            "target": "Dockerfile",
+        }
+    ]
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unsupported_dockerfile_name(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_dockerfile_unsupported")
+    prepared_file_plan = _dockerfile_file_plan("Dockerfile.dev")
+    dockerfile_path = project_root / "Dockerfile.dev"
+    project_root.mkdir(parents=True, exist_ok=True)
+    dockerfile_path.write_text("FROM alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_explicit_dockerfile_input_is_missing(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_dockerfile_input_missing")
+    prepared_file_plan = _dockerfile_file_plan("Dockerfile")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_input_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unparseable_dockerfile_diagnostics(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_dockerfile_parse_error")
+    prepared_file_plan = _dockerfile_file_plan("Dockerfile")
+    dockerfile_path = project_root / "Dockerfile"
+    project_root.mkdir(parents=True, exist_ok=True)
+    dockerfile_path.write_text("FROM alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="validation failed for unknown dockerfile reason\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_parse_error"
+    assert simulation_artifact["provider_execution_state"] == "input_invalid"
+    assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
+    assert simulation_artifact["provider_execution_target"] == "Dockerfile"
+    assert simulation_artifact["findings"] == []
 
 
 def test_external_dry_run_provider_is_not_selected_when_not_applicable(monkeypatch):
