@@ -249,6 +249,9 @@ def _expected_section_summary(
             "applicable_providers": [],
             "findings_count": 0,
             "finding_codes": [],
+            "provider_execution_state": "not_run",
+            "provider_execution_summary": "simulation not executed",
+            "provider_execution_target": None,
             "provider_selection_source": None,
             "provider_resolution": None,
             "reason_code": None,
@@ -283,6 +286,9 @@ def _explicit_non_triggered_simulation_projection(simulation_provider=None):
         "applicable_providers": [],
         "findings_count": 0,
         "finding_codes": [],
+        "provider_execution_state": "not_run",
+        "provider_execution_summary": "simulation not executed",
+        "provider_execution_target": None,
         "provider_selection_source": "not_applicable",
         "provider_resolution": None,
         "reason_code": None,
@@ -375,6 +381,9 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.provider_execution_state",
+                "sections[].section_summary.simulation.provider_execution_summary",
+                "sections[].section_summary.simulation.provider_execution_target",
                 "sections[].section_summary.simulation.provider_selection_source",
                 "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
@@ -431,6 +440,9 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.provider_execution_state",
+                "sections[].section_summary.simulation.provider_execution_summary",
+                "sections[].section_summary.simulation.provider_execution_target",
                 "sections[].section_summary.simulation.provider_selection_source",
                 "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
@@ -505,6 +517,9 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.provider_execution_state",
+                "sections[].section_summary.simulation.provider_execution_summary",
+                "sections[].section_summary.simulation.provider_execution_target",
                 "sections[].section_summary.simulation.provider_selection_source",
                 "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
@@ -553,6 +568,9 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.provider_execution_state",
+                "sections[].section_summary.simulation.provider_execution_summary",
+                "sections[].section_summary.simulation.provider_execution_target",
                 "sections[].section_summary.simulation.provider_selection_source",
                 "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
@@ -658,6 +676,9 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].section_summary.simulation.findings_count",
                 "sections[].section_summary.simulation.finding_codes",
                 "sections[].section_summary.simulation.applicable_providers",
+                "sections[].section_summary.simulation.provider_execution_state",
+                "sections[].section_summary.simulation.provider_execution_summary",
+                "sections[].section_summary.simulation.provider_execution_target",
                 "sections[].section_summary.simulation.provider_selection_source",
                 "sections[].section_summary.simulation.provider_resolution",
                 "sections[].section_summary.simulation.reason_code",
@@ -7841,6 +7862,9 @@ def test_stage75_pass_artifact_has_normalized_reason_fields(monkeypatch):
     assert simulation_artifact["reason_summary"] == "Simulation completed without blocking findings."
     assert simulation_artifact["findings"] == []
     assert simulation_artifact["indeterminate_reason"] is None
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
     assert "provider_debug_blob" not in simulation_artifact
     assert set(simulation_artifact.keys()) == {
         "artifact_type",
@@ -7851,6 +7875,9 @@ def test_stage75_pass_artifact_has_normalized_reason_fields(monkeypatch):
         "indeterminate_reason",
         "provider_name",
         "provider_applicability",
+        "provider_execution_state",
+        "provider_execution_summary",
+        "provider_execution_target",
         "provider_selection_reason",
         "provider_selection_source",
         "reason_code",
@@ -8351,6 +8378,9 @@ def test_external_dry_run_provider_passes_for_valid_docker_compose_config(monkey
     assert simulation_artifact["provider_name"] == "external_dry_run"
     assert simulation_artifact["simulation_status"] == "pass"
     assert simulation_artifact["reason_code"] == "simulation_pass"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "docker compose config executed successfully"
+    assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
     assert simulation_artifact["findings"] == []
 
 
@@ -8399,6 +8429,11 @@ def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_do
     assert simulation_gate["simulation_blocked"] is True
     assert simulation_artifact["simulation_status"] == "fail"
     assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "docker compose config executed with blocking findings"
+    assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
+    assert "stdout" not in simulation_artifact
+    assert "stderr" not in simulation_artifact
     assert simulation_artifact["findings"] == [
         {
             "code": "external_command_failed",
@@ -8452,6 +8487,9 @@ def test_external_dry_run_provider_returns_indeterminate_when_command_is_unavail
     )
     assert simulation_gate["simulation_status"] == "indeterminate"
     assert simulation_artifact["reason_code"] == "external_command_unavailable"
+    assert simulation_artifact["provider_execution_state"] == "unavailable"
+    assert simulation_artifact["provider_execution_summary"] == "external command unavailable"
+    assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
 
 
 def test_external_dry_run_provider_returns_indeterminate_when_command_times_out(monkeypatch):
@@ -8493,6 +8531,9 @@ def test_external_dry_run_provider_returns_indeterminate_when_command_times_out(
     )
     assert simulation_gate["simulation_status"] == "indeterminate"
     assert simulation_artifact["reason_code"] == "external_command_timeout"
+    assert simulation_artifact["provider_execution_state"] == "timeout"
+    assert simulation_artifact["provider_execution_summary"] == "external command timed out"
+    assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
 
 
 def test_external_dry_run_provider_returns_indeterminate_for_malformed_command_output(monkeypatch):
@@ -8534,6 +8575,44 @@ def test_external_dry_run_provider_returns_indeterminate_for_malformed_command_o
     )
     assert simulation_gate["simulation_status"] == "indeterminate"
     assert simulation_artifact["reason_code"] == "external_command_parse_error"
+    assert simulation_artifact["provider_execution_state"] == "input_invalid"
+    assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
+    assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_required_input_is_missing(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_input_missing")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_input_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
 
 
 def test_external_dry_run_provider_is_not_selected_when_not_applicable(monkeypatch):
@@ -8766,6 +8845,9 @@ def test_stage75_selector_explicit_valid_provider_override_selects_requested_pro
         "resolution": "explicit",
         "selected_provider": "workspace_artifact",
     }
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact evaluated successfully"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
     assert simulation_artifact["provider_selection_source"] == "explicit"
     assert simulation_artifact["provider_selection_reason"] == "explicit_provider_selected"
     assert simulation_artifact["simulation_status"] == "pass"
@@ -8797,6 +8879,9 @@ def test_stage75_selector_explicit_override_uses_forced_override_when_provider_i
         "resolution": "forced_override",
         "selected_provider": "infra_dry_run",
     }
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "infra dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["reason_code"] == "preview_artifact_missing"
 
@@ -8833,6 +8918,9 @@ def test_workspace_artifact_provider_returns_fail_with_normalized_findings_on_va
     assert simulation_gate["provider_name"] == "workspace_artifact"
     assert simulation_artifact["simulation_status"] == "fail"
     assert simulation_artifact["reason_code"] == "simulation_fail"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact evaluated with blocking findings"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
     assert simulation_artifact["findings"] == [
         {
             "code": "approved_write_set_violates_deterministic_safe_modify_boundary",
@@ -8863,6 +8951,9 @@ def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_mi
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["indeterminate_reason"] == "artifact_missing"
     assert simulation_artifact["reason_code"] == "artifact_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact forced override applied"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
 
 
 def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_is_malformed():
@@ -8887,6 +8978,9 @@ def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_is
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["indeterminate_reason"] == "artifact_invalid"
     assert simulation_artifact["reason_code"] == "artifact_invalid"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact forced override applied"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
 
 
 def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_structure_is_invalid():
@@ -8924,6 +9018,9 @@ def test_workspace_artifact_provider_returns_indeterminate_when_seed_artifact_st
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["indeterminate_reason"] == "artifact_invalid"
     assert simulation_artifact["reason_code"] == "artifact_invalid"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact forced override applied"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
 
 
 @pytest.mark.parametrize("seeded_status", ["pass", "fail", "indeterminate"])
@@ -8983,6 +9080,9 @@ def test_stage75_selector_explicit_invalid_provider_override_fails_closed():
         "resolution": "unresolved",
         "selected_provider": None,
     }
+    assert simulation_artifact["provider_execution_state"] == "not_run"
+    assert simulation_artifact["provider_execution_summary"] == "simulation not executed"
+    assert simulation_artifact["provider_execution_target"] is None
     assert simulation_artifact["provider_selection_source"] == "explicit"
     assert simulation_artifact["provider_selection_reason"] == "explicit_provider_unavailable"
     assert simulation_artifact["simulation_status"] == "indeterminate"
@@ -9027,6 +9127,9 @@ def test_stage75_selector_infers_infra_dry_run_only_for_clear_infra_candidates(m
         "resolution": "inferred",
         "selected_provider": "infra_dry_run",
     }
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "infra dry-run executed successfully"
+    assert simulation_artifact["provider_execution_target"] is None
     assert simulation_artifact["provider_selection_source"] == "inferred"
     assert simulation_artifact["provider_selection_reason"] == "infra_dry_run_applicable"
 
@@ -9067,6 +9170,9 @@ def test_stage75_selector_uses_workspace_artifact_when_existing_contract_is_appl
         "resolution": "inferred",
         "selected_provider": "workspace_artifact",
     }
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact evaluated successfully"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
     assert simulation_artifact["provider_selection_source"] == "inferred"
     assert simulation_artifact["provider_selection_reason"] == "workspace_artifact_available"
     assert simulation_artifact["simulation_status"] == "pass"
@@ -9120,6 +9226,9 @@ def test_stage75_selector_resolves_multiple_applicable_providers_via_determinist
         "resolution": "inferred",
         "selected_provider": "workspace_artifact",
     }
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "workspace artifact evaluated successfully"
+    assert simulation_artifact["provider_execution_target"] == ".dce/execution/simulation/mission-board.simulation.json"
     assert simulation_artifact["simulation_status"] == "pass"
 
 
@@ -9172,6 +9281,9 @@ def test_stage75_selector_fails_closed_on_multiple_applicable_providers_without_
         "resolution": "conflict",
         "selected_provider": None,
     }
+    assert simulation_artifact["provider_execution_state"] == "not_run"
+    assert simulation_artifact["provider_execution_summary"] == "simulation not executed"
+    assert simulation_artifact["provider_execution_target"] is None
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["reason_code"] == "simulation_provider_conflict"
 
@@ -9208,6 +9320,9 @@ def test_stage75_selector_returns_unresolved_when_no_provider_path_is_applicable
         "resolution": "unresolved",
         "selected_provider": None,
     }
+    assert simulation_artifact["provider_execution_state"] == "not_run"
+    assert simulation_artifact["provider_execution_summary"] == "simulation not executed"
+    assert simulation_artifact["provider_execution_target"] is None
     assert simulation_artifact["provider_selection_source"] == "unresolved"
     assert simulation_artifact["provider_selection_reason"] == "simulation_provider_unresolved"
     assert simulation_artifact["simulation_status"] == "indeterminate"
@@ -9286,6 +9401,9 @@ def test_stage_7_5_projection_shows_triggered_pass_in_workspace_views(monkeypatc
         "applicable_providers": [],
         "findings_count": 0,
         "finding_codes": [],
+        "provider_execution_state": "forced_override",
+        "provider_execution_summary": "workspace artifact forced override applied",
+        "provider_execution_target": None,
         "provider_selection_source": "explicit",
         "provider_resolution": "forced_override",
         "reason_code": "simulation_pass",
@@ -9332,6 +9450,9 @@ def test_stage_7_5_projection_shows_triggered_fail_with_compact_findings(monkeyp
         "applicable_providers": [],
         "findings_count": 2,
         "finding_codes": ["first_code", "second_code"],
+        "provider_execution_state": "forced_override",
+        "provider_execution_summary": "workspace artifact forced override applied",
+        "provider_execution_target": None,
         "provider_selection_source": "explicit",
         "provider_resolution": "forced_override",
         "reason_code": "simulation_fail",
@@ -9366,6 +9487,9 @@ def test_stage_7_5_projection_shows_triggered_indeterminate_reason_fields():
         "applicable_providers": [],
         "findings_count": 0,
         "finding_codes": [],
+        "provider_execution_state": "forced_override",
+        "provider_execution_summary": "infra dry-run forced override applied",
+        "provider_execution_target": None,
         "provider_selection_source": "explicit",
         "provider_resolution": "forced_override",
         "reason_code": "infra_candidate_absent",
@@ -9400,6 +9524,9 @@ def test_stage_7_5_projection_keeps_non_triggered_case_explicit():
         "applicable_providers": [],
         "findings_count": 0,
         "finding_codes": [],
+        "provider_execution_state": "not_run",
+        "provider_execution_summary": "simulation not executed",
+        "provider_execution_target": None,
         "provider_selection_source": "not_applicable",
         "provider_resolution": None,
         "reason_code": None,
@@ -9442,6 +9569,9 @@ def test_stage_7_5_trigger_reason_projection_remains_consistent_across_workspace
         "applicable_providers": [],
         "findings_count": 1,
         "finding_codes": ["infra_modify_candidate"],
+        "provider_execution_state": "forced_override",
+        "provider_execution_summary": "workspace artifact forced override applied",
+        "provider_execution_target": None,
         "provider_selection_source": "explicit",
         "provider_resolution": "forced_override",
         "reason_code": "simulation_fail",
@@ -9545,6 +9675,9 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "applicable_providers": [],
             "findings_count": 0,
             "finding_codes": [],
+            "provider_execution_state": "not_run",
+            "provider_execution_summary": "simulation not executed",
+            "provider_execution_target": None,
             "provider_selection_source": None,
             "provider_resolution": None,
             "reason_code": None,
@@ -9561,6 +9694,9 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "applicable_providers": [],
             "findings_count": 0,
             "finding_codes": [],
+            "provider_execution_state": "not_run",
+            "provider_execution_summary": "simulation not executed",
+            "provider_execution_target": None,
             "provider_selection_source": "not_applicable",
             "provider_resolution": None,
             "reason_code": None,
@@ -9577,6 +9713,9 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "applicable_providers": ["workspace_artifact"],
             "findings_count": 0,
             "finding_codes": [],
+            "provider_execution_state": "executed",
+            "provider_execution_summary": "workspace artifact evaluated successfully",
+            "provider_execution_target": None,
             "provider_selection_source": "explicit",
             "provider_resolution": "explicit",
             "reason_code": "simulation_pass",
@@ -9593,6 +9732,9 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "applicable_providers": ["workspace_artifact"],
             "findings_count": 2,
             "finding_codes": ["duplicate_code", "distinct_code"],
+            "provider_execution_state": "executed",
+            "provider_execution_summary": "workspace artifact evaluated with blocking findings",
+            "provider_execution_target": None,
             "provider_selection_source": "explicit",
             "provider_resolution": "explicit",
             "reason_code": "simulation_fail",
@@ -9609,6 +9751,9 @@ def test_stage_7_5_projection_remains_consistent_across_workspace_surfaces_for_m
             "applicable_providers": [],
             "findings_count": 0,
             "finding_codes": [],
+            "provider_execution_state": "not_run",
+            "provider_execution_summary": "simulation not executed",
+            "provider_execution_target": None,
             "provider_selection_source": "unresolved",
             "provider_resolution": "unresolved",
             "reason_code": "simulation_provider_unresolved",
