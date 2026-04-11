@@ -132,6 +132,24 @@ def _sql_migration_file_plan(*paths: str) -> FilePlan:
     )
 
 
+def _assert_compact_external_findings(findings: list[dict]) -> None:
+    assert isinstance(findings, list)
+    for finding in findings:
+        assert set(finding.keys()) <= {"code", "summary", "target"}
+        assert isinstance(finding["code"], str) and finding["code"]
+        assert isinstance(finding["summary"], str) and finding["summary"]
+        assert "\n" not in finding["summary"]
+        assert "\r" not in finding["summary"]
+        lower_summary = finding["summary"].lower()
+        assert "validationerror(" not in lower_summary
+        assert "additional property" not in lower_summary
+        assert "unknown instruction" not in lower_summary
+        assert "reference to undeclared" not in lower_summary
+        assert "create table" not in lower_summary
+        if "target" in finding and finding["target"] is not None:
+            assert isinstance(finding["target"], str) and finding["target"]
+
+
 def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
     fragments = {
         "deployment_artifact": "deployment artifacts",
@@ -10006,6 +10024,297 @@ def test_external_dry_run_provider_returns_indeterminate_for_unclassifiable_sql_
     assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
     assert simulation_artifact["provider_execution_target"] == "migrations/001_unknown.sql"
     assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_rejects_mixed_compose_and_dockerfile_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_mixed_compose_dockerfile")
+    prepared_file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "deploy/docker-compose.yaml", "purpose": "Compose manifest", "source": "expected_targets"},
+            {"path": "Dockerfile", "purpose": "Dockerfile", "source": "expected_targets"},
+        ],
+    )
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    dockerfile_path = project_root / "Dockerfile"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+    dockerfile_path.write_text("FROM alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_rejects_mixed_terraform_and_k8s_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_mixed_terraform_k8s")
+    prepared_file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "infra/terraform/main.tf", "purpose": "Terraform module", "source": "expected_targets"},
+            {"path": "k8s/deployment.yaml", "purpose": "Kubernetes manifest", "source": "expected_targets"},
+        ],
+    )
+    terraform_path = project_root / "infra" / "terraform" / "main.tf"
+    k8s_path = project_root / "k8s" / "deployment.yaml"
+    terraform_path.parent.mkdir(parents=True, exist_ok=True)
+    k8s_path.parent.mkdir(parents=True, exist_ok=True)
+    terraform_path.write_text('resource "null_resource" "example" {}\n', encoding="utf-8")
+    k8s_path.write_text("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\nspec: {}\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_rejects_mixed_sql_and_compose_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_mixed_sql_compose")
+    prepared_file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "migrations/001_init.sql", "purpose": "SQL migration", "source": "expected_targets"},
+            {"path": "deploy/docker-compose.yaml", "purpose": "Compose manifest", "source": "expected_targets"},
+        ],
+    )
+    sql_path = project_root / "migrations" / "001_init.sql"
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("CREATE TABLE missions (id INTEGER);\n", encoding="utf-8")
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_sorts_multifile_compose_inputs_deterministically(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_multifile_sorted")
+    prepared_file_plan = _compose_file_plan("deploy/docker-compose.yaml", "compose.yaml")
+    root_compose = project_root / "compose.yaml"
+    deploy_compose = project_root / "deploy" / "docker-compose.yaml"
+    root_compose.parent.mkdir(parents=True, exist_ok=True)
+    deploy_compose.parent.mkdir(parents=True, exist_ok=True)
+    root_compose.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+    deploy_compose.write_text("services:\n  app:\n    environment:\n      TEST: 1\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **kwargs):
+        assert command == ["docker", "compose", "-f", "compose.yaml", "-f", "deploy/docker-compose.yaml", "config"]
+        assert kwargs["cwd"] == str(project_root)
+        return subprocess.CompletedProcess(command, 0, stdout="services:\n  app:\n    image: alpine:latest\n", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "pass"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+@pytest.mark.parametrize(
+    ("family_name", "findings"),
+    [
+        (
+            "compose",
+            dgce_decompose._normalize_external_dry_run_findings(
+                diagnostics=["services.app Additional property typo is not allowed"],
+                target_paths=[Path("tests/.tmp/compose-target")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "dockerfile",
+            dgce_decompose._normalize_external_dockerfile_findings(
+                diagnostics=["unknown instruction: FROOOM"],
+                target_paths=[Path("tests/.tmp/Dockerfile")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "k8s",
+            dgce_decompose._normalize_external_k8s_findings(
+                diagnostics=["error validating data: ValidationError(Deployment.spec): invalid value"],
+                target_paths=[Path("tests/.tmp/k8s/deployment.yaml")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "terraform",
+            dgce_decompose._normalize_external_terraform_findings(
+                diagnostics=["Error: Unsupported argument"],
+                target_paths=[Path("tests/.tmp/infra/terraform/main.tf")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "sql_migration",
+            dgce_decompose._normalize_external_sql_migration_findings(
+                sql_text="DROP TABLE missions;",
+                target_path=Path("tests/.tmp/migrations/001_drop.sql"),
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+    ],
+)
+def test_external_dry_run_normalizers_emit_only_compact_contract_findings(family_name, findings):
+    assert family_name
+    assert findings is not None
+    _assert_compact_external_findings(findings)
+
+
+@pytest.mark.parametrize(
+    ("family_name", "normalized"),
+    [
+        (
+            "compose",
+            dgce_decompose._normalize_external_dry_run_findings(
+                diagnostics=["validation failed for unknown reason"],
+                target_paths=[Path("tests/.tmp/deploy/docker-compose.yaml")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "dockerfile",
+            dgce_decompose._normalize_external_dockerfile_findings(
+                diagnostics=["validation failed for unknown dockerfile reason"],
+                target_paths=[Path("tests/.tmp/Dockerfile")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "k8s",
+            dgce_decompose._normalize_external_k8s_findings(
+                diagnostics=["validation failed for unknown kubernetes reason"],
+                target_paths=[Path("tests/.tmp/k8s/deployment.yaml")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "terraform",
+            dgce_decompose._normalize_external_terraform_findings(
+                diagnostics=["validation failed for unknown terraform reason"],
+                target_paths=[Path("tests/.tmp/infra/terraform/main.tf")],
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+        (
+            "sql_migration",
+            dgce_decompose._normalize_external_sql_migration_findings(
+                sql_text="-- migration intentionally unclear\n;",
+                target_path=Path("tests/.tmp/migrations/001_unknown.sql"),
+                workspace_root=Path("tests/.tmp"),
+            ),
+        ),
+    ],
+)
+def test_external_dry_run_unknown_diagnostics_normalize_to_none_for_all_families(family_name, normalized):
+    assert family_name
+    assert normalized is None
 
 
 def test_external_dry_run_provider_is_not_selected_when_not_applicable(monkeypatch):

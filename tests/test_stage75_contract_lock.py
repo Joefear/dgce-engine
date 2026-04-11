@@ -598,6 +598,59 @@ def test_stage75_contract_lock_workspace_infra_external_interaction_is_determini
     assert projection["advisory_provider"] == "infra_dry_run"
 
 
+def test_stage75_contract_lock_external_mixed_family_inputs_fail_closed(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("dgce_stage75_contract_lock_external_mixed_families")
+    prepared_file_plan = FilePlan(
+        project_name="DGCE",
+        files=[
+            {"path": "deploy/docker-compose.yaml", "purpose": "Compose manifest", "source": "expected_targets"},
+            {"path": "migrations/001_init.sql", "purpose": "SQL migration", "source": "expected_targets"},
+        ],
+    )
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    sql_path = project_root / "migrations" / "001_init.sql"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+    sql_path.write_text("CREATE TABLE missions (id INTEGER);\n", encoding="utf-8")
+
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+    _record_basic_approval(project_root, selected_mode="create_only")
+
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-03-26T00:00:00Z",
+        preflight_validation_timestamp="2026-03-26T00:00:00Z",
+        alignment_timestamp="2026-03-26T00:00:00Z",
+        simulation_triggered=True,
+        simulation_provider="external_dry_run",
+        simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        execution_timestamp="2026-03-26T00:00:00Z",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_artifact = _read_simulation_artifact(project_root)
+    assert simulation_artifact["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_target"] is None
+    assert simulation_artifact["findings"] == []
+    projection = _assert_all_projections_equal(project_root)
+    assert projection["simulation_status"] == "indeterminate"
+    assert projection["simulation_provider"] == "external_dry_run"
+    assert projection["provider_execution_state"] == "forced_override"
+    assert projection["findings_count"] == 0
+    assert projection["finding_codes"] == []
+
+
 def test_stage75_contract_lock_trigger_false_projects_skipped_everywhere():
     project_root = _workspace_dir("dgce_stage75_contract_lock_skipped")
     run_section_with_workspace(_section(), project_root, incremental_mode="incremental_v2_2")

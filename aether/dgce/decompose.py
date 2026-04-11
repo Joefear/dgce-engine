@@ -7171,6 +7171,37 @@ def _normalize_external_sql_migration_findings(
     return []
 
 
+def _validate_external_dry_run_findings_contract(
+    findings: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    if findings is None:
+        return None
+    normalized_findings: list[dict[str, Any]] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            return None
+        finding_keys = set(finding.keys())
+        if not {"code", "summary"} <= finding_keys <= {"code", "summary", "target"}:
+            return None
+        code = finding.get("code")
+        summary = finding.get("summary")
+        target = finding.get("target")
+        if not isinstance(code, str) or not code.strip():
+            return None
+        if not isinstance(summary, str) or not summary.strip() or "\n" in summary or "\r" in summary:
+            return None
+        normalized_finding = {
+            "code": code.strip(),
+            "summary": summary.strip(),
+        }
+        if target is not None:
+            if not isinstance(target, str) or not target.strip():
+                return None
+            normalized_finding["target"] = target.strip()
+        normalized_findings.append(normalized_finding)
+    return normalized_findings
+
+
 def _run_external_dry_run_provider(
     workspace_root: Path,
     section_id: str,
@@ -7294,6 +7325,7 @@ def _run_external_dry_run_provider(
                 target_path=target_path,
                 workspace_root=workspace_root,
             )
+            normalized_findings = _validate_external_dry_run_findings_contract(normalized_findings)
             if normalized_findings is None:
                 return {
                     "findings": [],
@@ -7355,6 +7387,7 @@ def _run_external_dry_run_provider(
             target_paths=target_paths,
             workspace_root=workspace_root,
         )
+    normalized_findings = _validate_external_dry_run_findings_contract(normalized_findings)
     if normalized_findings is None:
         return {
             "findings": [],
