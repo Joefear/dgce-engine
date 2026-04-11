@@ -5801,6 +5801,7 @@ _ALLOWED_SIMULATION_INDETERMINATE_REASONS = {
     "external_command_input_missing",
     "external_command_parse_error",
     "external_command_timeout",
+    "external_command_unsupported",
     "external_command_unavailable",
     "infra_candidate_absent",
     "invalid_provider_response",
@@ -5835,6 +5836,7 @@ _ALLOWED_SIMULATION_REASON_CODES = {
     "external_command_input_missing",
     "external_command_parse_error",
     "external_command_timeout",
+    "external_command_unsupported",
     "external_command_unavailable",
     "infra_candidate_absent",
     "invalid_provider_response",
@@ -5854,6 +5856,7 @@ _SIMULATION_REASON_SUMMARIES = {
     "external_command_input_missing": "Allowlisted external dry-run inputs were missing or unsupported.",
     "external_command_parse_error": "Allowlisted external dry-run output could not be interpreted safely.",
     "external_command_timeout": "Allowlisted external dry-run command timed out before producing reliable evidence.",
+    "external_command_unsupported": "Allowlisted external dry-run input shape was unsupported for safe execution.",
     "external_command_unavailable": "Allowlisted external dry-run command was unavailable on this machine.",
     "infra_candidate_absent": "No actionable infrastructure dry-run candidate was present.",
     "invalid_provider_response": "Provider response could not be normalized into the sealed simulation evidence contract.",
@@ -5978,7 +5981,6 @@ _RUNTIME_CONTROL_FILENAMES: set[str] = set()
 _RUNTIME_CONTROL_SUFFIXES = {".service"}
 _DOCKER_COMPOSE_FILENAMES = {
     "compose.yaml",
-    "compose.yml",
     "docker-compose.yaml",
     "docker-compose.yml",
 }
@@ -6553,7 +6555,7 @@ def _normalize_simulation_provider_execution_trace(
             return "unavailable", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["unavailable:external_dry_run"], normalized_target
         if indeterminate_reason == "external_command_timeout":
             return "timeout", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["timeout"], normalized_target
-        if indeterminate_reason in {"external_command_input_missing", "external_command_parse_error"}:
+        if indeterminate_reason in {"external_command_input_missing", "external_command_parse_error", "external_command_unsupported"}:
             return "input_invalid", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES["input_invalid"], normalized_target
         summary_key = f"executed:external_dry_run:{simulation_status}"
         return "executed", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES[summary_key], normalized_target
@@ -6712,35 +6714,116 @@ def _is_external_dry_run_candidate_path(path_value: Any) -> bool:
     return Path(normalized_path).name.lower() in _DOCKER_COMPOSE_FILENAMES
 
 
-def _external_dry_run_target_path(workspace_root: Path, section_id: str) -> Path | None:
+def _is_external_dry_run_unsupported_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path_name = Path(normalized_path).name.lower()
+    return "compose" in path_name and path_name.endswith((".yaml", ".yml")) and path_name not in _DOCKER_COMPOSE_FILENAMES
+
+
+def _resolve_external_dry_run_targets(
+    workspace_root: Path,
+    section_id: str,
+) -> tuple[str, list[Path]]:
     preview_payload = _load_preview_artifact_for_stage75_provider(workspace_root, section_id)
     if preview_payload is None:
-        return None
+        return "input_missing", []
     project_root = workspace_root.parent
     previews = preview_payload.get("previews", [])
     if not isinstance(previews, list):
-        return None
+        return "unsupported", []
+    candidate_paths: list[Path] = []
+    seen_paths: set[str] = set()
     for entry in sorted(previews, key=lambda item: str(item.get("path", "")) if isinstance(item, dict) else ""):
         if not isinstance(entry, dict):
-            continue
+            return "unsupported", []
         normalized_path = _normalize_alignment_path(entry.get("path"))
         planned_action = str(entry.get("planned_action", "")).strip()
-        if normalized_path is None or planned_action not in {"create", "modify"}:
+        if planned_action not in {"create", "modify"}:
             continue
+        if normalized_path is None:
+            return "unsupported", []
+        if _is_external_dry_run_unsupported_path(normalized_path):
+            return "unsupported", []
         if not _is_external_dry_run_candidate_path(normalized_path):
             continue
+        if normalized_path in seen_paths:
+            continue
+        seen_paths.add(normalized_path)
         candidate_path = project_root / Path(normalized_path)
-        if candidate_path.exists() and candidate_path.is_file():
-            return candidate_path
-    return None
+        if not candidate_path.exists() or not candidate_path.is_file():
+            return "input_missing", []
+        try:
+            candidate_path.relative_to(project_root)
+        except ValueError:
+            return "unsupported", []
+        candidate_paths.append(candidate_path)
+    if not candidate_paths:
+        return "input_missing", []
+    return "ok", candidate_paths
+
+
+def _normalize_external_dry_run_findings(
+    *,
+    diagnostics: list[str],
+    target_paths: list[Path],
+    workspace_root: Path,
+) -> list[dict[str, Any]] | None:
+    findings: list[dict[str, Any]] = []
+    primary_target = (
+        target_paths[0].relative_to(workspace_root.parent).as_posix()
+        if len(target_paths) == 1
+        else None
+    )
+    for line in diagnostics[:3]:
+        normalized_line = " ".join(str(line).split()).strip()
+        if not normalized_line:
+            continue
+        if "Additional property" in normalized_line and "is not allowed" in normalized_line:
+            findings.append(
+                {
+                    "code": "external_compose_property_not_allowed",
+                    "summary": "Docker Compose validation reported an unsupported property.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        if "must be a string" in normalized_line:
+            findings.append(
+                {
+                    "code": "external_compose_type_mismatch",
+                    "summary": "Docker Compose validation reported a field with an invalid type.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        if "is required" in normalized_line:
+            findings.append(
+                {
+                    "code": "external_compose_required_field_missing",
+                    "summary": "Docker Compose validation reported a missing required field.",
+                    "target": primary_target,
+                }
+            )
+            continue
+        return None
+    return findings if findings else None
 
 
 def _run_external_dry_run_provider(
     workspace_root: Path,
     section_id: str,
 ) -> dict[str, Any]:
-    target_path = _external_dry_run_target_path(workspace_root, section_id)
-    if target_path is None:
+    target_status, target_paths = _resolve_external_dry_run_targets(workspace_root, section_id)
+    if target_status == "unsupported":
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_unsupported",
+            "provider_execution_target": None,
+            "simulation_status": "indeterminate",
+        }
+    if target_status != "ok":
         return {
             "findings": [],
             "indeterminate_reason": "external_command_input_missing",
@@ -6748,8 +6831,12 @@ def _run_external_dry_run_provider(
             "simulation_status": "indeterminate",
         }
 
-    relative_target_path = target_path.relative_to(workspace_root.parent).as_posix()
-    command = ["docker", "compose", "-f", relative_target_path, "config"]
+    relative_target_paths = [target_path.relative_to(workspace_root.parent).as_posix() for target_path in target_paths]
+    command = ["docker", "compose"]
+    for relative_target_path in relative_target_paths:
+        command.extend(["-f", relative_target_path])
+    command.append("config")
+    execution_target = relative_target_paths[0] if len(relative_target_paths) == 1 else None
     try:
         completed = subprocess.run(
             command,
@@ -6764,21 +6851,21 @@ def _run_external_dry_run_provider(
         return {
             "findings": [],
             "indeterminate_reason": "external_command_unavailable",
-            "provider_execution_target": relative_target_path,
+            "provider_execution_target": execution_target,
             "simulation_status": "indeterminate",
         }
     except subprocess.TimeoutExpired:
         return {
             "findings": [],
             "indeterminate_reason": "external_command_timeout",
-            "provider_execution_target": relative_target_path,
+            "provider_execution_target": execution_target,
             "simulation_status": "indeterminate",
         }
     except Exception:
         return {
             "findings": [],
             "indeterminate_reason": "external_command_parse_error",
-            "provider_execution_target": relative_target_path,
+            "provider_execution_target": execution_target,
             "simulation_status": "indeterminate",
         }
 
@@ -6786,7 +6873,7 @@ def _run_external_dry_run_provider(
         return {
             "findings": [],
             "indeterminate_reason": None,
-            "provider_execution_target": relative_target_path,
+            "provider_execution_target": execution_target,
             "simulation_status": "pass",
         }
 
@@ -6801,21 +6888,25 @@ def _run_external_dry_run_provider(
         return {
             "findings": [],
             "indeterminate_reason": "external_command_parse_error",
-            "provider_execution_target": relative_target_path,
+            "provider_execution_target": execution_target,
             "simulation_status": "indeterminate",
         }
-    normalized_findings = [
-        {
-            "code": "external_command_failed",
-            "summary": line,
-            "target": target_path.relative_to(workspace_root.parent).as_posix(),
+    normalized_findings = _normalize_external_dry_run_findings(
+        diagnostics=diagnostic_lines,
+        target_paths=target_paths,
+        workspace_root=workspace_root,
+    )
+    if normalized_findings is None:
+        return {
+            "findings": [],
+            "indeterminate_reason": "external_command_parse_error",
+            "provider_execution_target": execution_target,
+            "simulation_status": "indeterminate",
         }
-        for line in diagnostic_lines[:3]
-    ]
     return {
         "findings": normalized_findings,
         "indeterminate_reason": None,
-        "provider_execution_target": relative_target_path,
+        "provider_execution_target": execution_target,
         "simulation_status": "fail",
     }
 
@@ -6903,7 +6994,7 @@ def _is_infra_dry_run_applicable(workspace_root: Path, section_id: str) -> bool:
 
 
 def _is_external_dry_run_applicable(workspace_root: Path, section_id: str) -> bool:
-    return _external_dry_run_target_path(workspace_root, section_id) is not None
+    return _resolve_external_dry_run_targets(workspace_root, section_id)[0] == "ok"
 
 
 def _is_workspace_artifact_provider_applicable(workspace_root: Path, section_id: str) -> bool:

@@ -62,6 +62,20 @@ def _infra_file_plan(path: str = "deploy/docker-compose.yaml") -> FilePlan:
     )
 
 
+def _compose_file_plan(*paths: str) -> FilePlan:
+    return FilePlan(
+        project_name="DGCE",
+        files=[
+            {
+                "path": path,
+                "purpose": "Compose manifest",
+                "source": "expected_targets",
+            }
+            for path in paths
+        ],
+    )
+
+
 def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
     fragments = {
         "deployment_artifact": "deployment artifacts",
@@ -8455,13 +8469,13 @@ def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_do
     assert "stderr" not in simulation_artifact
     assert simulation_artifact["findings"] == [
         {
-            "code": "external_command_failed",
-            "summary": "services.app Additional property typo is not allowed",
+            "code": "external_compose_property_not_allowed",
+            "summary": "Docker Compose validation reported an unsupported property.",
             "target": "deploy/docker-compose.yaml",
         },
         {
-            "code": "external_command_failed",
-            "summary": "services.app.image must be a string",
+            "code": "external_compose_type_mismatch",
+            "summary": "Docker Compose validation reported a field with an invalid type.",
             "target": "deploy/docker-compose.yaml",
         },
     ]
@@ -8599,6 +8613,142 @@ def test_external_dry_run_provider_returns_indeterminate_for_malformed_command_o
     assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
 
 
+def test_external_dry_run_provider_returns_indeterminate_for_unparseable_validation_surface(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_unparseable_surface")
+    prepared_file_plan = _infra_file_plan()
+    compose_path = project_root / "deploy" / "docker-compose.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="validation failed for unknown reason\n")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_parse_error"
+    assert simulation_artifact["provider_execution_state"] == "input_invalid"
+    assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
+    assert simulation_artifact["provider_execution_target"] == "deploy/docker-compose.yaml"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_supports_bounded_multifile_compose_inputs(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_multifile")
+    prepared_file_plan = _compose_file_plan("compose.yaml", "deploy/docker-compose.yaml")
+    root_compose = project_root / "compose.yaml"
+    deploy_compose = project_root / "deploy" / "docker-compose.yaml"
+    root_compose.parent.mkdir(parents=True, exist_ok=True)
+    deploy_compose.parent.mkdir(parents=True, exist_ok=True)
+    root_compose.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+    deploy_compose.write_text("services:\n  app:\n    environment:\n      TEST: 1\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    def fake_subprocess_run(command, **kwargs):
+        assert command == ["docker", "compose", "-f", "compose.yaml", "-f", "deploy/docker-compose.yaml", "config"]
+        assert kwargs["shell"] is False
+        assert kwargs["cwd"] == str(project_root)
+        assert kwargs["timeout"] == dgce_decompose._EXTERNAL_DRY_RUN_TIMEOUT_SECONDS
+        return subprocess.CompletedProcess(command, 0, stdout="services:\n  app:\n    image: alpine:latest\n", stderr="")
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    monkeypatch.setattr(dgce_decompose.subprocess, "run", fake_subprocess_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "external_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_target"] is None
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_known_compose_input_file_is_missing(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_known_input_missing")
+    prepared_file_plan = _compose_file_plan("compose.yaml", "deploy/docker-compose.yaml")
+    root_compose = project_root / "compose.yaml"
+    root_compose.parent.mkdir(parents=True, exist_ok=True)
+    root_compose.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_input_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
 def test_external_dry_run_provider_returns_indeterminate_when_required_input_is_missing(monkeypatch):
     monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
     project_root = _workspace_dir("dgce_incremental_stage75_external_input_missing")
@@ -8629,6 +8779,46 @@ def test_external_dry_run_provider_returns_indeterminate_when_required_input_is_
     )
     assert simulation_gate["simulation_status"] == "indeterminate"
     assert simulation_artifact["reason_code"] == "external_command_input_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unsupported_compose_input_shape(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_unsupported")
+    prepared_file_plan = _compose_file_plan("deploy/compose.yml")
+    unsupported_compose = project_root / "deploy" / "compose.yml"
+    unsupported_compose.parent.mkdir(parents=True, exist_ok=True)
+    unsupported_compose.write_text("services:\n  app:\n    image: alpine:latest\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
     assert simulation_artifact["provider_execution_state"] == "forced_override"
     assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
     assert simulation_artifact["provider_execution_target"] is None
@@ -9451,9 +9641,9 @@ def test_stage75_composition_appends_advisory_findings_without_changing_authorit
     }
     assert simulation_artifact["findings"] == [
         {
-            "code": "external_command_failed",
+            "code": "external_compose_type_mismatch",
             "provider": "external_dry_run",
-            "summary": "services.app.image must be a string",
+            "summary": "Docker Compose validation reported a field with an invalid type.",
             "target": "deploy/docker-compose.yaml",
         },
         {

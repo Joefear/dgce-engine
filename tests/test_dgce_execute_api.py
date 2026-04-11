@@ -3163,7 +3163,7 @@ class TestDGCEExecuteAPI:
         assert summary.status_code == 200
         assert summary.json()["simulation"]["simulation_provider"] == "infra_dry_run"
         assert summary.json()["simulation"]["advisory_provider"] == "external_dry_run"
-        assert summary.json()["simulation"]["finding_codes"] == ["external_command_failed", "infra_modify_candidate"]
+        assert summary.json()["simulation"]["finding_codes"] == ["external_compose_type_mismatch", "infra_modify_candidate"]
         assert overview.json()["simulation"] == summary.json()["simulation"]
         assert dashboard.json()["simulation"] == summary.json()["simulation"]
 

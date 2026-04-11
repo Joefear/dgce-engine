@@ -310,9 +310,9 @@ def test_stage75_contract_lock_advisory_findings_are_normalized_attributed_and_d
     }
     assert simulation_artifact["findings"] == [
         {
-            "code": "external_command_failed",
+            "code": "external_compose_type_mismatch",
             "provider": "external_dry_run",
-            "summary": "services.app.image must be a string",
+            "summary": "Docker Compose validation reported a field with an invalid type.",
             "target": "deploy/docker-compose.yaml",
         },
         {
@@ -331,7 +331,7 @@ def test_stage75_contract_lock_advisory_findings_are_normalized_attributed_and_d
     assert projection["simulation_status"] == "fail"
     assert projection["simulation_provider"] == "infra_dry_run"
     assert projection["advisory_provider"] == "external_dry_run"
-    assert projection["finding_codes"] == ["external_command_failed", "infra_modify_candidate"]
+    assert projection["finding_codes"] == ["external_compose_type_mismatch", "infra_modify_candidate"]
 
 
 def test_stage75_contract_lock_advisory_failure_is_fail_safe(monkeypatch):
