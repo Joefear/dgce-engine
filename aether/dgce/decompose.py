@@ -5883,6 +5883,9 @@ _SIMULATION_PROVIDER_EXECUTION_SUMMARIES = {
     "executed:external_terraform:fail": "terraform validation executed with blocking findings",
     "executed:external_terraform:indeterminate": "terraform validation executed without reliable result",
     "executed:external_terraform:pass": "terraform validation executed successfully",
+    "executed:external_sql_migration:fail": "sql migration validation executed with blocking findings",
+    "executed:external_sql_migration:indeterminate": "sql migration validation executed without reliable result",
+    "executed:external_sql_migration:pass": "sql migration validation executed successfully",
     "executed:infra_dry_run:fail": "infra dry-run executed with blocking findings",
     "executed:infra_dry_run:indeterminate": "infra dry-run executed without reliable result",
     "executed:infra_dry_run:pass": "infra dry-run executed successfully",
@@ -6574,6 +6577,8 @@ def _normalize_simulation_provider_execution_trace(
             external_execution_family = "external_k8s"
         elif normalized_target is not None and (_is_external_terraform_candidate_path(normalized_target) or "terraform" in Path(normalized_target).parts):
             external_execution_family = "external_terraform"
+        elif normalized_target is not None and _is_external_sql_migration_candidate_path(normalized_target):
+            external_execution_family = "external_sql_migration"
         summary_key = f"executed:{external_execution_family}:{simulation_status}"
         return "executed", _SIMULATION_PROVIDER_EXECUTION_SUMMARIES[summary_key], normalized_target
     if normalized_provider_name == "workspace_artifact":
@@ -6789,6 +6794,29 @@ def _is_external_terraform_unsupported_path(path_value: Any) -> bool:
     return bool({part.lower() for part in path.parts} & {"terraform"})
 
 
+def _is_external_sql_migration_candidate_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path = Path(normalized_path)
+    if path.suffix.lower() != ".sql":
+        return False
+    parts = [part.lower() for part in path.parts]
+    if len(parts) >= 2 and parts[0] == "migrations":
+        return True
+    return len(parts) >= 3 and parts[0] == "db" and parts[1] == "migrations"
+
+
+def _is_external_sql_migration_unsupported_path(path_value: Any) -> bool:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        return False
+    path = Path(normalized_path)
+    if path.suffix.lower() != ".sql":
+        return False
+    return not _is_external_sql_migration_candidate_path(normalized_path)
+
+
 def _resolve_external_dry_run_targets(
     workspace_root: Path,
     section_id: str,
@@ -6804,6 +6832,7 @@ def _resolve_external_dry_run_targets(
     dockerfile_candidate_paths: list[Path] = []
     k8s_candidate_paths: list[Path] = []
     terraform_candidate_paths: list[Path] = []
+    sql_migration_candidate_paths: list[Path] = []
     seen_paths: set[tuple[str, str]] = set()
     for entry in sorted(previews, key=lambda item: str(item.get("path", "")) if isinstance(item, dict) else ""):
         if not isinstance(entry, dict):
@@ -6822,6 +6851,8 @@ def _resolve_external_dry_run_targets(
             return "unsupported", None, []
         if _is_external_terraform_unsupported_path(normalized_path):
             return "unsupported", None, []
+        if _is_external_sql_migration_unsupported_path(normalized_path):
+            return "unsupported", None, []
         target_kind: str | None = None
         if _is_external_dry_run_candidate_path(normalized_path):
             target_kind = "compose"
@@ -6831,6 +6862,8 @@ def _resolve_external_dry_run_targets(
             target_kind = "k8s"
         elif _is_external_terraform_candidate_path(normalized_path):
             target_kind = "terraform"
+        elif _is_external_sql_migration_candidate_path(normalized_path):
+            target_kind = "sql_migration"
         if target_kind is None:
             continue
         if (target_kind, normalized_path) in seen_paths:
@@ -6849,11 +6882,19 @@ def _resolve_external_dry_run_targets(
             dockerfile_candidate_paths.append(candidate_path)
         elif target_kind == "k8s":
             k8s_candidate_paths.append(candidate_path)
-        else:
+        elif target_kind == "terraform":
             terraform_candidate_paths.append(candidate_path)
+        else:
+            sql_migration_candidate_paths.append(candidate_path)
     active_target_kinds = sum(
         bool(paths)
-        for paths in (compose_candidate_paths, dockerfile_candidate_paths, k8s_candidate_paths, terraform_candidate_paths)
+        for paths in (
+            compose_candidate_paths,
+            dockerfile_candidate_paths,
+            k8s_candidate_paths,
+            terraform_candidate_paths,
+            sql_migration_candidate_paths,
+        )
     )
     if active_target_kinds > 1:
         return "unsupported", None, []
@@ -6871,6 +6912,8 @@ def _resolve_external_dry_run_targets(
         return "ok", "k8s", k8s_candidate_paths
     if terraform_candidate_paths:
         return "ok", "terraform", terraform_candidate_paths
+    if sql_migration_candidate_paths:
+        return "ok", "sql_migration", sql_migration_candidate_paths
     return "input_missing", None, []
 
 
@@ -7065,6 +7108,69 @@ def _normalize_external_terraform_findings(
     return findings if findings else None
 
 
+def _normalize_external_sql_migration_findings(
+    *,
+    sql_text: str,
+    target_path: Path,
+    workspace_root: Path,
+) -> list[dict[str, Any]] | None:
+    relative_target = target_path.relative_to(workspace_root.parent).as_posix()
+    normalized_text = str(sql_text).strip()
+    if not normalized_text:
+        return [
+            {
+                "code": "external_sql_migration_empty",
+                "summary": "SQL migration file is empty or contains no executable statements.",
+                "target": relative_target,
+            }
+        ]
+
+    upper_text = normalized_text.upper()
+    statement_keywords = ("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE")
+    has_statement_keyword = any(keyword in upper_text for keyword in statement_keywords)
+    if not has_statement_keyword:
+        if ";" in normalized_text or "--" in normalized_text:
+            return None
+        return [
+            {
+                "code": "external_sql_migration_empty",
+                "summary": "SQL migration file is empty or contains no executable statements.",
+                "target": relative_target,
+            }
+        ]
+
+    stripped_statements = [statement.strip() for statement in normalized_text.split(";")]
+    non_empty_statements = [statement for statement in stripped_statements if statement]
+    if not non_empty_statements or all(not any(keyword in statement.upper() for keyword in statement_keywords) for statement in non_empty_statements):
+        return [
+            {
+                "code": "external_sql_migration_invalid_structure",
+                "summary": "SQL migration file contains invalid or malformed statements.",
+                "target": relative_target,
+            }
+        ]
+
+    if "DROP TABLE" in upper_text:
+        return [
+            {
+                "code": "external_sql_migration_safety_violation",
+                "summary": "SQL migration file contains a potentially unsafe or irreversible operation.",
+                "target": relative_target,
+            }
+        ]
+
+    if ";;" in normalized_text or not normalized_text.rstrip().endswith(";"):
+        return [
+            {
+                "code": "external_sql_migration_invalid_structure",
+                "summary": "SQL migration file contains invalid or malformed statements.",
+                "target": relative_target,
+            }
+        ]
+
+    return []
+
+
 def _run_external_dry_run_provider(
     workspace_root: Path,
     section_id: str,
@@ -7096,6 +7202,8 @@ def _run_external_dry_run_provider(
         terraform_module_root = target_paths[0].parent
         terraform_module_root_relative = terraform_module_root.relative_to(workspace_root.parent).as_posix()
         command = None
+    elif target_kind == "sql_migration":
+        command = None
     else:
         command = ["docker", "compose"]
         for relative_target_path in relative_target_paths:
@@ -7106,6 +7214,8 @@ def _run_external_dry_run_provider(
         if target_kind in {"dockerfile", "k8s"} and len(relative_target_paths) == 1
         else terraform_module_root_relative
         if target_kind == "terraform"
+        else relative_target_paths[0]
+        if target_kind == "sql_migration" and len(relative_target_paths) == 1
         else relative_target_paths[0]
         if len(relative_target_paths) == 1
         else None
@@ -7133,6 +7243,8 @@ def _run_external_dry_run_provider(
                     text=True,
                     timeout=_EXTERNAL_DRY_RUN_TIMEOUT_SECONDS,
                 )
+        elif target_kind == "sql_migration":
+            completed = None
         else:
             completed = subprocess.run(
                 command,
@@ -7163,6 +7275,38 @@ def _run_external_dry_run_provider(
             "indeterminate_reason": "external_command_parse_error",
             "provider_execution_target": execution_target,
             "simulation_status": "indeterminate",
+        }
+
+    if target_kind == "sql_migration":
+        aggregated_findings: list[dict[str, Any]] = []
+        for target_path in target_paths:
+            try:
+                sql_text = target_path.read_text(encoding="utf-8")
+            except Exception:
+                return {
+                    "findings": [],
+                    "indeterminate_reason": "external_command_parse_error",
+                    "provider_execution_target": execution_target,
+                    "simulation_status": "indeterminate",
+                }
+            normalized_findings = _normalize_external_sql_migration_findings(
+                sql_text=sql_text,
+                target_path=target_path,
+                workspace_root=workspace_root,
+            )
+            if normalized_findings is None:
+                return {
+                    "findings": [],
+                    "indeterminate_reason": "external_command_parse_error",
+                    "provider_execution_target": execution_target,
+                    "simulation_status": "indeterminate",
+                }
+            aggregated_findings.extend(normalized_findings)
+        return {
+            "findings": aggregated_findings,
+            "indeterminate_reason": None,
+            "provider_execution_target": execution_target,
+            "simulation_status": "fail" if aggregated_findings else "pass",
         }
 
     if int(completed.returncode) == 0:

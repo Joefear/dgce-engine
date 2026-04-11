@@ -118,6 +118,20 @@ def _terraform_file_plan(*paths: str) -> FilePlan:
     )
 
 
+def _sql_migration_file_plan(*paths: str) -> FilePlan:
+    return FilePlan(
+        project_name="DGCE",
+        files=[
+            {
+                "path": path,
+                "purpose": "SQL migration",
+                "source": "expected_targets",
+            }
+            for path in paths
+        ],
+    )
+
+
 def _expected_trigger_reason_summary(*reason_codes: str) -> str | None:
     fragments = {
         "deployment_artifact": "deployment artifacts",
@@ -9703,6 +9717,294 @@ def test_external_dry_run_provider_returns_indeterminate_for_unparseable_terrafo
     assert simulation_artifact["provider_execution_state"] == "input_invalid"
     assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
     assert simulation_artifact["provider_execution_target"] == "infra/terraform"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_passes_for_valid_sql_migration(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_pass")
+    prepared_file_plan = _sql_migration_file_plan("migrations/001_init.sql")
+    sql_path = project_root / "migrations" / "001_init.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("CREATE TABLE missions (id INTEGER);\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["provider_name"] == "external_dry_run"
+    assert simulation_artifact["simulation_status"] == "pass"
+    assert simulation_artifact["provider_execution_state"] == "executed"
+    assert simulation_artifact["provider_execution_summary"] == "sql migration validation executed successfully"
+    assert simulation_artifact["provider_execution_target"] == "migrations/001_init.sql"
+    assert simulation_artifact["findings"] == []
+
+
+def test_external_dry_run_provider_fails_for_empty_sql_migration(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_empty")
+    prepared_file_plan = _sql_migration_file_plan("migrations/001_empty.sql")
+    sql_path = project_root / "migrations" / "001_empty.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("   \n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_sql_migration_empty",
+            "summary": "SQL migration file is empty or contains no executable statements.",
+            "target": "migrations/001_empty.sql",
+        }
+    ]
+
+
+def test_external_dry_run_provider_fails_for_malformed_sql_migration(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_malformed")
+    prepared_file_plan = _sql_migration_file_plan("db/migrations/001_bad.sql")
+    sql_path = project_root / "db" / "migrations" / "001_bad.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("CREATE TABLE missions(id INTEGER)\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_sql_migration_invalid_structure",
+            "summary": "SQL migration file contains invalid or malformed statements.",
+            "target": "db/migrations/001_bad.sql",
+        }
+    ]
+
+
+def test_external_dry_run_provider_fails_for_unsafe_sql_migration(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_unsafe")
+    prepared_file_plan = _sql_migration_file_plan("migrations/001_drop.sql")
+    sql_path = project_root / "migrations" / "001_drop.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("DROP TABLE missions;\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "fail"
+    assert simulation_artifact["findings"] == [
+        {
+            "code": "external_sql_migration_safety_violation",
+            "summary": "SQL migration file contains a potentially unsafe or irreversible operation.",
+            "target": "migrations/001_drop.sql",
+        }
+    ]
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unsupported_sql_path(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_unsupported")
+    prepared_file_plan = _sql_migration_file_plan("sql/query.sql")
+    sql_path = project_root / "sql" / "query.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("SELECT 1;\n", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_unsupported"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_when_explicit_sql_input_is_missing(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_input_missing")
+    prepared_file_plan = _sql_migration_file_plan("migrations/001_missing.sql")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_input_missing"
+    assert simulation_artifact["provider_execution_state"] == "forced_override"
+    assert simulation_artifact["provider_execution_summary"] == "external dry-run forced override applied"
+    assert simulation_artifact["provider_execution_target"] is None
+
+
+def test_external_dry_run_provider_returns_indeterminate_for_unclassifiable_sql_content(monkeypatch):
+    monkeypatch.setattr("aether_core.config.OLLAMA_ENABLED", False)
+    project_root = _workspace_dir("dgce_incremental_stage75_external_sql_parse_error")
+    prepared_file_plan = _sql_migration_file_plan("migrations/001_unknown.sql")
+    sql_path = project_root / "migrations" / "001_unknown.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("-- migration intentionally unclear\n;", encoding="utf-8")
+
+    def fake_run(self, executor_name, content):
+        return _stub_executor_result(content)
+
+    monkeypatch.setattr("aether_core.router.executors.StubExecutors.run", fake_run)
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        incremental_mode="incremental_v2_2",
+        prepared_file_plan=prepared_file_plan,
+    )
+
+    simulation_gate = execute_reserved_simulation_gate(
+        project_root,
+        "mission-board",
+        require_preflight_pass=True,
+        simulation_trigger=dgce_decompose.SectionSimulationTriggerInput(
+            simulation_triggered=True,
+            simulation_provider="external_dry_run",
+            simulation_trigger_timestamp="2026-03-26T00:00:00Z",
+        ),
+    )
+
+    simulation_artifact = json.loads(
+        (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").read_text(encoding="utf-8")
+    )
+    assert simulation_gate["simulation_status"] == "indeterminate"
+    assert simulation_artifact["reason_code"] == "external_command_parse_error"
+    assert simulation_artifact["provider_execution_state"] == "input_invalid"
+    assert simulation_artifact["provider_execution_summary"] == "external command input invalid"
+    assert simulation_artifact["provider_execution_target"] == "migrations/001_unknown.sql"
     assert simulation_artifact["findings"] == []
 
 
