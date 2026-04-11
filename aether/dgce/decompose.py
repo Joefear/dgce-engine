@@ -6445,8 +6445,21 @@ def _normalize_simulation_findings(findings: list[Any]) -> list[dict[str, Any]]:
             normalized_findings.append(normalized_finding)
             continue
         raise ValueError(f"Simulation finding at index {index} must be a string or object")
+    deduped_findings: list[dict[str, Any]] = []
+    seen_findings: set[tuple[str, str, str, str]] = set()
+    for finding in normalized_findings:
+        finding_key = (
+            str(finding.get("target") or ""),
+            str(finding.get("provider") or ""),
+            str(finding.get("code") or ""),
+            str(finding.get("summary") or ""),
+        )
+        if finding_key in seen_findings:
+            continue
+        seen_findings.add(finding_key)
+        deduped_findings.append(finding)
     return sorted(
-        normalized_findings,
+        deduped_findings,
         key=lambda finding: (
             str(finding.get("target") or ""),
             str(finding.get("provider") or ""),
