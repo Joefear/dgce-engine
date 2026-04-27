@@ -35,7 +35,12 @@ from aether.dgce.decompose import (
     run_section_and_write,
     run_section_with_workspace,
 )
-from aether.dgce.context_assembly import Stage0InputBoundaryResult, assemble_stage0_input
+from aether.dgce.context_assembly import (
+    Stage0InputBoundaryResult,
+    Stage0PersistResult,
+    assemble_stage0_input,
+    persist_stage0_input,
+)
 from aether.dgce.file_plan import FilePlan, build_file_plan
 from aether.dgce.file_writer import write_file_plan
 from aether.dgce.incremental import (
@@ -86,7 +91,9 @@ __all__ = [
     "compute_artifact_fingerprint",
     "compute_json_payload_fingerprint",
     "Stage0InputBoundaryResult",
+    "Stage0PersistResult",
     "assemble_stage0_input",
+    "persist_stage0_input",
     "FilePlan",
     "build_file_plan",
     "build_change_plan",
