@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://defiantinds.com/schemas/gce-ingestion-core-v1.schema.json",
+  "title": "GCEIngestionCore",
+  "description": "Core ingestion boundary contract for formal GDD and structured intent inputs before DGCE Stage 1.",
+  "oneOf": [
+    { "$ref": "#/$defs/FormalGddInput" },
+    { "$ref": "#/$defs/StructuredIntentInput" }
+  ],
+  "$defs": {
+    "Metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "project_name",
+        "owner",
+        "source_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "project_id": { "type": "string", "minLength": 1 },
+        "project_name": { "type": "string", "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "source_id": { "type": "string", "minLength": 1 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section_id",
+        "title",
+        "classification",
+        "authorship",
+        "required",
+        "content"
+      ],
+      "properties": {
+        "section_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "classification": {
+          "type": "string",
+          "enum": ["durable", "volatile"]
+        },
+        "authorship": {
+          "type": "string",
+          "enum": ["human", "injected"]
+        },
+        "required": { "type": "boolean" },
+        "content": {
+          "type": "object",
+          "minProperties": 1
+        }
+      }
+    },
+    "Ambiguity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_path", "question", "blocking"],
+      "properties": {
+        "field_path": { "type": "string", "minLength": 1 },
+        "question": { "type": "string", "minLength": 1 },
+        "blocking": { "const": true }
+      }
+    },
+    "FormalGddInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_name",
+        "contract_version",
+        "input_path",
+        "metadata",
+        "document",
+        "ambiguities"
+      ],
+      "properties": {
+        "contract_name": { "const": "GCEIngestionCore" },
+        "contract_version": { "const": "gce.ingestion.core.v1" },
+        "input_path": { "const": "formal_gdd" },
+        "metadata": { "$ref": "#/$defs/Metadata" },
+        "document": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session_objective", "sections"],
+          "properties": {
+            "session_objective": { "type": "string", "minLength": 1 },
+            "sections": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/Section" }
+            }
+          }
+        },
+        "ambiguities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Ambiguity" }
+        }
+      }
+    },
+    "StructuredIntentInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_name",
+        "contract_version",
+        "input_path",
+        "metadata",
+        "intent",
+        "ambiguities"
+      ],
+      "properties": {
+        "contract_name": { "const": "GCEIngestionCore" },
+        "contract_version": { "const": "gce.ingestion.core.v1" },
+        "input_path": { "const": "structured_intent" },
+        "metadata": { "$ref": "#/$defs/Metadata" },
+        "intent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session_objective", "sections"],
+          "properties": {
+            "session_objective": { "type": "string", "minLength": 1 },
+            "sections": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/Section" }
+            }
+          }
+        },
+        "ambiguities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Ambiguity" }
+        }
+      }
+    },
+    "NormalizedSessionIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_name",
+        "contract_version",
+        "source_input_path",
+        "metadata",
+        "session_objective",
+        "sections",
+        "section_classifications",
+        "stage_1_release"
+      ],
+      "properties": {
+        "contract_name": { "const": "GCESessionIntent" },
+        "contract_version": { "const": "gce.session_intent.v1" },
+        "source_input_path": {
+          "type": "string",
+          "enum": ["formal_gdd", "structured_intent"]
+        },
+        "metadata": { "$ref": "#/$defs/Metadata" },
+        "session_objective": { "type": "string", "minLength": 1 },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Section" }
+        },
+        "section_classifications": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["classification", "authorship", "required"],
+            "properties": {
+              "classification": { "enum": ["durable", "volatile"] },
+              "authorship": { "enum": ["human", "injected"] },
+              "required": { "type": "boolean" }
+            }
+          }
+        },
+        "stage_1_release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["blocked", "reason_code"],
+          "properties": {
+            "blocked": { "const": false },
+            "reason_code": { "type": "null" }
+          }
+        }
+      }
+    },
+    "ClarificationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_name",
+        "contract_version",
+        "artifact_type",
+        "source_input_path",
+        "stage_1_release_blocked",
+        "reason_code",
+        "metadata",
+        "questions"
+      ],
+      "properties": {
+        "contract_name": { "const": "GCEClarificationRequest" },
+        "contract_version": { "const": "gce.clarification_request.v1" },
+        "artifact_type": { "const": "clarification_request" },
+        "source_input_path": {
+          "type": "string",
+          "enum": ["formal_gdd", "structured_intent"]
+        },
+        "stage_1_release_blocked": { "const": true },
+        "reason_code": { "const": "unresolved_intent" },
+        "metadata": { "$ref": "#/$defs/Metadata" },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "field_path", "question", "blocking"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "field_path": { "type": "string", "minLength": 1 },
+              "question": { "type": "string", "minLength": 1 },
+              "blocking": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  }
+}
