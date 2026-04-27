@@ -2,7 +2,13 @@ import inspect
 import json
 from pathlib import Path
 
-from aether.dgce import DGCESection, assemble_stage0_input, persist_stage0_input, run_section_with_workspace
+from aether.dgce import (
+    DGCESection,
+    assemble_stage0_input,
+    persist_stage0_input,
+    release_gce_stage0_input,
+    run_section_with_workspace,
+)
 import aether.dgce.context_assembly as context_assembly
 import aether.dgce.decompose as dgce_decompose
 from aether_core.enums import ArtifactStatus
@@ -283,6 +289,166 @@ def test_clarification_request_stage0_package_is_persisted_and_blocks_stage1():
     assert persisted["clarification_request"]["artifact_type"] == "clarification_request"
     assert persisted["clarification_request"]["stage_1_release_blocked"] is True
     assert dgce_decompose.verify_artifact_fingerprint(artifact_path) is True
+
+
+def test_valid_persisted_gce_package_releases_to_stage1():
+    project_root = _workspace_dir("gce_stage0_release_valid")
+    persisted = persist_stage0_input(project_root, _formal_gdd_input())
+    artifact_path = project_root / persisted.artifact_path
+
+    release = release_gce_stage0_input(artifact_path)
+
+    assert release.allowed is True
+    assert release.result["artifact_type"] == "stage0_release_result"
+    assert release.result["adapter"] == "gce"
+    assert release.result["contract_name"] == "GCEStage0ReleaseResult"
+    assert release.result["contract_version"] == "gce.stage0.release_result.v1"
+    assert release.result["input_path"] == "formal_gdd"
+    assert release.result["reason_code"] is None
+    assert release.result["source_artifact_fingerprint"] == persisted.artifact["artifact_fingerprint"]
+    assert release.result["stage_1_release"] == {
+        "allowed": True,
+        "blocked": False,
+    }
+    assert release.result["normalized_session_intent"]["contract_name"] == "GCESessionIntent"
+    assert "clarification_request" not in release.result
+
+
+def test_invalid_persisted_gce_package_is_blocked_from_stage1():
+    project_root = _workspace_dir("gce_stage0_release_invalid")
+    payload = _structured_intent_input()
+    del payload["metadata"]["owner"]
+    persisted = persist_stage0_input(project_root, payload)
+
+    release = release_gce_stage0_input(project_root / persisted.artifact_path)
+
+    assert release.allowed is False
+    assert release.result["input_path"] == "structured_intent"
+    assert release.result["reason_code"] == "validation_failed"
+    assert release.result["source_artifact_fingerprint"] == persisted.artifact["artifact_fingerprint"]
+    assert release.result["stage_1_release"] == {
+        "allowed": False,
+        "blocked": True,
+    }
+    assert "normalized_session_intent" not in release.result
+    assert "clarification_request" not in release.result
+
+
+def test_clarification_persisted_gce_package_is_blocked_and_preserves_request():
+    project_root = _workspace_dir("gce_stage0_release_clarification")
+    payload = _formal_gdd_input()
+    payload["ambiguities"] = [
+        {
+            "field_path": "document.sections[0].content.scope",
+            "question": "Which generation scope is authoritative?",
+            "blocking": True,
+        }
+    ]
+    persisted = persist_stage0_input(project_root, payload)
+
+    release = release_gce_stage0_input(project_root / persisted.artifact_path)
+
+    assert release.allowed is False
+    assert release.result["input_path"] == "formal_gdd"
+    assert release.result["reason_code"] == "clarification_required"
+    assert release.result["stage_1_release"] == {
+        "allowed": False,
+        "blocked": True,
+    }
+    assert release.result["clarification_request"] == persisted.artifact["clarification_request"]
+    assert "normalized_session_intent" not in release.result
+
+
+def test_malformed_gce_stage0_package_is_blocked_fail_closed():
+    release = release_gce_stage0_input(
+        {
+            "artifact_type": "stage0_input_package",
+            "contract_name": "WrongContract",
+            "contract_version": "dgce.stage0.input_package.v1",
+            "adapter": "gce",
+            "input_path": "formal_gdd",
+            "stage_1_release": {"blocked": False, "reason_code": None},
+            "validation_report": {"status": "PASS"},
+            "normalized_session_intent": {"contract_name": "GCESessionIntent"},
+            "clarification_request": None,
+        }
+    )
+
+    assert release.allowed is False
+    assert release.result["reason_code"] == "package_malformed"
+    assert release.result["stage_1_release"] == {
+        "allowed": False,
+        "blocked": True,
+    }
+    assert "normalized_session_intent" not in release.result
+    assert "clarification_request" not in release.result
+
+
+def test_gce_stage0_package_missing_normalized_session_intent_is_blocked_fail_closed():
+    package = assemble_stage0_input(_formal_gdd_input()).package
+    package["normalized_session_intent"] = None
+
+    release = release_gce_stage0_input(package)
+
+    assert release.allowed is False
+    assert release.result["reason_code"] == "normalized_session_intent_missing"
+    assert release.result["input_path"] == "formal_gdd"
+    assert release.result["stage_1_release"] == {
+        "allowed": False,
+        "blocked": True,
+    }
+    assert "normalized_session_intent" not in release.result
+
+
+def test_persisted_gce_stage0_artifact_with_invalid_fingerprint_is_blocked():
+    project_root = _workspace_dir("gce_stage0_release_invalid_fingerprint")
+    persisted = persist_stage0_input(project_root, _formal_gdd_input())
+    artifact_path = project_root / persisted.artifact_path
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    payload["input_path"] = "structured_intent"
+    artifact_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    release = release_gce_stage0_input(artifact_path)
+
+    assert release.allowed is False
+    assert release.result["reason_code"] == "artifact_fingerprint_invalid"
+    assert release.result["source_artifact_fingerprint"] == persisted.artifact["artifact_fingerprint"]
+    assert release.result["stage_1_release"] == {
+        "allowed": False,
+        "blocked": True,
+    }
+
+
+def test_persisted_gce_stage0_artifact_missing_fingerprint_is_blocked():
+    project_root = _workspace_dir("gce_stage0_release_missing_fingerprint")
+    persisted = persist_stage0_input(project_root, _formal_gdd_input())
+    artifact_path = project_root / persisted.artifact_path
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    del payload["artifact_fingerprint"]
+    artifact_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    release = release_gce_stage0_input(artifact_path)
+
+    assert release.allowed is False
+    assert release.result["reason_code"] == "artifact_fingerprint_missing"
+    assert release.result["source_artifact_fingerprint"] is None
+    assert release.result["stage_1_release"] == {
+        "allowed": False,
+        "blocked": True,
+    }
+
+
+def test_gce_stage0_release_result_is_deterministic_for_repeated_reads():
+    project_root = _workspace_dir("gce_stage0_release_repeat")
+    persisted = persist_stage0_input(project_root, _formal_gdd_input())
+    artifact_path = project_root / persisted.artifact_path
+
+    first = release_gce_stage0_input(artifact_path)
+    second = release_gce_stage0_input(artifact_path)
+
+    assert first.allowed is True
+    assert second.allowed is True
+    assert first.result == second.result
 
 
 def test_raw_natural_language_stage0_input_is_blocked_without_persistence():
