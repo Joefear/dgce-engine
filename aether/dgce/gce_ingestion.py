@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -14,6 +16,8 @@ SESSION_INTENT_CONTRACT_NAME = "GCESessionIntent"
 SESSION_INTENT_CONTRACT_VERSION = "gce.session_intent.v1"
 CLARIFICATION_CONTRACT_NAME = "GCEClarificationRequest"
 CLARIFICATION_CONTRACT_VERSION = "gce.clarification_request.v1"
+CLARIFICATION_RESPONSE_CONTRACT_NAME = "GCEClarificationResponse"
+CLARIFICATION_RESPONSE_CONTRACT_VERSION = "gce.clarification_response.v1"
 
 INPUT_PATH_FORMAL_GDD = "formal_gdd"
 INPUT_PATH_STRUCTURED_INTENT = "structured_intent"
@@ -46,6 +50,17 @@ class GCEIngestionValidationResult:
     stage_1_release_blocked: bool
     normalized_session_intent: dict[str, Any] | None = None
     clarification_request: dict[str, Any] | None = None
+    errors: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GCEClarificationResolutionResult:
+    """Structured result for resolving a blocked GCE clarification request."""
+
+    ok: bool
+    blocked: bool
+    reason_code: str | None
+    resolved_input: dict[str, Any] | None = None
     errors: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -99,6 +114,223 @@ def validate_gce_ingestion_input(raw_input: Any) -> GCEIngestionValidationResult
             stage_1_release_blocked=True,
             errors=[_error("gce_ingestion_input", str(exc))],
         )
+
+
+def resolve_gce_clarification_response(
+    blocked_stage0_package: Any,
+    clarification_response: Any,
+) -> GCEClarificationResolutionResult:
+    """Resolve a blocked GCE clarification request into structured intent.
+
+    This accepts only a structured operator response. It does not parse natural
+    language and does not release Stage 1 directly.
+    """
+    try:
+        package = _expect_dict(blocked_stage0_package, "blocked_stage0_package")
+        clarification_request = _extract_blocking_clarification_request(package)
+        response = _parse_clarification_response(clarification_response)
+        expected_fingerprint = compute_gce_clarification_request_fingerprint(clarification_request)
+        if response["source_clarification_request_fingerprint"] != expected_fingerprint:
+            return _clarification_resolution_blocked("clarification_source_mismatch")
+
+        resolved_input = {
+            "contract_name": INGESTION_CONTRACT_NAME,
+            "contract_version": INGESTION_CONTRACT_VERSION,
+            "input_path": INPUT_PATH_STRUCTURED_INTENT,
+            "metadata": dict(clarification_request["metadata"]),
+            "intent": {
+                "session_objective": response["resolved_fields"]["session_objective"],
+                "sections": [dict(section) for section in response["resolved_fields"]["sections"]],
+            },
+            "ambiguities": [],
+        }
+        validation = validate_gce_ingestion_input(resolved_input)
+        if not validation.ok:
+            return GCEClarificationResolutionResult(
+                ok=False,
+                blocked=True,
+                reason_code="resolved_intent_invalid",
+                errors=list(validation.errors),
+            )
+        return GCEClarificationResolutionResult(
+            ok=True,
+            blocked=False,
+            reason_code=None,
+            resolved_input=resolved_input,
+            errors=[],
+        )
+    except ValueError as exc:
+        reason_code = str(exc)
+        if reason_code not in {
+            "clarification_request_missing",
+            "clarification_response_malformed",
+            "source_not_blocked_for_clarification",
+            "unsupported_fields",
+        }:
+            reason_code = "clarification_response_malformed"
+        return _clarification_resolution_blocked(reason_code)
+
+
+def compute_gce_clarification_request_fingerprint(clarification_request: dict[str, Any]) -> str:
+    """Return the deterministic SHA-256 fingerprint for one clarification request."""
+    canonical_bytes = (json.dumps(clarification_request, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest()
+
+
+def _extract_blocking_clarification_request(package: dict[str, Any]) -> dict[str, Any]:
+    stage_1_release = package.get("stage_1_release")
+    if not isinstance(stage_1_release, dict) or stage_1_release.get("blocked") is not True:
+        raise ValueError("source_not_blocked_for_clarification")
+    reason_code = package.get("reason_code") or stage_1_release.get("reason_code")
+    if reason_code != "clarification_required":
+        raise ValueError("source_not_blocked_for_clarification")
+    clarification_request = package.get("clarification_request")
+    if not isinstance(clarification_request, dict):
+        raise ValueError("clarification_request_missing")
+    _validate_clarification_request_shape(clarification_request)
+    return dict(clarification_request)
+
+
+def _validate_clarification_request_shape(clarification_request: dict[str, Any]) -> None:
+    _validate_fields(
+        clarification_request,
+        "clarification_request",
+        required_fields={
+            "contract_name",
+            "contract_version",
+            "artifact_type",
+            "source_input_path",
+            "stage_1_release_blocked",
+            "reason_code",
+            "metadata",
+            "questions",
+        },
+        allowed_fields={
+            "contract_name",
+            "contract_version",
+            "artifact_type",
+            "source_input_path",
+            "stage_1_release_blocked",
+            "reason_code",
+            "metadata",
+            "questions",
+        },
+    )
+    _require_exact_string(clarification_request.get("contract_name"), "clarification_request.contract_name", CLARIFICATION_CONTRACT_NAME)
+    _require_exact_string(
+        clarification_request.get("contract_version"),
+        "clarification_request.contract_version",
+        CLARIFICATION_CONTRACT_VERSION,
+    )
+    _require_exact_string(clarification_request.get("artifact_type"), "clarification_request.artifact_type", "clarification_request")
+    _require_enum(
+        clarification_request.get("source_input_path"),
+        "clarification_request.source_input_path",
+        ALLOWED_INPUT_PATHS,
+    )
+    if clarification_request.get("stage_1_release_blocked") is not True:
+        raise ValueError("clarification_response_malformed")
+    _require_exact_string(clarification_request.get("reason_code"), "clarification_request.reason_code", "unresolved_intent")
+    _parse_metadata(clarification_request.get("metadata"), "clarification_request.metadata")
+    questions = _expect_list(clarification_request.get("questions"), "clarification_request.questions")
+    if not questions:
+        raise ValueError("clarification_response_malformed")
+    for index, question in enumerate(questions):
+        question_payload = _expect_dict(question, f"clarification_request.questions[{index}]")
+        _validate_fields(
+            question_payload,
+            f"clarification_request.questions[{index}]",
+            required_fields={"id", "field_path", "question", "blocking"},
+            allowed_fields={"id", "field_path", "question", "blocking"},
+        )
+        _require_non_empty_string(question_payload.get("id"), f"clarification_request.questions[{index}].id")
+        _require_non_empty_string(question_payload.get("field_path"), f"clarification_request.questions[{index}].field_path")
+        _require_non_empty_string(question_payload.get("question"), f"clarification_request.questions[{index}].question")
+        if question_payload.get("blocking") is not True:
+            raise ValueError("clarification_response_malformed")
+
+
+def _parse_clarification_response(raw_response: Any) -> dict[str, Any]:
+    response = _expect_dict(raw_response, "clarification_response")
+    try:
+        _validate_fields(
+            response,
+            "clarification_response",
+            required_fields={
+                "contract_name",
+                "contract_version",
+                "source_clarification_request_fingerprint",
+                "operator_response",
+                "resolved_fields",
+            },
+            allowed_fields={
+                "contract_name",
+                "contract_version",
+                "source_clarification_request_fingerprint",
+                "operator_response",
+                "resolved_fields",
+            },
+        )
+        _require_exact_string(response.get("contract_name"), "clarification_response.contract_name", CLARIFICATION_RESPONSE_CONTRACT_NAME)
+        _require_exact_string(
+            response.get("contract_version"),
+            "clarification_response.contract_version",
+            CLARIFICATION_RESPONSE_CONTRACT_VERSION,
+        )
+        fingerprint = _require_non_empty_string(
+            response.get("source_clarification_request_fingerprint"),
+            "clarification_response.source_clarification_request_fingerprint",
+        )
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise ValueError("clarification_response_malformed")
+        operator_response = _expect_dict(response.get("operator_response"), "clarification_response.operator_response")
+        _validate_fields(
+            operator_response,
+            "clarification_response.operator_response",
+            required_fields={"operator_id", "responded_at"},
+            allowed_fields={"operator_id", "responded_at"},
+        )
+        _require_non_empty_string(operator_response.get("operator_id"), "clarification_response.operator_response.operator_id")
+        _require_rfc3339(operator_response["responded_at"], "clarification_response.operator_response.responded_at")
+
+        resolved_fields = _expect_dict(response.get("resolved_fields"), "clarification_response.resolved_fields")
+        _validate_fields(
+            resolved_fields,
+            "clarification_response.resolved_fields",
+            required_fields={"session_objective", "sections"},
+            allowed_fields={"session_objective", "sections"},
+        )
+        return {
+            "source_clarification_request_fingerprint": fingerprint,
+            "operator_response": {
+                "operator_id": operator_response["operator_id"],
+                "responded_at": operator_response["responded_at"],
+            },
+            "resolved_fields": {
+                "session_objective": _require_non_empty_string(
+                    resolved_fields.get("session_objective"),
+                    "clarification_response.resolved_fields.session_objective",
+                ),
+                "sections": _expect_list(
+                    resolved_fields.get("sections"),
+                    "clarification_response.resolved_fields.sections",
+                ),
+            },
+        }
+    except ValueError as exc:
+        if "unsupported fields" in str(exc):
+            raise ValueError("unsupported_fields") from exc
+        raise ValueError("clarification_response_malformed") from exc
+
+
+def _clarification_resolution_blocked(reason_code: str) -> GCEClarificationResolutionResult:
+    return GCEClarificationResolutionResult(
+        ok=False,
+        blocked=True,
+        reason_code=reason_code,
+        resolved_input=None,
+        errors=[_error("clarification_response", reason_code)],
+    )
 
 
 def _parse_common_envelope(payload: dict[str, Any]) -> str:
@@ -399,6 +631,9 @@ def _error(field_name: str, condition: str) -> dict[str, str]:
 __all__ = [
     "CLARIFICATION_CONTRACT_NAME",
     "CLARIFICATION_CONTRACT_VERSION",
+    "CLARIFICATION_RESPONSE_CONTRACT_NAME",
+    "CLARIFICATION_RESPONSE_CONTRACT_VERSION",
+    "GCEClarificationResolutionResult",
     "GCEIngestionValidationResult",
     "INGESTION_CONTRACT_NAME",
     "INGESTION_CONTRACT_VERSION",
@@ -406,5 +641,7 @@ __all__ = [
     "INPUT_PATH_STRUCTURED_INTENT",
     "SESSION_INTENT_CONTRACT_NAME",
     "SESSION_INTENT_CONTRACT_VERSION",
+    "compute_gce_clarification_request_fingerprint",
+    "resolve_gce_clarification_response",
     "validate_gce_ingestion_input",
 ]

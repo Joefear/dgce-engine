@@ -81,6 +81,7 @@ def test_gce_ingestion_schema_file_defines_core_contract():
     assert "StructuredIntentInput" in schema["$defs"]
     assert "NormalizedSessionIntent" in schema["$defs"]
     assert "ClarificationRequest" in schema["$defs"]
+    assert "ClarificationResponse" in schema["$defs"]
 
 
 def test_valid_formal_gdd_input_validates():

@@ -5,8 +5,10 @@ from pathlib import Path
 from aether.dgce import (
     DGCESection,
     assemble_stage0_input,
+    compute_gce_clarification_request_fingerprint,
     persist_stage0_input,
     release_gce_stage0_input,
+    resolve_gce_clarification_response,
     run_section_with_workspace,
 )
 import aether.dgce.context_assembly as context_assembly
@@ -87,6 +89,40 @@ def _software_section() -> DGCESection:
         requirements=["support mission templates", "track progression state"],
         constraints=["keep save format stable", "support mod extension points"],
     )
+
+
+def _ambiguous_gce_input() -> dict:
+    payload = _formal_gdd_input()
+    payload["ambiguities"] = [
+        {
+            "field_path": "document.sections[0].content.scope",
+            "question": "Which generation scope is authoritative?",
+            "blocking": True,
+        }
+    ]
+    return payload
+
+
+def _clarification_package() -> dict:
+    return persist_stage0_input(_workspace_dir("gce_clarification_source"), _ambiguous_gce_input()).artifact
+
+
+def _clarification_response(package: dict) -> dict:
+    return {
+        "contract_name": "GCEClarificationResponse",
+        "contract_version": "gce.clarification_response.v1",
+        "source_clarification_request_fingerprint": compute_gce_clarification_request_fingerprint(
+            package["clarification_request"]
+        ),
+        "operator_response": {
+            "operator_id": "operator-1",
+            "responded_at": "2026-04-27T00:00:00Z",
+        },
+        "resolved_fields": {
+            "session_objective": "Generate a bounded mission board system from the resolved design intent.",
+            "sections": _sections(),
+        },
+    }
 
 
 def _workspace_dir(name: str) -> Path:
@@ -176,14 +212,7 @@ def test_invalid_gce_input_is_blocked_before_stage1():
 
 
 def test_clarification_request_blocks_stage1_release():
-    payload = _formal_gdd_input()
-    payload["ambiguities"] = [
-        {
-            "field_path": "document.sections[0].content.scope",
-            "question": "Which generation scope is authoritative?",
-            "blocking": True,
-        }
-    ]
+    payload = _ambiguous_gce_input()
 
     result = assemble_stage0_input(payload)
 
@@ -265,14 +294,7 @@ def test_invalid_gce_stage0_package_is_persisted_and_blocks_stage1():
 
 def test_clarification_request_stage0_package_is_persisted_and_blocks_stage1():
     project_root = _workspace_dir("gce_stage0_persist_clarification")
-    payload = _formal_gdd_input()
-    payload["ambiguities"] = [
-        {
-            "field_path": "document.sections[0].content.scope",
-            "question": "Which generation scope is authoritative?",
-            "blocking": True,
-        }
-    ]
+    payload = _ambiguous_gce_input()
 
     result = persist_stage0_input(project_root, payload)
 
@@ -336,14 +358,7 @@ def test_invalid_persisted_gce_package_is_blocked_from_stage1():
 
 def test_clarification_persisted_gce_package_is_blocked_and_preserves_request():
     project_root = _workspace_dir("gce_stage0_release_clarification")
-    payload = _formal_gdd_input()
-    payload["ambiguities"] = [
-        {
-            "field_path": "document.sections[0].content.scope",
-            "question": "Which generation scope is authoritative?",
-            "blocking": True,
-        }
-    ]
+    payload = _ambiguous_gce_input()
     persisted = persist_stage0_input(project_root, payload)
 
     release = release_gce_stage0_input(project_root / persisted.artifact_path)
@@ -449,6 +464,116 @@ def test_gce_stage0_release_result_is_deterministic_for_repeated_reads():
     assert first.allowed is True
     assert second.allowed is True
     assert first.result == second.result
+
+
+def test_valid_clarification_response_resolves_to_contract_valid_structured_intent():
+    package = _clarification_package()
+    response = _clarification_response(package)
+
+    result = resolve_gce_clarification_response(package, response)
+
+    assert result.ok is True
+    assert result.blocked is False
+    assert result.reason_code is None
+    assert result.errors == []
+    assert result.resolved_input == {
+        "contract_name": "GCEIngestionCore",
+        "contract_version": "gce.ingestion.core.v1",
+        "input_path": "structured_intent",
+        "metadata": package["clarification_request"]["metadata"],
+        "intent": response["resolved_fields"],
+        "ambiguities": [],
+    }
+
+
+def test_resolved_structured_intent_passes_stage0_boundary():
+    package = _clarification_package()
+    resolved = resolve_gce_clarification_response(package, _clarification_response(package))
+
+    stage0 = assemble_stage0_input(resolved.resolved_input)
+
+    assert stage0.ok is True
+    assert stage0.adapter == "gce"
+    assert stage0.package["stage_1_release"] == {
+        "blocked": False,
+        "reason_code": None,
+    }
+    assert stage0.package["normalized_session_intent"]["source_input_path"] == "structured_intent"
+
+
+def test_resolved_structured_intent_can_persist_and_release_to_stage1():
+    package = _clarification_package()
+    resolved = resolve_gce_clarification_response(package, _clarification_response(package))
+    project_root = _workspace_dir("gce_clarification_resolved_release")
+
+    persisted = persist_stage0_input(project_root, resolved.resolved_input)
+    release = release_gce_stage0_input(project_root / persisted.artifact_path)
+
+    assert persisted.boundary_result.ok is True
+    assert release.allowed is True
+    assert release.result["input_path"] == "structured_intent"
+    assert release.result["normalized_session_intent"]["contract_name"] == "GCESessionIntent"
+
+
+def test_malformed_clarification_response_fails_closed():
+    package = _clarification_package()
+    response = _clarification_response(package)
+    del response["operator_response"]["operator_id"]
+
+    result = resolve_gce_clarification_response(package, response)
+
+    assert result.ok is False
+    assert result.blocked is True
+    assert result.reason_code == "clarification_response_malformed"
+    assert result.resolved_input is None
+
+
+def test_mismatched_clarification_source_fingerprint_fails_closed():
+    package = _clarification_package()
+    response = _clarification_response(package)
+    response["source_clarification_request_fingerprint"] = "0" * 64
+
+    result = resolve_gce_clarification_response(package, response)
+
+    assert result.ok is False
+    assert result.blocked is True
+    assert result.reason_code == "clarification_source_mismatch"
+    assert result.resolved_input is None
+
+
+def test_clarification_response_with_unsupported_execution_field_fails_closed():
+    package = _clarification_package()
+    response = _clarification_response(package)
+    response["execution_payload"] = "release this to Stage 1"
+
+    result = resolve_gce_clarification_response(package, response)
+
+    assert result.ok is False
+    assert result.blocked is True
+    assert result.reason_code == "unsupported_fields"
+    assert result.resolved_input is None
+
+
+def test_source_package_not_blocked_for_clarification_fails_closed():
+    source = assemble_stage0_input(_formal_gdd_input()).package
+    response = _clarification_response(_clarification_package())
+
+    result = resolve_gce_clarification_response(source, response)
+
+    assert result.ok is False
+    assert result.blocked is True
+    assert result.reason_code == "source_not_blocked_for_clarification"
+    assert result.resolved_input is None
+
+
+def test_clarification_resolution_is_deterministic():
+    package = _clarification_package()
+    response = _clarification_response(package)
+
+    first = resolve_gce_clarification_response(package, response)
+    second = resolve_gce_clarification_response(package, response)
+
+    assert first == second
 
 
 def test_raw_natural_language_stage0_input_is_blocked_without_persistence():

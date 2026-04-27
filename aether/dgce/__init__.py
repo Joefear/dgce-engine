@@ -43,6 +43,11 @@ from aether.dgce.context_assembly import (
     persist_stage0_input,
     release_gce_stage0_input,
 )
+from aether.dgce.gce_ingestion import (
+    GCEClarificationResolutionResult,
+    compute_gce_clarification_request_fingerprint,
+    resolve_gce_clarification_response,
+)
 from aether.dgce.file_plan import FilePlan, build_file_plan
 from aether.dgce.file_writer import write_file_plan
 from aether.dgce.incremental import (
@@ -95,9 +100,12 @@ __all__ = [
     "Stage0InputBoundaryResult",
     "Stage0PersistResult",
     "Stage0ReleaseResult",
+    "GCEClarificationResolutionResult",
     "assemble_stage0_input",
+    "compute_gce_clarification_request_fingerprint",
     "persist_stage0_input",
     "release_gce_stage0_input",
+    "resolve_gce_clarification_response",
     "FilePlan",
     "build_file_plan",
     "build_change_plan",
