@@ -1,0 +1,35 @@
+{
+  "ambiguities": [
+    {
+      "blocking": true,
+      "field_path": "document.sections[0].content.scope",
+      "question": "Which feature scope is authoritative?"
+    }
+  ],
+  "contract_name": "GCEIngestionCore",
+  "contract_version": "gce.ingestion.core.v1",
+  "document": {
+    "sections": [
+      {
+        "authorship": "human",
+        "classification": "durable",
+        "content": {
+          "purpose": "Define a small game feature scope."
+        },
+        "required": true,
+        "section_id": "project_identity",
+        "title": "Project Identity"
+      }
+    ],
+    "session_objective": "Generate a bounded feature after scope clarification."
+  },
+  "input_path": "formal_gdd",
+  "metadata": {
+    "created_at": "2026-04-27T00:00:00Z",
+    "owner": "Design Authority",
+    "project_id": "fixture-project",
+    "project_name": "Fixture Project",
+    "source_id": "fixture-ambiguous-formal-gdd",
+    "updated_at": "2026-04-27T00:00:00Z"
+  }
+}

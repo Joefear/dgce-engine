@@ -1,0 +1,34 @@
+{
+  "contract_name": "GCEClarificationResponse",
+  "contract_version": "gce.clarification_response.v1",
+  "operator_response": {
+    "operator_id": "operator-fixture",
+    "responded_at": "2026-04-27T00:00:00Z"
+  },
+  "resolved_fields": {
+    "sections": [
+      {
+        "authorship": "human",
+        "classification": "durable",
+        "content": {
+          "purpose": "Define the clarified feature scope."
+        },
+        "required": true,
+        "section_id": "project_identity",
+        "title": "Project Identity"
+      },
+      {
+        "authorship": "injected",
+        "classification": "volatile",
+        "content": {
+          "placeholder": "registered_stage_0_source"
+        },
+        "required": false,
+        "section_id": "current_state",
+        "title": "Current State"
+      }
+    ],
+    "session_objective": "Generate a bounded feature from clarified structured intent."
+  },
+  "source_clarification_request_fingerprint": "77d77ec6b871bf25af1fd2080437d5f643c2a5362f89ca0cd3dd51dba10a4059"
+}

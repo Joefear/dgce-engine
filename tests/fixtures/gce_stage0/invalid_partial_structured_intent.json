@@ -1,0 +1,17 @@
+{
+  "ambiguities": [],
+  "contract_name": "GCEIngestionCore",
+  "contract_version": "gce.ingestion.core.v1",
+  "input_path": "structured_intent",
+  "intent": {
+    "session_objective": "This partial fixture is missing sections."
+  },
+  "metadata": {
+    "created_at": "2026-04-27T00:00:00Z",
+    "owner": "Design Authority",
+    "project_id": "fixture-project",
+    "project_name": "Fixture Project",
+    "source_id": "fixture-invalid-partial",
+    "updated_at": "2026-04-27T00:00:00Z"
+  }
+}
