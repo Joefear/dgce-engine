@@ -51,6 +51,19 @@ def _read_artifact_over_http(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _read_named_artifact_over_http(
+    reader: Callable[[str | Path, str], dict[str, Any]],
+    workspace_path: str,
+    artifact_name: str,
+) -> dict[str, Any]:
+    try:
+        return reader(workspace_path, artifact_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/dashboard")
 def get_dashboard(workspace_path: str = Query(...)) -> dict[str, Any]:
     return _read_artifact_over_http(read_api.get_dashboard, workspace_path)
@@ -79,3 +92,13 @@ def get_export_contract(workspace_path: str = Query(...)) -> dict[str, Any]:
 @router.get("/artifact-manifest")
 def get_artifact_manifest(workspace_path: str = Query(...)) -> dict[str, Any]:
     return _read_artifact_over_http(read_api.get_artifact_manifest, workspace_path)
+
+
+@router.get("/gce/stage0-artifacts")
+def list_gce_stage0_artifacts(workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_artifact_over_http(read_api.list_gce_stage0_artifacts, workspace_path)
+
+
+@router.get("/gce/stage0-artifacts/{artifact_name}")
+def get_gce_stage0_artifact(artifact_name: str, workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_named_artifact_over_http(read_api.get_gce_stage0_artifact, workspace_path, artifact_name)

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -52,6 +52,28 @@ class DGCEClient:
 
     def get_artifact_manifest(self, workspace_path: str | Path) -> dict[str, Any]:
         return self._get("/v1/dgce/artifact-manifest", workspace_path)
+
+    def list_gce_stage0_artifacts(self, workspace_path: str | Path) -> dict[str, Any]:
+        return self._get("/v1/dgce/gce/stage0-artifacts", workspace_path)
+
+    def get_gce_stage0_artifact(self, workspace_path: str | Path, artifact_name: str) -> dict[str, Any]:
+        query = urlencode({"workspace_path": str(workspace_path)})
+        headers = {"X-API-Key": self.api_key} if self.api_key is not None else {}
+        request = Request(
+            f"{self.base_url}/v1/dgce/gce/stage0-artifacts/{quote(artifact_name, safe='')}?{query}",
+            headers=headers,
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = self._read_error_detail(exc)
+            if exc.code == 400:
+                raise ValueError(detail) from exc
+            if exc.code == 404:
+                raise FileNotFoundError(detail) from exc
+            raise RuntimeError(detail) from exc
 
     def list_available_artifacts(self, workspace_path: str | Path) -> dict[str, Any]:
         return self.get_artifact_manifest(workspace_path)

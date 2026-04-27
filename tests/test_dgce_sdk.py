@@ -50,6 +50,8 @@ class TestDGCESDK:
         assert client.get_consumer_contract(workspace_path) == {"ok": True}
         assert client.get_export_contract(workspace_path) == {"ok": True}
         assert client.get_artifact_manifest(workspace_path) == {"ok": True}
+        assert client.list_gce_stage0_artifacts(workspace_path) == {"ok": True}
+        assert client.get_gce_stage0_artifact(workspace_path, "source.formal-gdd.stage0.json") == {"ok": True}
         assert client.list_available_artifacts(workspace_path) == {"ok": True}
 
         assert calls == [
@@ -59,6 +61,8 @@ class TestDGCESDK:
             "http://example.test/v1/dgce/consumer-contract?workspace_path=workspace-root",
             "http://example.test/v1/dgce/export-contract?workspace_path=workspace-root",
             "http://example.test/v1/dgce/artifact-manifest?workspace_path=workspace-root",
+            "http://example.test/v1/dgce/gce/stage0-artifacts?workspace_path=workspace-root",
+            "http://example.test/v1/dgce/gce/stage0-artifacts/source.formal-gdd.stage0.json?workspace_path=workspace-root",
             "http://example.test/v1/dgce/artifact-manifest?workspace_path=workspace-root",
         ]
 
