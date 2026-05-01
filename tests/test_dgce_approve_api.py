@@ -83,6 +83,14 @@ def _alpha_section() -> DGCESection:
     )
 
 
+def _canonical_gate_path(project_root: Path, section_id: str = "mission-board") -> Path:
+    return project_root / ".dce" / "execution" / "gate" / f"{section_id}.execution_gate.json"
+
+
+def _legacy_preflight_gate_path(project_root: Path, section_id: str = "mission-board") -> Path:
+    return project_root / ".dce" / "preflight" / f"{section_id}.execution_gate.json"
+
+
 class TestDGCEApproveAPI:
     def test_default_approve_uses_preview_recommended_mode(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_writes_current_state")
@@ -125,7 +133,8 @@ class TestDGCEApproveAPI:
         assert approval_payload["execution_permitted"] is True
         assert json.loads((project_root / ".dce" / "preflight" / "mission-board.preflight.json").read_text(encoding="utf-8"))["preflight_status"] == "preflight_pass"
         assert json.loads((project_root / ".dce" / "preflight" / "mission-board.stale_check.json").read_text(encoding="utf-8"))["stale_status"] == "stale_valid"
-        assert json.loads((project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8"))["gate_status"] == "gate_pass"
+        assert json.loads(_canonical_gate_path(project_root).read_text(encoding="utf-8"))["gate_status"] == "gate_pass"
+        assert _legacy_preflight_gate_path(project_root).exists() is False
 
     def test_override_selected_mode_changes_execution_permission_outcome(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_override_review_required")
@@ -144,13 +153,14 @@ class TestDGCEApproveAPI:
             (project_root / ".dce" / "preflight" / "mission-board.preflight.json").read_text(encoding="utf-8")
         )
         gate_payload = json.loads(
-            (project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").read_text(encoding="utf-8")
+            _canonical_gate_path(project_root).read_text(encoding="utf-8")
         )
 
         assert approval_payload["selected_mode"] == "review_required"
         assert approval_payload["execution_permitted"] is False
         assert preflight_payload["execution_allowed"] is False
         assert gate_payload["execution_blocked"] is True
+        assert _legacy_preflight_gate_path(project_root).exists() is False
 
     def test_safe_modify_override_allows_prepare_when_other_gates_pass(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_safe_modify_override")
@@ -185,6 +195,8 @@ class TestDGCEApproveAPI:
         )
         assert approval_payload["selected_mode"] == "safe_modify"
         assert approval_payload["execution_permitted"] is True
+        assert _canonical_gate_path(project_root).exists()
+        assert _legacy_preflight_gate_path(project_root).exists() is False
 
     def test_approve_recomputes_only_target_section_and_does_not_execute(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_scoped_recompute")
@@ -192,7 +204,7 @@ class TestDGCEApproveAPI:
         client = TestClient(create_app())
         alpha_preflight_path = project_root / ".dce" / "preflight" / "alpha-section.preflight.json"
         alpha_stale_path = project_root / ".dce" / "preflight" / "alpha-section.stale_check.json"
-        alpha_gate_path = project_root / ".dce" / "preflight" / "alpha-section.execution_gate.json"
+        alpha_gate_path = _canonical_gate_path(project_root, "alpha-section")
 
         response = client.post(
             "/v1/dgce/sections/mission-board/approve",
@@ -205,9 +217,46 @@ class TestDGCEApproveAPI:
         assert alpha_gate_path.exists() is False
         assert (project_root / ".dce" / "preflight" / "mission-board.preflight.json").exists()
         assert (project_root / ".dce" / "preflight" / "mission-board.stale_check.json").exists()
-        assert (project_root / ".dce" / "preflight" / "mission-board.execution_gate.json").exists()
+        assert _canonical_gate_path(project_root).exists()
+        assert _legacy_preflight_gate_path(project_root).exists() is False
         assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
         assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
+
+    def test_prepare_after_approve_ignores_legacy_preflight_gate_when_canonical_gate_is_missing(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_approve_api_missing_canonical_gate")
+        client = TestClient(create_app())
+        approve_response = client.post(
+            "/v1/dgce/sections/mission-board/approve",
+            json={"workspace_path": str(project_root)},
+        )
+        assert approve_response.status_code == 200
+
+        canonical_gate = _canonical_gate_path(project_root)
+        legacy_gate = _legacy_preflight_gate_path(project_root)
+        legacy_gate.parent.mkdir(parents=True, exist_ok=True)
+        legacy_gate.write_text(canonical_gate.read_text(encoding="utf-8"), encoding="utf-8")
+        canonical_gate.unlink()
+
+        prepare_response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert prepare_response.status_code == 200
+        assert prepare_response.json() == {
+            "status": "ok",
+            "section_id": "mission-board",
+            "eligible": False,
+            "checks": {
+                "section_exists": True,
+                "artifacts_valid": False,
+                "approval_ready": True,
+                "preflight_ready": True,
+                "gate_ready": False,
+            },
+        }
+        assert legacy_gate.exists()
+        assert canonical_gate.exists() is False
 
     def test_approve_endpoint_blocks_when_required_source_artifact_is_missing(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_approve_api_missing_review")

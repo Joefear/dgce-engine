@@ -50,7 +50,7 @@ def test_status_validation_failure_does_not_report_nothing_pending(monkeypatch):
         {"preflight_status": "preflight_pass"},
     )
     _write_json(
-        project_root / ".dce" / "preflight" / "data-model.execution_gate.json",
+        project_root / ".dce" / "execution" / "gate" / "data-model.execution_gate.json",
         {"gate_status": "gate_pass"},
     )
     _write_json(
@@ -106,7 +106,7 @@ def test_status_completed_no_changes_success_still_reports_nothing_pending(monke
         {"preflight_status": "preflight_pass"},
     )
     _write_json(
-        project_root / ".dce" / "preflight" / "data-model.execution_gate.json",
+        project_root / ".dce" / "execution" / "gate" / "data-model.execution_gate.json",
         {"gate_status": "gate_pass"},
     )
     _write_json(

@@ -73,8 +73,12 @@ def _refresh_one_section_governed_artifacts(workspace: dict[str, Path], section_
 def _refresh_section_governed_artifacts(workspace: dict[str, Path]) -> None:
     for section_id in _read_workspace_index(workspace["index"]):
         if not any(
-            (workspace["preflight"] / f"{section_id}.{suffix}.json").exists()
-            for suffix in ("preflight", "stale_check", "execution_gate")
+            path.exists()
+            for path in (
+                workspace["preflight"] / f"{section_id}.preflight.json",
+                workspace["preflight"] / f"{section_id}.stale_check.json",
+                workspace["gate"] / f"{section_id}.execution_gate.json",
+            )
         ):
             continue
         _refresh_one_section_governed_artifacts(workspace, section_id)
