@@ -553,6 +553,14 @@ def _all_file_bytes(project_root: Path) -> dict[str, bytes]:
     }
 
 
+def _gate_path(project_root: Path, section_id: str = "mission-board") -> Path:
+    return project_root / ".dce" / "execution" / "gate" / f"{section_id}.execution_gate.json"
+
+
+def _rewrite_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _file_bytes(project_root: Path, *relative_paths: str) -> dict[str, bytes]:
     return {
         relative_path: (project_root / relative_path).read_bytes()
@@ -3487,6 +3495,28 @@ class TestDGCEExecuteAPI:
         assert response.status_code == 400
         assert response.json() == {"detail": "Section is not eligible for execution: mission-board"}
         assert _all_file_bytes(project_root) == before_files
+
+    def test_execute_endpoint_fails_closed_when_stage6_gate_decision_is_invalid(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_execute_api_invalid_stage6_decision")
+        _mark_section_ready(project_root)
+        client = TestClient(create_app())
+        _prepare_section(client, project_root)
+        gate_path = _gate_path(project_root)
+        gate_payload = json.loads(gate_path.read_text(encoding="utf-8"))
+        gate_payload["guardrail_decision"] = "MODIFY"
+        _rewrite_json(gate_path, gate_payload)
+        before_files = _all_file_bytes(project_root)
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/execute",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Section is not eligible for execution: mission-board"}
+        assert _all_file_bytes(project_root) == before_files
+        assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists() is False
+        assert (project_root / ".dce" / "outputs" / "mission-board.json").exists() is False
 
     def test_execute_requires_valid_prepared_plan_artifact(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_execute_api_missing_prepared_plan")

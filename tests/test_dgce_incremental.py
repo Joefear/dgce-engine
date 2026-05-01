@@ -586,6 +586,8 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].preflight_status",
                 "sections[].stale_status",
                 "sections[].gate_status",
+                "sections[].guardrail_decision",
+                "sections[].guardrail_decision_supported",
                 "sections[].alignment_status",
                 "sections[].execution_status",
                 "sections[].decision_source",
@@ -745,7 +747,9 @@ def _expected_consumer_contract_supported_artifacts() -> list[dict]:
                 "sections[].execution_allowed",
                 "sections[].execution_gate_path",
                 "sections[].gate_status",
+                "sections[].guardrail_decision",
                 "sections[].execution_blocked",
+                "sections[].guardrail_decision_supported",
                 "sections[].alignment_path",
                 "sections[].alignment_status",
                 "sections[].alignment_blocked",
@@ -1998,6 +2002,8 @@ def test_run_section_with_workspace_write_stage_only_writes_create_targets(monke
                 "execution_gate_path": None,
                 "gate_status": None,
                 "execution_blocked": None,
+                "guardrail_decision": None,
+                "guardrail_decision_supported": None,
                 "alignment_path": None,
                 "alignment_status": None,
                 "alignment_blocked": None,
@@ -2835,6 +2841,8 @@ def test_run_section_with_workspace_skips_ignore_paths_without_collision(monkeyp
                 "execution_gate_path": None,
                 "gate_status": None,
                 "execution_blocked": None,
+                "guardrail_decision": None,
+                "guardrail_decision_supported": None,
                 "alignment_path": None,
                 "alignment_status": None,
                 "alignment_blocked": None,
@@ -3252,6 +3260,8 @@ def test_run_section_with_workspace_reports_success_when_repair_normalizes_valid
                 "execution_gate_path": None,
                 "gate_status": None,
                 "execution_blocked": None,
+                "guardrail_decision": None,
+                "guardrail_decision_supported": None,
                 "alignment_path": None,
                 "alignment_status": None,
                 "alignment_blocked": None,
@@ -4922,6 +4932,8 @@ def test_run_section_with_workspace_incremental_v2_2_writes_review_index_and_wor
     assert workspace_summary["sections"][0]["execution_gate_path"] is None
     assert workspace_summary["sections"][0]["gate_status"] is None
     assert workspace_summary["sections"][0]["execution_blocked"] is None
+    assert workspace_summary["sections"][0]["guardrail_decision"] is None
+    assert workspace_summary["sections"][0]["guardrail_decision_supported"] is None
     assert workspace_summary["sections"][0]["alignment_path"] is None
     assert workspace_summary["sections"][0]["alignment_status"] is None
     assert workspace_summary["sections"][0]["alignment_blocked"] is None
@@ -4946,6 +4958,8 @@ def test_run_section_with_workspace_incremental_v2_2_writes_review_index_and_wor
     assert workspace_summary["sections"][1]["execution_gate_path"] is None
     assert workspace_summary["sections"][1]["gate_status"] is None
     assert workspace_summary["sections"][1]["execution_blocked"] is None
+    assert workspace_summary["sections"][1]["guardrail_decision"] is None
+    assert workspace_summary["sections"][1]["guardrail_decision_supported"] is None
     assert workspace_summary["sections"][1]["alignment_path"] is None
     assert workspace_summary["sections"][1]["alignment_status"] is None
     assert workspace_summary["sections"][1]["alignment_blocked"] is None
@@ -5264,6 +5278,8 @@ def test_record_section_approval_writes_artifact_and_updates_linkage(monkeypatch
                 "execution_gate_path": None,
                 "gate_status": None,
                 "execution_blocked": None,
+                "guardrail_decision": None,
+                "guardrail_decision_supported": None,
                 "alignment_path": None,
                 "alignment_status": None,
                 "alignment_blocked": None,
@@ -6628,6 +6644,7 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     assert not_required["gate_status"] == "gate_not_required"
     assert not_required["execution_attempted"] is False
     assert not_required["execution_blocked"] is False
+    assert not_required["guardrail_decision"] == "ALLOW"
 
     missing_approval = record_section_execution_gate(
         project_root,
@@ -6638,6 +6655,7 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     assert missing_approval["gate_status"] == "gate_blocked_stale"
     assert missing_approval["stale_status"] == "stale_missing_approval"
     assert missing_approval["execution_blocked"] is True
+    assert missing_approval["guardrail_decision"] == "BLOCK"
 
     record_section_approval(
         project_root,
@@ -6653,6 +6671,7 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
     )
     assert execution_not_allowed["gate_status"] == "gate_blocked_preflight_failed"
     assert execution_not_allowed["execution_blocked"] is True
+    assert execution_not_allowed["guardrail_decision"] == "BLOCK"
 
     record_section_approval(
         project_root,
@@ -6671,17 +6690,23 @@ def test_record_section_execution_gate_truth_table_and_linkage(monkeypatch):
 
     assert gate_pass["gate_status"] == "gate_pass"
     assert gate_pass["execution_blocked"] is False
+    assert gate_pass["guardrail_decision"] == "ALLOW"
+    assert gate_pass["guardrail_decision_supported"] is True
     assert gate_pass["preflight_status"] == "preflight_pass"
     assert gate_pass["stale_status"] == "stale_valid"
     assert review_index["sections"][0]["execution_gate_path"] == ".dce/execution/gate/mission-board.execution_gate.json"
     assert review_index["sections"][0]["gate_status"] == "gate_pass"
     assert review_index["sections"][0]["execution_blocked"] is False
+    assert review_index["sections"][0]["guardrail_decision"] == "ALLOW"
+    assert review_index["sections"][0]["guardrail_decision_supported"] is True
     assert review_index["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
     assert review_index["sections"][0]["stale_status"] == "stale_valid"
     assert review_index["sections"][0]["stale_detected"] is False
     assert workspace_summary["sections"][0]["execution_gate_path"] == ".dce/execution/gate/mission-board.execution_gate.json"
     assert workspace_summary["sections"][0]["gate_status"] == "gate_pass"
     assert workspace_summary["sections"][0]["execution_blocked"] is False
+    assert workspace_summary["sections"][0]["guardrail_decision"] == "ALLOW"
+    assert workspace_summary["sections"][0]["guardrail_decision_supported"] is True
     assert workspace_summary["sections"][0]["stale_check_path"] == ".dce/preflight/mission-board.stale_check.json"
     assert workspace_summary["sections"][0]["stale_status"] == "stale_valid"
     assert workspace_summary["sections"][0]["stale_detected"] is False
@@ -7015,6 +7040,8 @@ def test_record_section_execution_gate_emits_deterministic_structured_contract(m
         "gate_reason",
         "gate_status",
         "gate_timestamp",
+        "guardrail_decision",
+        "guardrail_decision_supported",
         "preflight_path",
         "preflight_status",
         "reasons",
@@ -7061,6 +7088,7 @@ def test_record_section_execution_gate_emits_deterministic_structured_contract(m
         "failed_check_count": 0,
         "gate_reason": "preflight_passed",
         "gate_status": "gate_pass",
+        "guardrail_decision": "ALLOW",
         "not_evaluated_check_count": 0,
         "not_required_check_count": 0,
         "passed_check_count": 5,
@@ -7087,6 +7115,7 @@ def test_record_section_execution_gate_normalizes_blocking_reasons(monkeypatch):
 
     assert gate["gate_status"] == "gate_blocked_stale"
     assert gate["execution_blocked"] is True
+    assert gate["guardrail_decision"] == "BLOCK"
     assert [check["result"] for check in gate["checks"]] == [
         "passed",
         "failed",
@@ -7133,6 +7162,7 @@ def test_record_section_execution_gate_normalizes_blocking_reasons(monkeypatch):
         "failed_check_count": 3,
         "gate_reason": "stale_detected",
         "gate_status": "gate_blocked_stale",
+        "guardrail_decision": "BLOCK",
         "not_evaluated_check_count": 0,
         "not_required_check_count": 0,
         "passed_check_count": 2,

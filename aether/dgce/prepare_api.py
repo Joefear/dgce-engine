@@ -24,6 +24,7 @@ from aether.dgce.decompose import (
     _build_execution_gate_artifact,
     _build_preflight_artifact,
     _build_stale_check_artifact,
+    stage6_execution_gate_allows_downstream,
     _normalize_artifact_path,
     _validate_locked_artifact_schema,
 )
@@ -441,6 +442,7 @@ def prepare_section_execution(
     preflight_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.preflight.json")
     stale_relative_path = _artifact_relative_path(section_id, ".dce/preflight/{section_id}.stale_check.json")
     gate_relative_path = _artifact_relative_path(section_id, ".dce/execution/gate/{section_id}.execution_gate.json")
+    gate_input_relative_path = _artifact_relative_path(section_id, ".dce/execution/gate/{section_id}.gate_input.json")
     preview_relative_path = _artifact_relative_path(section_id, ".dce/plans/{section_id}.preview.json")
     review_relative_path = _artifact_relative_path(section_id, ".dce/reviews/{section_id}.review.md")
 
@@ -464,11 +466,17 @@ def prepare_section_execution(
         if _artifact_file_path(project_root, gate_relative_path).exists()
         else None
     )
+    persisted_gate_input = (
+        _load_validated_json_artifact(project_root, gate_input_relative_path)
+        if _artifact_file_path(project_root, gate_input_relative_path).exists()
+        else None
+    )
 
     approval_file = _artifact_file_path(project_root, approval_relative_path)
     preview_file = _artifact_file_path(project_root, preview_relative_path)
     review_file = _artifact_file_path(project_root, review_relative_path)
     preflight_file = _artifact_file_path(project_root, preflight_relative_path)
+    gate_input_file = _artifact_file_path(project_root, gate_input_relative_path)
 
     approval_ready = (
         approval_payload is not None
@@ -518,23 +526,34 @@ def prepare_section_execution(
         SectionStaleCheckInput(validation_timestamp=stale_timestamp),
     )
     recomputed_gate_input = _build_gate_input_artifact(dce_root, section_id)
+    recomputed_gate_input_with_fingerprint = {
+        **recomputed_gate_input,
+        "artifact_fingerprint": compute_json_payload_fingerprint(recomputed_gate_input),
+    }
     recomputed_gate = _build_execution_gate_artifact(
         dce_root,
         section_id,
         require_preflight_pass=True,
         gate_input=SectionExecutionGateInput(gate_timestamp=gate_timestamp),
-        gate_input_payload={
-            **recomputed_gate_input,
-            "artifact_fingerprint": compute_json_payload_fingerprint(recomputed_gate_input),
-        },
+        gate_input_payload=recomputed_gate_input_with_fingerprint,
         preflight_payload=recomputed_preflight,
         stale_check_payload=recomputed_stale,
+    )
+    gate_input_ready = (
+        persisted_gate_input is not None
+        and verify_artifact_fingerprint(gate_input_file)
+        and persisted_gate_input == recomputed_gate_input_with_fingerprint
+        and persisted_gate is not None
+        and persisted_gate.get("gate_input_path") == gate_input_relative_path
+        and persisted_gate.get("gate_input_fingerprint") == persisted_gate_input.get("gate_input_fingerprint")
     )
     gate_ready = (
         persisted_stale is not None
         and persisted_gate is not None
         and persisted_stale == recomputed_stale
         and persisted_gate == recomputed_gate
+        and gate_input_ready
+        and stage6_execution_gate_allows_downstream(persisted_gate)
         and str(recomputed_stale.get("stale_status")) == "stale_valid"
         and recomputed_stale.get("stale_detected") is False
         and str(recomputed_gate.get("gate_status")) == "gate_pass"

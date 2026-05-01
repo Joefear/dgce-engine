@@ -58,6 +58,18 @@ from aether_core.models.request import OutputContract
 from aether_core.router.planner import RouterPlanner
 
 
+STAGE6_GUARDRAIL_DECISION_ALLOW = "ALLOW"
+STAGE6_GUARDRAIL_DECISION_BLOCK = "BLOCK"
+STAGE6_GUARDRAIL_DECISION_MODIFY = "MODIFY"
+STAGE6_GUARDRAIL_DECISIONS = frozenset(
+    {
+        STAGE6_GUARDRAIL_DECISION_ALLOW,
+        STAGE6_GUARDRAIL_DECISION_BLOCK,
+        STAGE6_GUARDRAIL_DECISION_MODIFY,
+    }
+)
+
+
 class DGCESection(BaseModel):
     """Structured DGCE section input for deterministic task decomposition."""
 
@@ -1961,6 +1973,8 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].preflight_status",
                 "sections[].stale_status",
                 "sections[].gate_status",
+                "sections[].guardrail_decision",
+                "sections[].guardrail_decision_supported",
                 "sections[].alignment_status",
                 "sections[].execution_status",
                 "sections[].decision_source",
@@ -2114,7 +2128,9 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
                 "sections[].execution_allowed",
                 "sections[].execution_gate_path",
                 "sections[].gate_status",
+                "sections[].guardrail_decision",
                 "sections[].execution_blocked",
+                "sections[].guardrail_decision_supported",
                 "sections[].alignment_path",
                 "sections[].alignment_status",
                 "sections[].alignment_blocked",
@@ -2404,6 +2420,7 @@ def _validate_review_index_schema(payload: Any) -> None:
             "preflight_status",
             "stale_status",
             "gate_status",
+            "guardrail_decision",
             "alignment_status",
             "execution_status",
             "decision_source",
@@ -2413,7 +2430,7 @@ def _validate_review_index_schema(payload: Any) -> None:
             "approval_timestamp",
         ):
             _expect_optional_str(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
-        for key in ("execution_permitted", "stale_detected", "execution_allowed", "execution_blocked", "alignment_blocked", "approval_consumed"):
+        for key in ("execution_permitted", "stale_detected", "execution_allowed", "execution_blocked", "guardrail_decision_supported", "alignment_blocked", "approval_consumed"):
             _expect_optional_bool(_expect_required_field(entry, key, artifact_name), artifact_name, f"sections[{index}].{key}")
         review_approval_summary = _expect_dict(_expect_required_field(entry, "review_approval_summary", artifact_name), artifact_name, f"sections[{index}].review_approval_summary")
         for key in ("approval_status", "decision_source", "latest_decision", "latest_decision_source", "review_status"):
@@ -2487,6 +2504,7 @@ def _validate_workspace_summary_schema(payload: Any) -> None:
             "stale_status",
             "execution_gate_path",
             "gate_status",
+            "guardrail_decision",
             "alignment_path",
             "alignment_status",
             "execution_path",
@@ -2506,6 +2524,7 @@ def _validate_workspace_summary_schema(payload: Any) -> None:
             "stale_detected",
             "execution_allowed",
             "execution_blocked",
+            "guardrail_decision_supported",
             "alignment_blocked",
             "approval_consumed",
         ):
@@ -4311,6 +4330,7 @@ def _build_execution_gate_artifact(
         execution_attempted = True
         execution_blocked = False
         gate_reason = "preflight_passed"
+    guardrail_decision = _stage6_guardrail_decision_from_gate(execution_blocked=execution_blocked)
 
     checked_artifacts = [
         {
@@ -4339,6 +4359,7 @@ def _build_execution_gate_artifact(
         gate_status=gate_status,
         gate_reason=gate_reason,
         execution_blocked=execution_blocked,
+        guardrail_decision=guardrail_decision,
     )
 
     return {
@@ -4347,6 +4368,8 @@ def _build_execution_gate_artifact(
         "gate_status": gate_status,
         "execution_attempted": execution_attempted,
         "execution_blocked": execution_blocked,
+        "guardrail_decision": guardrail_decision,
+        "guardrail_decision_supported": guardrail_decision != STAGE6_GUARDRAIL_DECISION_MODIFY,
         "checked_artifacts": checked_artifacts,
         "checks": checks,
         "reasons": reasons,
@@ -4589,6 +4612,35 @@ def _pass_gate_input_to_guardrail(gate_input_payload: dict[str, Any]) -> dict[st
     return gate_input_payload
 
 
+def _stage6_guardrail_decision_from_gate(*, execution_blocked: bool) -> str:
+    return STAGE6_GUARDRAIL_DECISION_BLOCK if execution_blocked else STAGE6_GUARDRAIL_DECISION_ALLOW
+
+
+def stage6_execution_gate_allows_downstream(gate_payload: dict[str, Any]) -> bool:
+    decision = gate_payload.get("guardrail_decision")
+    if decision not in STAGE6_GUARDRAIL_DECISIONS:
+        return False
+    if decision != STAGE6_GUARDRAIL_DECISION_ALLOW:
+        return False
+    summary = gate_payload.get("decision_summary")
+    if not isinstance(summary, dict):
+        return False
+    return (
+        gate_payload.get("require_preflight_pass") is True
+        and gate_payload.get("gate_status") == "gate_pass"
+        and gate_payload.get("execution_attempted") is True
+        and gate_payload.get("execution_blocked") is False
+        and gate_payload.get("guardrail_decision_supported") is True
+        and summary.get("allow_execution") is True
+        and summary.get("guardrail_decision") == STAGE6_GUARDRAIL_DECISION_ALLOW
+        and isinstance(gate_payload.get("gate_input_path"), str)
+        and isinstance(gate_payload.get("gate_input_fingerprint"), str)
+        and bool(gate_payload.get("gate_input_fingerprint"))
+        and isinstance(gate_payload.get("preflight_path"), str)
+        and isinstance(gate_payload.get("stale_check_path"), str)
+    )
+
+
 def _build_gate_checks(
     *,
     require_preflight_pass: bool,
@@ -4778,6 +4830,7 @@ def _build_gate_decision_summary(
     gate_status: str,
     gate_reason: str,
     execution_blocked: bool,
+    guardrail_decision: str,
 ) -> dict[str, Any]:
     passed_check_count = sum(1 for check in checks if check["result"] == "passed")
     failed_check_count = sum(1 for check in checks if check["result"] == "failed")
@@ -4790,6 +4843,7 @@ def _build_gate_decision_summary(
         "failed_check_count": failed_check_count,
         "gate_reason": gate_reason,
         "gate_status": gate_status,
+        "guardrail_decision": guardrail_decision,
         "not_evaluated_check_count": not_evaluated_check_count,
         "not_required_check_count": not_required_check_count,
         "passed_check_count": passed_check_count,
@@ -8020,6 +8074,8 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
                 "execution_gate_path": artifact_paths.get("execution_gate_path"),
                 "gate_status": payloads["execution_gate_path"].get("gate_status"),
                 "execution_blocked": payloads["execution_gate_path"].get("execution_blocked"),
+                "guardrail_decision": payloads["execution_gate_path"].get("guardrail_decision"),
+                "guardrail_decision_supported": payloads["execution_gate_path"].get("guardrail_decision_supported"),
                 "alignment_path": artifact_paths.get("alignment_path"),
                 "alignment_status": payloads["alignment_path"].get("alignment_status"),
                 "alignment_blocked": payloads["alignment_path"].get("alignment_blocked"),
@@ -8133,6 +8189,8 @@ def _build_workspace_summary(
                 "execution_gate_path": review_entry.get("execution_gate_path"),
                 "gate_status": review_entry.get("gate_status"),
                 "execution_blocked": review_entry.get("execution_blocked"),
+                "guardrail_decision": review_entry.get("guardrail_decision"),
+                "guardrail_decision_supported": review_entry.get("guardrail_decision_supported"),
                 "alignment_path": review_entry.get("alignment_path"),
                 "alignment_status": review_entry.get("alignment_status"),
                 "alignment_blocked": review_entry.get("alignment_blocked"),

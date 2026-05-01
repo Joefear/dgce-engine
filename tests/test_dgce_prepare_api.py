@@ -150,6 +150,18 @@ def _all_file_bytes(project_root: Path) -> dict[str, bytes]:
     }
 
 
+def _gate_path(project_root: Path) -> Path:
+    return project_root / ".dce" / "execution" / "gate" / "mission-board.execution_gate.json"
+
+
+def _gate_input_path(project_root: Path) -> Path:
+    return project_root / ".dce" / "execution" / "gate" / "mission-board.gate_input.json"
+
+
+def _rewrite_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 class TestDGCEPrepareAPI:
     def test_prepare_endpoint_returns_eligible_true_for_valid_section(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_valid")
@@ -276,6 +288,73 @@ class TestDGCEPrepareAPI:
                 "gate_ready": False,
             },
         }
+
+    @pytest.mark.parametrize(
+        "decision_mutation",
+        [
+            pytest.param(lambda payload: payload.pop("guardrail_decision"), id="missing"),
+            pytest.param(lambda payload: payload.__setitem__("guardrail_decision", 123), id="malformed"),
+            pytest.param(lambda payload: payload.__setitem__("guardrail_decision", "PAUSE"), id="unknown"),
+            pytest.param(lambda payload: payload.__setitem__("guardrail_decision", "MODIFY"), id="unsupported_modify"),
+        ],
+    )
+    def test_prepare_fails_closed_for_invalid_stage6_guardrail_decisions(self, monkeypatch, decision_mutation):
+        project_root = _build_workspace(monkeypatch, "dgce_prepare_api_invalid_guardrail_decision")
+        _mark_section_ready(project_root)
+        gate_path = _gate_path(project_root)
+        gate_payload = json.loads(gate_path.read_text(encoding="utf-8"))
+        decision_mutation(gate_payload)
+        _rewrite_json(gate_path, gate_payload)
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["eligible"] is False
+        assert response.json()["checks"]["gate_ready"] is False
+
+    @pytest.mark.parametrize(
+        "gate_input_mutation",
+        [
+            pytest.param(lambda payload: payload.__setitem__("artifact_fingerprint", "bad-fingerprint"), id="invalid_artifact_fingerprint"),
+            pytest.param(lambda payload: payload.pop("artifact_fingerprint"), id="missing_artifact_fingerprint"),
+        ],
+    )
+    def test_prepare_fails_closed_when_gate_input_artifact_fingerprint_is_invalid(self, monkeypatch, gate_input_mutation):
+        project_root = _build_workspace(monkeypatch, "dgce_prepare_api_invalid_gate_input_fingerprint")
+        _mark_section_ready(project_root)
+        gate_input_path = _gate_input_path(project_root)
+        gate_input_payload = json.loads(gate_input_path.read_text(encoding="utf-8"))
+        gate_input_mutation(gate_input_payload)
+        _rewrite_json(gate_input_path, gate_input_payload)
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["eligible"] is False
+        assert response.json()["checks"]["gate_ready"] is False
+
+    def test_prepare_fails_closed_when_gate_input_artifact_is_missing(self, monkeypatch):
+        project_root = _build_workspace(monkeypatch, "dgce_prepare_api_missing_gate_input")
+        _mark_section_ready(project_root)
+        _gate_input_path(project_root).unlink()
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/v1/dgce/sections/mission-board/prepare",
+            json={"workspace_path": str(project_root)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["eligible"] is False
+        assert response.json()["checks"]["gate_ready"] is False
 
     def test_prepare_endpoint_returns_ineligible_when_artifact_linkage_is_broken(self, monkeypatch):
         project_root = _build_workspace(monkeypatch, "dgce_prepare_api_broken_linkage")
