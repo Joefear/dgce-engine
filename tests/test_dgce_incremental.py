@@ -8148,6 +8148,10 @@ def test_execute_reserved_simulation_gate_writes_indeterminate_when_provider_rai
     assert simulation_gate["simulation_blocked"] is True
     assert simulation_artifact["simulation_status"] == "indeterminate"
     assert simulation_artifact["indeterminate_reason"] == "provider_exception"
+    serialized_artifact = json.dumps(simulation_artifact, sort_keys=True).lower()
+    assert "boom" not in serialized_artifact
+    assert "runtimeerror" not in serialized_artifact
+    assert "traceback" not in serialized_artifact
 
 
 def test_execute_reserved_simulation_gate_fail_closes_invalid_provider_response(monkeypatch):
@@ -8179,6 +8183,10 @@ def test_execute_reserved_simulation_gate_fail_closes_invalid_provider_response(
     assert simulation_artifact["reason_summary"] == (
         "Provider response could not be normalized into the sealed simulation evidence contract."
     )
+    serialized_artifact = json.dumps(simulation_artifact, sort_keys=True).lower()
+    assert "maybe" not in serialized_artifact
+    assert "unclear" not in serialized_artifact
+    assert "validationerror" not in serialized_artifact
 
 
 def test_execute_reserved_simulation_gate_blocks_on_provider_fail_with_findings(monkeypatch):
@@ -8993,10 +9001,13 @@ def test_external_dry_run_provider_fails_with_normalized_findings_for_invalid_do
     assert simulation_artifact["findings"] == [
         {
             "code": "external_dockerfile_instruction_invalid",
-            "summary": "Dockerfile validation reported an invalid or unknown instruction.",
+            "summary": "Dockerfile validation reported an invalid instruction directive.",
             "target": "Dockerfile",
         }
     ]
+    serialized_artifact = json.dumps(simulation_artifact, sort_keys=True).lower()
+    assert "unknown instruction" not in serialized_artifact
+    assert "frooom" not in serialized_artifact
 
 
 def test_external_dry_run_provider_returns_indeterminate_for_unsupported_dockerfile_name(monkeypatch):

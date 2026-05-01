@@ -6628,6 +6628,10 @@ def _select_stage75_advisory_provider(provider_selection: dict[str, Any]) -> str
     return precedence_candidates[0] if precedence_candidates else None
 
 
+class _InvalidSimulationProviderResponse(ValueError):
+    """Internal marker for provider output that cannot satisfy the sealed response contract."""
+
+
 def _normalize_provider_response_payload(
     provider: SimulationProviderCallable,
     provider_request: Stage75SimulationProviderRequest,
@@ -6645,7 +6649,10 @@ def _normalize_provider_response_payload(
         provider_response_payload = _run_external_dry_run_provider(workspace_root, section_id)
     else:
         provider_raw_response = provider(provider_request)
-        provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
+        try:
+            provider_response_payload = Stage75SimulationProviderResponse.model_validate(provider_raw_response).model_dump()
+        except Exception as exc:
+            raise _InvalidSimulationProviderResponse("invalid_provider_response") from exc
     return {
         "findings": list(provider_response_payload.get("findings", [])),
         "indeterminate_reason": provider_response_payload.get("indeterminate_reason"),
@@ -7002,7 +7009,7 @@ def _normalize_external_dockerfile_findings(
             findings.append(
                 {
                     "code": "external_dockerfile_instruction_invalid",
-                    "summary": "Dockerfile validation reported an invalid or unknown instruction.",
+                    "summary": "Dockerfile validation reported an invalid instruction directive.",
                     "target": primary_target,
                 }
             )
@@ -7754,6 +7761,38 @@ def _execute_stage75_simulation_provider(
             workspace_root=workspace_root,
             section_id=section_id,
         )
+    except _InvalidSimulationProviderResponse:
+        simulation_artifact = _write_json_with_artifact_fingerprint(
+            workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
+            _build_simulation_artifact(
+                workspace_root,
+                section_id,
+                simulation_input=SectionSimulationInput(
+                    simulation_status="indeterminate",
+                    indeterminate_reason="invalid_provider_response",
+                    provider_name=provider_name,
+                    provider_applicability=_provider_applicability_metadata(provider_selection),
+                    provider_composition={"advisory_provider": None},
+                    provider_selection_reason=provider_selection["selection_reason"],
+                    provider_selection_source=provider_selection["selection_source"],
+                    simulation_source="provider_execution",
+                    simulation_timestamp=provider_request.simulation_trigger_timestamp,
+                ),
+            ),
+        )
+        return {
+            "provider_name": provider_name,
+            "provider_request": provider_request.model_dump(),
+            "provider_resolution_status": "resolved",
+            "provider_selection_reason": provider_selection["selection_reason"],
+            "provider_selection_source": provider_selection["selection_source"],
+            "simulation_artifact": simulation_artifact,
+            "simulation_blocked": True,
+            "simulation_reason": "simulation_indeterminate",
+            "simulation_status": "indeterminate",
+            "simulation_triggered": True,
+            "trigger_artifact": simulation_trigger_artifact,
+        }
     except Exception:
         simulation_artifact = _write_json_with_artifact_fingerprint(
             workspace_root / "execution" / "simulation" / f"{section_id}.simulation.json",
