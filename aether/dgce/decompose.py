@@ -4423,6 +4423,7 @@ def _build_gate_input_approved_scope(
         "input_fingerprint": approval_payload.get("input_fingerprint"),
         "preview_fingerprint": approval_payload.get("preview_fingerprint"),
         "approval_fingerprint": approval_payload.get("artifact_fingerprint"),
+        "selected_mode": approval_payload.get("selected_mode"),
         "approved_targets": approved_targets,
         "scope_summary": dict(preview_payload.get("summary", {})),
     }
@@ -5562,6 +5563,8 @@ def _current_structural_locality_path(path: str, code_graph_context: dict[str, A
 
 
 def _build_scope_alignment_record(alignment_input_payload: dict[str, Any]) -> dict[str, Any]:
+    approved_scope = alignment_input_payload["approved_scope"]
+    selected_mode = approved_scope.get("selected_mode")
     approved_targets = alignment_input_payload["approved_scope"].get("approved_targets", [])
     execution_targets = alignment_input_payload["current_execution_context"].get("execution_targets", [])
     write_targets = alignment_input_payload["current_execution_context"].get("write_targets", [])
@@ -5582,10 +5585,19 @@ def _build_scope_alignment_record(alignment_input_payload: dict[str, Any]) -> di
         findings.append("target_set_missing")
     if any(path not in approved_by_path for path in execution_by_path) or any(path not in execution_by_path for path in approved_by_path):
         findings.append("approved_scope_mismatch")
-    if any(
-        approved_by_path[path] != execution_by_path[path]
-        for path in sorted(set(approved_by_path).intersection(execution_by_path))
-    ):
+    operation_drift = False
+    for path in sorted(set(approved_by_path).intersection(execution_by_path)):
+        approved_operation = approved_by_path[path]
+        execution_operation = execution_by_path[path]
+        safe_modify_rerun_operation = (
+            selected_mode == "safe_modify"
+            and approved_operation == "create"
+            and execution_operation == "modify"
+        )
+        if approved_operation != execution_operation and not safe_modify_rerun_operation:
+            operation_drift = True
+            break
+    if operation_drift:
         findings.append("operation_type_drift")
     if any(path not in approved_by_path for path in write_targets):
         findings.append("write_scope_drift")

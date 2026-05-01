@@ -139,6 +139,10 @@ def _execution_artifact_relative_path(section_id: str) -> str:
     return f".dce/execution/{section_id}.execution.json"
 
 
+def _archived_execution_artifact_relative_path(section_id: str, execution_fingerprint: str) -> str:
+    return f".dce/execution/archive/{section_id}.{execution_fingerprint}.execution.json"
+
+
 def _approval_artifact_relative_path(section_id: str) -> str:
     return f".dce/approvals/{section_id}.approval.json"
 
@@ -381,6 +385,25 @@ def get_section_provenance(project_root: Path, section_id: str) -> dict[str, Any
         raise FileNotFoundError(f"Section provenance not found: {section_id}")
 
     prepared_plan_audit_manifest = execution.get("prepared_plan_audit_manifest") if execution is not None else None
+    execution_provenance = {
+        "execution_artifact_path": _execution_artifact_relative_path(section_id) if execution is not None else None,
+        "execution_status": execution.get("execution_status") if execution is not None else None,
+        "prepared_plan_audit_fingerprint": execution.get("prepared_plan_audit_fingerprint") if execution is not None else None,
+        "prepared_plan_cross_link_fingerprint": execution.get("prepared_plan_cross_link_fingerprint") if execution is not None else None,
+        "written_files": prepared_plan_audit_manifest.get("written_files") if isinstance(prepared_plan_audit_manifest, dict) else None,
+    }
+    if isinstance(prepared_plan_audit_manifest, dict) and prepared_plan_audit_manifest.get("rerun_marker") == "rerun":
+        execution_provenance.update(
+            {
+                "original_execution_artifact_fingerprint": prepared_plan_audit_manifest.get("original_execution_artifact_fingerprint"),
+                "original_execution_artifact_path": prepared_plan_audit_manifest.get("original_execution_artifact_path"),
+                "rerun_execution_artifact_fingerprint": prepared_plan_audit_manifest.get("rerun_execution_artifact_fingerprint"),
+                "rerun_execution_artifact_path": prepared_plan_audit_manifest.get("rerun_execution_artifact_path"),
+                "rerun_marker": prepared_plan_audit_manifest.get("rerun_marker"),
+                "rerun_reason": prepared_plan_audit_manifest.get("rerun_reason"),
+            }
+        )
+
     return {
         "section_id": section_id,
         "approval": {
@@ -397,13 +420,7 @@ def get_section_provenance(project_root: Path, section_id: str) -> dict[str, Any
             "prepared_plan_fingerprint": compute_json_payload_fingerprint(prepared_plan) if prepared_plan is not None else None,
             "prepared_plan_path": _prepared_plan_relative_path(section_id) if prepared_plan is not None else None,
         },
-        "execution": {
-            "execution_artifact_path": _execution_artifact_relative_path(section_id) if execution is not None else None,
-            "execution_status": execution.get("execution_status") if execution is not None else None,
-            "prepared_plan_audit_fingerprint": execution.get("prepared_plan_audit_fingerprint") if execution is not None else None,
-            "prepared_plan_cross_link_fingerprint": execution.get("prepared_plan_cross_link_fingerprint") if execution is not None else None,
-            "written_files": prepared_plan_audit_manifest.get("written_files") if isinstance(prepared_plan_audit_manifest, dict) else None,
-        },
+        "execution": execution_provenance,
         "bundle_references": bundle_references,
     }
 
@@ -1082,6 +1099,7 @@ def _build_prepared_plan_audit_manifest(
     section_id: str,
     prepared_plan: dict[str, Any],
     execution_artifact: dict[str, Any],
+    rerun_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     written_files = execution_artifact.get("written_files")
     if not isinstance(written_files, list):
@@ -1092,7 +1110,7 @@ def _build_prepared_plan_audit_manifest(
     execution_status = execution_artifact.get("execution_status")
     if not isinstance(execution_status, str):
         raise ValueError(f"Execution audit manifest requires valid execution_status: {section_id}")
-    return {
+    audit_manifest = {
         "approval_lineage_fingerprint": prepared_plan["approval_lineage_fingerprint"],
         "binding_fingerprint": prepared_plan["binding_fingerprint"],
         "execution_permitted": bool(prepared_plan["binding"]["execution_permitted"]),
@@ -1103,6 +1121,9 @@ def _build_prepared_plan_audit_manifest(
         "selected_mode": selected_mode,
         "written_files": written_files,
     }
+    if rerun_provenance is not None:
+        audit_manifest.update(rerun_provenance)
+    return audit_manifest
 
 
 def _build_prepared_plan_cross_link(
@@ -1110,12 +1131,41 @@ def _build_prepared_plan_cross_link(
     section_id: str,
     prepared_plan: dict[str, Any],
     prepared_plan_audit_fingerprint: str,
+    rerun_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    cross_link = {
         "prepared_plan_audit_fingerprint": prepared_plan_audit_fingerprint,
         "prepared_plan_fingerprint": compute_json_payload_fingerprint(prepared_plan),
         "prepared_plan_path": _prepared_plan_relative_path(section_id),
         "section_id": section_id,
+    }
+    if rerun_provenance is not None:
+        for key in (
+            "original_execution_artifact_fingerprint",
+            "original_execution_artifact_path",
+            "rerun_execution_artifact_fingerprint",
+            "rerun_execution_artifact_path",
+            "rerun_marker",
+            "rerun_reason",
+        ):
+            cross_link[key] = rerun_provenance[key]
+    return cross_link
+
+
+def _archive_prior_execution_payload(
+    project_root: Path,
+    section_id: str,
+    prior_execution_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    original_execution_fingerprint = compute_json_payload_fingerprint(prior_execution_artifact)
+    original_execution_path = _archived_execution_artifact_relative_path(section_id, original_execution_fingerprint)
+    archive_path = project_root / original_execution_path
+    if not archive_path.exists():
+        _write_json(archive_path, prior_execution_artifact)
+    return {
+        "original_execution_artifact_fingerprint": original_execution_fingerprint,
+        "original_execution_artifact_path": original_execution_path,
+        "original_prepared_plan_audit_fingerprint": prior_execution_artifact.get("prepared_plan_audit_fingerprint"),
     }
 
 
@@ -1123,15 +1173,26 @@ def _persist_prepared_plan_audit_manifest(
     project_root: Path,
     section_id: str,
     prepared_plan: dict[str, Any],
+    *,
+    rerun_provenance: dict[str, Any] | None = None,
 ) -> None:
     execution_path = _execution_artifact_path(project_root, section_id)
     execution_artifact = json.loads(execution_path.read_text(encoding="utf-8"))
     if not isinstance(execution_artifact, dict):
         raise ValueError(f"Execution audit manifest requires valid execution artifact: {section_id}")
+    if rerun_provenance is not None:
+        rerun_provenance = {
+            **rerun_provenance,
+            "rerun_execution_artifact_fingerprint": compute_json_payload_fingerprint(execution_artifact),
+            "rerun_execution_artifact_path": _execution_artifact_relative_path(section_id),
+            "rerun_marker": "rerun",
+            "rerun_reason": "rerun_requested",
+        }
     audit_manifest = _build_prepared_plan_audit_manifest(
         section_id=section_id,
         prepared_plan=prepared_plan,
         execution_artifact=execution_artifact,
+        rerun_provenance=rerun_provenance,
     )
     execution_artifact["prepared_plan_audit_manifest"] = audit_manifest
     execution_artifact["prepared_plan_audit_fingerprint"] = compute_json_payload_fingerprint(audit_manifest)
@@ -1139,6 +1200,7 @@ def _persist_prepared_plan_audit_manifest(
         section_id=section_id,
         prepared_plan=prepared_plan,
         prepared_plan_audit_fingerprint=execution_artifact["prepared_plan_audit_fingerprint"],
+        rerun_provenance=rerun_provenance,
     )
     execution_artifact["prepared_plan_cross_link"] = prepared_plan_cross_link
     execution_artifact["prepared_plan_cross_link_fingerprint"] = compute_json_payload_fingerprint(prepared_plan_cross_link)
@@ -1156,13 +1218,20 @@ def execute_prepared_section(workspace_path: str | Path, section_id: str, *, rer
     _assert_prepared_plan_approval_lineage_matches(project_root, section_id)
     _assert_prepared_plan_binding_matches(project_root, section_id)
     prepared_file_plan = load_prepared_section_file_plan(project_root, section_id)
+    prior_execution_artifact: dict[str, Any] | None = None
     if rerun is True and _has_prior_execution_artifacts(project_root, section_id):
         _assert_rerun_is_safe(project_root, section_id, prepared_file_plan)
+        prior_execution_artifact = load_section_execution_artifact(project_root, section_id)
 
     result = run_dgce_section(section_id, project_root, governed=True, prepared_file_plan=prepared_file_plan)
     if str(result.status) != "success":
         raise ValueError(f"Section execution blocked: {result.reason}")
-    _persist_prepared_plan_audit_manifest(project_root, section_id, prepared_plan)
+    rerun_provenance = (
+        _archive_prior_execution_payload(project_root, section_id, prior_execution_artifact)
+        if prior_execution_artifact is not None
+        else None
+    )
+    _persist_prepared_plan_audit_manifest(project_root, section_id, prepared_plan, rerun_provenance=rerun_provenance)
 
     return {
         "status": "ok",
