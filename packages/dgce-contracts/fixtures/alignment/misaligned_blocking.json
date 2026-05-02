@@ -1,0 +1,45 @@
+{
+  "alignment_enrichment": {
+    "code_graph_used": false,
+    "enrichment_status": "partial",
+    "resolver_used": true
+  },
+  "alignment_id": "alignment.stage7.blocking.001",
+  "alignment_result": "misaligned",
+  "alignment_summary": {
+    "blocking_issues_count": 2,
+    "informational_issues_count": 0,
+    "primary_reason": "Blocking drift was detected between approved preview targets and resolver evidence."
+  },
+  "approval_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "drift_detected": true,
+  "drift_items": [
+    {
+      "code": "missing_expected_artifact",
+      "severity": "blocking",
+      "summary": "Approved preview target is absent from the prepared artifact set.",
+      "target": "Content/Blueprints/BP_Player.uasset"
+    },
+    {
+      "code": "symbol_resolution_conflict",
+      "severity": "blocking",
+      "summary": "Resolver metadata points to a different symbol path than the approved preview target.",
+      "target": "BP_Player.InventoryComponent"
+    }
+  ],
+  "evidence": [
+    {
+      "reference": ".dce/plans/game-adapter-stage2.preview.json#change.player-component",
+      "snippet_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "source": "preview"
+    },
+    {
+      "reference": ".dce/plans/unreal-symbol-resolver.resolution.json#BP_Player.InventoryComponent",
+      "source": "resolver"
+    }
+  ],
+  "execution_permitted": false,
+  "input_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "preview_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "timestamp": "2026-05-02T18:05:00Z"
+}

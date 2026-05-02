@@ -1,0 +1,55 @@
+{
+  "alignment_enrichment": {
+    "code_graph_used": true,
+    "enrichment_status": "full",
+    "resolver_used": true
+  },
+  "alignment_id": "alignment.stage7.mixed.001",
+  "alignment_result": "misaligned",
+  "alignment_summary": {
+    "blocking_issues_count": 2,
+    "informational_issues_count": 1,
+    "primary_reason": "Mixed alignment drift includes blocking insertion and adapter constraint issues."
+  },
+  "approval_fingerprint": "5555555555555555555555555555555555555555555555555555555555555555",
+  "drift_detected": true,
+  "drift_items": [
+    {
+      "code": "unexpected_artifact",
+      "severity": "informational",
+      "summary": "An unapproved artifact is present in the preview comparison set.",
+      "target": "Content/Blueprints/BP_Debug.uasset"
+    },
+    {
+      "code": "insertion_point_invalid",
+      "severity": "blocking",
+      "summary": "Requested insertion point is outside the approved metadata boundary.",
+      "target": "Source/FixtureGame/Private/InventoryComponent.cpp"
+    },
+    {
+      "code": "adapter_constraint_violation",
+      "severity": "blocking",
+      "summary": "Requested change violates the Game Adapter metadata-only alignment constraint.",
+      "target": "GameAdapter.Stage7.Alignment"
+    }
+  ],
+  "evidence": [
+    {
+      "reference": ".dce/plans/game-adapter-stage2.preview.json#change.debug-artifact",
+      "source": "preview"
+    },
+    {
+      "reference": ".dce/code-graph/dcg.facts.v1.json#InventoryComponent",
+      "snippet_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "source": "code_graph"
+    },
+    {
+      "reference": ".dce/runtime/alignment-state.json#adapter-boundary",
+      "source": "runtime_state"
+    }
+  ],
+  "execution_permitted": false,
+  "input_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444",
+  "preview_fingerprint": "7777777777777777777777777777777777777777777777777777777777777777",
+  "timestamp": "2026-05-02T18:10:00Z"
+}

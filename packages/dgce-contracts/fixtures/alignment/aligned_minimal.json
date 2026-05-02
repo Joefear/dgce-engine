@@ -1,0 +1,31 @@
+{
+  "alignment_enrichment": {
+    "code_graph_used": false,
+    "enrichment_status": "not_used",
+    "resolver_used": false
+  },
+  "alignment_id": "alignment.stage7.minimal.001",
+  "alignment_result": "aligned",
+  "alignment_summary": {
+    "blocking_issues_count": 0,
+    "informational_issues_count": 0,
+    "primary_reason": "Preview, approval, and input fingerprints are aligned."
+  },
+  "approval_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+  "drift_detected": false,
+  "drift_items": [],
+  "evidence": [
+    {
+      "reference": ".dce/plans/mission-board.preview.json",
+      "source": "preview"
+    },
+    {
+      "reference": ".dce/approvals/mission-board.approval.json",
+      "source": "approval"
+    }
+  ],
+  "execution_permitted": true,
+  "input_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+  "preview_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+  "timestamp": "2026-05-02T18:00:00Z"
+}

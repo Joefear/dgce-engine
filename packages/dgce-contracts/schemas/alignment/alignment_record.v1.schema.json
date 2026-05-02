@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://defiantinds.com/schemas/dgce/alignment/alignment_record.v1.schema.json",
+  "title": "alignment_record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alignment_id",
+    "timestamp",
+    "input_fingerprint",
+    "approval_fingerprint",
+    "preview_fingerprint",
+    "alignment_result",
+    "drift_detected",
+    "drift_items",
+    "evidence",
+    "alignment_enrichment",
+    "execution_permitted",
+    "alignment_summary"
+  ],
+  "properties": {
+    "alignment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "input_fingerprint": {
+      "$ref": "#/$defs/Fingerprint"
+    },
+    "approval_fingerprint": {
+      "$ref": "#/$defs/Fingerprint"
+    },
+    "preview_fingerprint": {
+      "$ref": "#/$defs/Fingerprint"
+    },
+    "alignment_result": {
+      "enum": [
+        "aligned",
+        "misaligned"
+      ]
+    },
+    "drift_detected": {
+      "type": "boolean"
+    },
+    "drift_items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DriftItem"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EvidenceItem"
+      }
+    },
+    "alignment_enrichment": {
+      "$ref": "#/$defs/AlignmentEnrichment"
+    },
+    "execution_permitted": {
+      "type": "boolean"
+    },
+    "alignment_summary": {
+      "$ref": "#/$defs/AlignmentSummary"
+    }
+  },
+  "$defs": {
+    "Fingerprint": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "DriftCode": {
+      "enum": [
+        "missing_expected_artifact",
+        "unexpected_artifact",
+        "structure_mismatch",
+        "symbol_resolution_conflict",
+        "insertion_point_invalid",
+        "design_contract_violation",
+        "dependency_mismatch",
+        "adapter_constraint_violation"
+      ]
+    },
+    "DriftItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "summary",
+        "target",
+        "severity"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/DriftCode"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "severity": {
+          "enum": [
+            "blocking",
+            "informational"
+          ]
+        }
+      }
+    },
+    "EvidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "reference"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "preview",
+            "approval",
+            "code_graph",
+            "resolver",
+            "runtime_state"
+          ]
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "snippet_hash": {
+          "$ref": "#/$defs/Fingerprint"
+        }
+      }
+    },
+    "AlignmentEnrichment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code_graph_used",
+        "resolver_used",
+        "enrichment_status"
+      ],
+      "properties": {
+        "code_graph_used": {
+          "type": "boolean"
+        },
+        "resolver_used": {
+          "type": "boolean"
+        },
+        "enrichment_status": {
+          "enum": [
+            "not_used",
+            "partial",
+            "full"
+          ]
+        }
+      }
+    },
+    "AlignmentSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_reason",
+        "blocking_issues_count",
+        "informational_issues_count"
+      ],
+      "properties": {
+        "primary_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "blocking_issues_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "informational_issues_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
