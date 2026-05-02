@@ -123,6 +123,11 @@ class TestDGCEReadAPIHTTP:
             "list_game_adapter_unreal_project_structure_manifests",
             reader("game_adapter_unreal_project_structure_manifest_index"),
         )
+        monkeypatch.setattr(
+            dgce_read_api,
+            "list_game_adapter_unreal_symbol_candidate_indexes",
+            reader("game_adapter_unreal_symbol_candidate_index_index"),
+        )
 
         expected_routes = [
             ("/v1/dgce/dashboard", "dashboard"),
@@ -136,6 +141,10 @@ class TestDGCEReadAPIHTTP:
             (
                 "/v1/dgce/game-adapter/unreal-project-structure-manifests",
                 "game_adapter_unreal_project_structure_manifest_index",
+            ),
+            (
+                "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes",
+                "game_adapter_unreal_symbol_candidate_index_index",
             ),
         ]
 
@@ -232,6 +241,7 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/gce/stage0-artifacts",
             "/v1/dgce/game-adapter/stage2-preview-artifacts",
             "/v1/dgce/game-adapter/unreal-project-structure-manifests",
+            "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes",
         ):
             response = client.get(route_path, params={"workspace_path": str(project_root)})
             assert response.status_code == 200
@@ -259,6 +269,8 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/game-adapter/stage2-preview-artifacts/{artifact_name}": {"GET"},
             "/v1/dgce/game-adapter/unreal-project-structure-manifests": {"GET"},
             "/v1/dgce/game-adapter/unreal-project-structure-manifests/{artifact_name}": {"GET"},
+            "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes": {"GET"},
+            "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/{artifact_name}": {"GET"},
         }
 
     def test_app_exposes_no_non_get_methods_for_read_routes(self):

@@ -62,6 +62,11 @@ class TestDGCESDK:
             workspace_path,
             "unreal-project-structure.manifest.json",
         ) == {"ok": True}
+        assert client.list_game_adapter_unreal_symbol_candidate_indexes(workspace_path) == {"ok": True}
+        assert client.get_game_adapter_unreal_symbol_candidate_index(
+            workspace_path,
+            "unreal-symbol-candidates.index.json",
+        ) == {"ok": True}
         assert client.list_available_artifacts(workspace_path) == {"ok": True}
 
         assert calls == [
@@ -77,6 +82,8 @@ class TestDGCESDK:
             "http://example.test/v1/dgce/game-adapter/stage2-preview-artifacts/game-adapter-stage2.preview.json?workspace_path=workspace-root",
             "http://example.test/v1/dgce/game-adapter/unreal-project-structure-manifests?workspace_path=workspace-root",
             "http://example.test/v1/dgce/game-adapter/unreal-project-structure-manifests/unreal-project-structure.manifest.json?workspace_path=workspace-root",
+            "http://example.test/v1/dgce/game-adapter/unreal-symbol-candidate-indexes?workspace_path=workspace-root",
+            "http://example.test/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/unreal-symbol-candidates.index.json?workspace_path=workspace-root",
             "http://example.test/v1/dgce/artifact-manifest?workspace_path=workspace-root",
         ]
 

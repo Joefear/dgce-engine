@@ -25,6 +25,12 @@ from aether.dgce.game_adapter_unreal_manifest import (
     DOMAIN as UNREAL_MANIFEST_DOMAIN,
     validate_unreal_project_structure_manifest,
 )
+from aether.dgce.game_adapter_unreal_symbol_candidates import (
+    ARTIFACT_TYPE as UNREAL_SYMBOL_CANDIDATE_INDEX_ARTIFACT_TYPE,
+    CONTRACT_NAME as UNREAL_SYMBOL_CANDIDATE_INDEX_CONTRACT_NAME,
+    CONTRACT_VERSION as UNREAL_SYMBOL_CANDIDATE_INDEX_CONTRACT_VERSION,
+    validate_unreal_symbol_candidate_index,
+)
 from aether.dgce.gce_ingestion import compute_gce_clarification_request_fingerprint
 from aether.dgce.path_utils import resolve_workspace_path
 
@@ -35,6 +41,8 @@ GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterStage2Pre
 GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.stage2.preview.read_model.v1"
 UNREAL_MANIFEST_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterUnrealProjectStructureManifestReadModel"
 UNREAL_MANIFEST_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.unreal_project_structure_manifest.read_model.v1"
+UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterUnrealSymbolCandidateIndexReadModel"
+UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.unreal_symbol_candidate_index.read_model.v1"
 
 
 def _workspace_root_path(workspace_path: str | Path) -> Path:
@@ -207,6 +215,52 @@ def get_game_adapter_unreal_project_structure_manifest(
             source_artifact_fingerprint=None,
         )
     return _read_unreal_project_structure_manifest_file(artifact_path, workspace_root=workspace_root)
+
+
+def list_game_adapter_unreal_symbol_candidate_indexes(workspace_path: str | Path) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_dir = workspace_root / ".dce" / "plans"
+    artifacts = []
+    if artifact_dir.is_dir():
+        artifacts = [
+            _read_unreal_symbol_candidate_index_file(path, workspace_root=workspace_root)
+            for path in sorted(
+                artifact_dir.glob("unreal-symbol-candidates*.index.json"),
+                key=lambda candidate: candidate.name,
+            )
+        ]
+    return {
+        "artifact_type": "game_adapter_unreal_symbol_candidate_index_index",
+        "adapter": UNREAL_MANIFEST_ADAPTER,
+        "domain": UNREAL_MANIFEST_DOMAIN,
+        "contract_name": UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_NAME,
+        "contract_version": UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_VERSION,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def get_game_adapter_unreal_symbol_candidate_index(
+    workspace_path: str | Path,
+    artifact_name: str,
+) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_path = _unreal_symbol_candidate_index_artifact_path(workspace_root, artifact_name)
+    if artifact_path is None:
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=None,
+            reason_code="artifact_name_invalid",
+            source_artifact_fingerprint=None,
+        )
+    if not artifact_path.exists():
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=_artifact_path_for_read_model(artifact_path, workspace_root),
+            reason_code="artifact_missing",
+            source_artifact_fingerprint=None,
+        )
+    return _read_unreal_symbol_candidate_index_file(artifact_path, workspace_root=workspace_root)
 
 
 def _gce_stage0_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
@@ -437,6 +491,80 @@ def _read_unreal_project_structure_manifest_file(path: Path, *, workspace_root: 
     }
 
 
+def _unreal_symbol_candidate_index_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
+    name_path = Path(artifact_name)
+    if (
+        name_path.name != artifact_name
+        or not artifact_name.startswith("unreal-symbol-candidates")
+        or not artifact_name.endswith(".index.json")
+    ):
+        return None
+    return workspace_root / ".dce" / "plans" / artifact_name
+
+
+def _read_unreal_symbol_candidate_index_file(path: Path, *, workspace_root: Path) -> dict[str, Any]:
+    artifact_name = path.name
+    artifact_path = _artifact_path_for_read_model(path, workspace_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+    if not isinstance(payload, dict):
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+
+    artifact_fingerprint = _string_or_none(payload.get("artifact_fingerprint"))
+    if artifact_fingerprint is None:
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_missing",
+            source_artifact_fingerprint=None,
+        )
+    if not verify_artifact_fingerprint(path):
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+    try:
+        validate_unreal_symbol_candidate_index(payload)
+    except ValueError:
+        return _unreal_symbol_candidate_index_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="contract_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+
+    return {
+        "read_model_type": "game_adapter_unreal_symbol_candidate_index_read_model",
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "artifact_type": payload["artifact_type"],
+        "contract_name": payload["contract_name"],
+        "contract_version": payload["contract_version"],
+        "read_model_contract_name": UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_NAME,
+        "read_model_contract_version": UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_VERSION,
+        "adapter": payload["adapter"],
+        "domain": payload["domain"],
+        "source_manifest_fingerprint": payload["source_manifest_fingerprint"],
+        "structural_summary": payload["structural_summary"],
+        "candidates": payload["candidates"],
+        "artifact_fingerprint": artifact_fingerprint,
+    }
+
+
 def _gce_stage0_artifact_core_shape_is_valid(payload: dict[str, Any]) -> bool:
     return (
         payload.get("artifact_type") == "stage0_input_package"
@@ -640,6 +768,33 @@ def _unreal_project_structure_manifest_read_error(
         "project_root_reference": None,
         "structural_summary": None,
         "discovered_paths": None,
+    }
+
+
+def _unreal_symbol_candidate_index_read_error(
+    *,
+    artifact_name: str,
+    artifact_path: str | None,
+    reason_code: str,
+    source_artifact_fingerprint: str | None,
+) -> dict[str, Any]:
+    return {
+        "read_model_type": "game_adapter_unreal_symbol_candidate_index_read_error",
+        "artifact_type": "game_adapter_unreal_symbol_candidate_index_read_error",
+        "adapter": UNREAL_MANIFEST_ADAPTER,
+        "domain": UNREAL_MANIFEST_DOMAIN,
+        "contract_name": UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_NAME,
+        "contract_version": UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_VERSION,
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "reason_code": reason_code,
+        "artifact_fingerprint": source_artifact_fingerprint,
+        "candidate_index_artifact_type": UNREAL_SYMBOL_CANDIDATE_INDEX_ARTIFACT_TYPE,
+        "candidate_index_contract_name": UNREAL_SYMBOL_CANDIDATE_INDEX_CONTRACT_NAME,
+        "candidate_index_contract_version": UNREAL_SYMBOL_CANDIDATE_INDEX_CONTRACT_VERSION,
+        "source_manifest_fingerprint": None,
+        "structural_summary": None,
+        "candidates": None,
     }
 
 
