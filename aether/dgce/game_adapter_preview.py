@@ -1,8 +1,9 @@
 """Game Adapter Stage 2 preview-only contract helpers.
 
 This module defines the isolated preview artifact contract for the authorized
-Game Adapter Stage 2 slice. It intentionally does not inspect Unreal projects,
-resolve symbols, validate Blueprint graphs, or perform execution writes.
+Game Adapter Stage 2 slice. Its optional resolver hook consumes prebuilt,
+metadata-only resolver inputs and never inspects Unreal projects, validates
+Blueprint graphs, or performs execution writes.
 """
 
 from __future__ import annotations
@@ -112,6 +113,9 @@ def build_game_adapter_stage2_preview(
     source_input_reference: str | None = None,
     policy_pack: str = "game_adapter_stage2_preview",
     guardrail_required: bool = True,
+    resolver_input: Mapping[str, Any] | None = None,
+    resolver_manifest_payload: Mapping[str, Any] | None = None,
+    resolver_candidate_index_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic preview-only Game Adapter Stage 2 artifact."""
     governance_context = _normalize_governance_context(
@@ -130,6 +134,11 @@ def build_game_adapter_stage2_preview(
 
     selected_changes = apply_game_adapter_stage2_strategy_selection(planned_changes)
     normalized_changes = _normalize_planned_changes(selected_changes)
+    resolver_context = _build_optional_resolver_context(
+        resolver_input=resolver_input,
+        resolver_manifest_payload=resolver_manifest_payload,
+        resolver_candidate_index_payload=resolver_candidate_index_payload,
+    )
     payload = {
         "artifact_type": ARTIFACT_TYPE,
         "contract_name": CONTRACT_NAME,
@@ -143,6 +152,8 @@ def build_game_adapter_stage2_preview(
         "machine_view": render_game_adapter_stage2_machine_view(normalized_changes, governance_context),
         "human_view": render_game_adapter_stage2_human_view(normalized_changes, governance_context),
     }
+    if resolver_context is not None:
+        payload["resolver_context"] = resolver_context
     payload["artifact_fingerprint"] = compute_json_payload_fingerprint(payload)
     validate_game_adapter_stage2_preview_contract(payload)
     return payload
@@ -153,7 +164,10 @@ def validate_game_adapter_stage2_preview_contract(payload: Mapping[str, Any]) ->
     if not isinstance(payload, Mapping):
         raise ValueError("preview contract must be an object")
     _reject_forbidden_raw_keys(payload, "preview")
-    _require_exact_keys(payload, _TOP_LEVEL_KEYS, "preview")
+    expected_top_level_keys = set(_TOP_LEVEL_KEYS)
+    if "resolver_context" in payload:
+        expected_top_level_keys.add("resolver_context")
+    _require_exact_keys(payload, expected_top_level_keys, "preview")
     _require_exact(payload.get("artifact_type"), ARTIFACT_TYPE, "artifact_type")
     _require_exact(payload.get("contract_name"), CONTRACT_NAME, "contract_name")
     _require_exact(payload.get("contract_version"), CONTRACT_VERSION, "contract_version")
@@ -180,12 +194,82 @@ def validate_game_adapter_stage2_preview_contract(payload: Mapping[str, Any]) ->
         raise ValueError("machine_view must be deterministically derived from planned_changes")
     if payload.get("human_view") != expected_human_view:
         raise ValueError("human_view must be deterministically derived from planned_changes")
+    if "resolver_context" in payload:
+        _validate_resolver_context(_expect_mapping(payload.get("resolver_context"), "resolver_context"))
     artifact_fingerprint = payload.get("artifact_fingerprint")
     if not isinstance(artifact_fingerprint, str) or not artifact_fingerprint:
         raise ValueError("artifact_fingerprint is required")
     if artifact_fingerprint != compute_json_payload_fingerprint(dict(payload)):
         raise ValueError("artifact_fingerprint invalid")
     return True
+
+
+def _build_optional_resolver_context(
+    *,
+    resolver_input: Mapping[str, Any] | None,
+    resolver_manifest_payload: Mapping[str, Any] | None,
+    resolver_candidate_index_payload: Mapping[str, Any] | None,
+) -> dict[str, list[dict[str, Any]]] | None:
+    if resolver_input is None or resolver_manifest_payload is None or resolver_candidate_index_payload is None:
+        return None
+    try:
+        from aether.dgce.game_adapter_unreal_symbol_resolver import resolve_unreal_symbols_from_path_metadata
+
+        resolver_output = resolve_unreal_symbols_from_path_metadata(
+            resolver_input,
+            resolver_manifest_payload,
+            resolver_candidate_index_payload,
+        )
+        resolver_context = {
+            "resolved_symbols": deepcopy(resolver_output["resolved_symbols"]),
+            "unresolved_symbols": deepcopy(resolver_output["unresolved_symbols"]),
+        }
+        _validate_resolver_context(resolver_context)
+        return resolver_context
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _validate_resolver_context(resolver_context: Mapping[str, Any]) -> None:
+    _require_exact_keys(resolver_context, {"resolved_symbols", "unresolved_symbols"}, "resolver_context")
+    _validate_resolver_symbol_entries(
+        _expect_list(resolver_context.get("resolved_symbols"), "resolver_context.resolved_symbols"),
+        "resolver_context.resolved_symbols",
+        resolved=True,
+    )
+    _validate_resolver_symbol_entries(
+        _expect_list(resolver_context.get("unresolved_symbols"), "resolver_context.unresolved_symbols"),
+        "resolver_context.unresolved_symbols",
+        resolved=False,
+    )
+
+
+def _validate_resolver_symbol_entries(entries: list[Mapping[str, Any]], field_name: str, *, resolved: bool) -> None:
+    sort_keys: list[tuple[str, str, str]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"{field_name}[{index}] must be an object")
+        _require_exact_keys(
+            entry,
+            {"symbol_name", "symbol_kind", "source_path", "resolution_method", "confidence"},
+            f"{field_name}[{index}]",
+        )
+        symbol_name = _safe_identifier(entry.get("symbol_name"), f"{field_name}[{index}].symbol_name")
+        symbol_kind = _require_allowed(entry.get("symbol_kind"), ALLOWED_TARGET_KINDS, f"{field_name}[{index}].symbol_kind")
+        _require_exact(entry.get("resolution_method"), "path_metadata", f"{field_name}[{index}].resolution_method")
+        if resolved:
+            source_path = _safe_relative_path(entry.get("source_path"), f"{field_name}[{index}].source_path")
+            _require_allowed(entry.get("confidence"), ("exact_path_match", "candidate_match"), f"{field_name}[{index}].confidence")
+        else:
+            if entry.get("source_path") is not None:
+                raise ValueError(f"{field_name}[{index}].source_path must be null")
+            _require_exact(entry.get("confidence"), "unresolved", f"{field_name}[{index}].confidence")
+            source_path = ""
+        sort_keys.append((symbol_kind, symbol_name, source_path))
+    if sort_keys != sorted(sort_keys):
+        raise ValueError(f"{field_name} must be sorted")
+    if len(sort_keys) != len(set(sort_keys)):
+        raise ValueError(f"{field_name} must be unique")
 
 
 def select_game_adapter_stage2_strategy(planned_change: Mapping[str, Any]) -> str:
@@ -470,6 +554,16 @@ def _safe_identifier(value: Any, field_name: str) -> str:
     if not SAFE_IDENTIFIER_PATTERN.match(value):
         raise ValueError(f"{field_name} contains unsupported characters")
     return value
+
+
+def _safe_relative_path(value: Any, field_name: str) -> str:
+    path_text = _safe_identifier(value, field_name)
+    path = re.sub(r"/+", "/", path_text)
+    if path.startswith("/") or "\\" in path_text:
+        raise ValueError(f"{field_name} must be a bounded relative path")
+    if ".." in path.split("/"):
+        raise ValueError(f"{field_name} must be a bounded relative path")
+    return path_text
 
 
 def _normalize_optional_reference(value: Any, field_name: str) -> str | None:

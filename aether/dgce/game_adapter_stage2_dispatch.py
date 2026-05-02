@@ -33,6 +33,9 @@ def build_game_adapter_stage2_preview_from_released_stage0(
     *,
     workspace_path: str | Path | None = None,
     preview_id: str = GAME_ADAPTER_STAGE2_PREVIEW_ID,
+    resolver_input: dict[str, Any] | None = None,
+    resolver_manifest_payload: dict[str, Any] | None = None,
+    resolver_candidate_index_payload: dict[str, Any] | None = None,
 ) -> GameAdapterStage2PreviewDispatchResult:
     """Build and optionally persist a Game Adapter Stage 2 preview artifact.
 
@@ -57,6 +60,9 @@ def build_game_adapter_stage2_preview_from_released_stage0(
         planned_changes=planned_changes,
         policy_pack="game_adapter_stage2_preview",
         guardrail_required=True,
+        resolver_input=resolver_input,
+        resolver_manifest_payload=resolver_manifest_payload,
+        resolver_candidate_index_payload=resolver_candidate_index_payload,
     )
     validate_game_adapter_stage2_preview_contract(preview)
 

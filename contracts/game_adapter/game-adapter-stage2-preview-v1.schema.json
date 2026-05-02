@@ -44,6 +44,7 @@
     "governance_context": { "$ref": "#/$defs/GovernanceContext" },
     "machine_view": { "type": "object" },
     "human_view": { "type": "object" },
+    "resolver_context": { "$ref": "#/$defs/ResolverContext" },
     "artifact_fingerprint": { "type": "string", "minLength": 1 }
   },
   "$defs": {
@@ -123,6 +124,69 @@
       "properties": {
         "policy_pack": { "enum": ["game_adapter_stage2_preview", "game_adapter_stage2_guardrail"] },
         "guardrail_required": { "type": "boolean" }
+      }
+    },
+    "ResolvedSymbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol_name", "symbol_kind", "source_path", "resolution_method", "confidence"],
+      "properties": {
+        "symbol_name": { "$ref": "#/$defs/SafeIdentifier" },
+        "symbol_kind": {
+          "enum": [
+            "BlueprintClass",
+            "CppClass",
+            "ActorComponent",
+            "Variable",
+            "Event",
+            "Binding",
+            "Asset",
+            "InputAction"
+          ]
+        },
+        "source_path": { "$ref": "#/$defs/SafeIdentifier" },
+        "resolution_method": { "const": "path_metadata" },
+        "confidence": { "enum": ["exact_path_match", "candidate_match"] }
+      }
+    },
+    "UnresolvedSymbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol_name", "symbol_kind", "source_path", "resolution_method", "confidence"],
+      "properties": {
+        "symbol_name": { "$ref": "#/$defs/SafeIdentifier" },
+        "symbol_kind": {
+          "enum": [
+            "BlueprintClass",
+            "CppClass",
+            "ActorComponent",
+            "Variable",
+            "Event",
+            "Binding",
+            "Asset",
+            "InputAction"
+          ]
+        },
+        "source_path": { "type": "null" },
+        "resolution_method": { "const": "path_metadata" },
+        "confidence": { "const": "unresolved" }
+      }
+    },
+    "ResolverContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolved_symbols", "unresolved_symbols"],
+      "properties": {
+        "resolved_symbols": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/ResolvedSymbol" }
+        },
+        "unresolved_symbols": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/UnresolvedSymbol" }
+        }
       }
     }
   }
