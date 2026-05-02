@@ -57,6 +57,11 @@ class TestDGCESDK:
             workspace_path,
             "game-adapter-stage2.preview.json",
         ) == {"ok": True}
+        assert client.list_game_adapter_unreal_project_structure_manifests(workspace_path) == {"ok": True}
+        assert client.get_game_adapter_unreal_project_structure_manifest(
+            workspace_path,
+            "unreal-project-structure.manifest.json",
+        ) == {"ok": True}
         assert client.list_available_artifacts(workspace_path) == {"ok": True}
 
         assert calls == [
@@ -70,6 +75,8 @@ class TestDGCESDK:
             "http://example.test/v1/dgce/gce/stage0-artifacts/source.formal-gdd.stage0.json?workspace_path=workspace-root",
             "http://example.test/v1/dgce/game-adapter/stage2-preview-artifacts?workspace_path=workspace-root",
             "http://example.test/v1/dgce/game-adapter/stage2-preview-artifacts/game-adapter-stage2.preview.json?workspace_path=workspace-root",
+            "http://example.test/v1/dgce/game-adapter/unreal-project-structure-manifests?workspace_path=workspace-root",
+            "http://example.test/v1/dgce/game-adapter/unreal-project-structure-manifests/unreal-project-structure.manifest.json?workspace_path=workspace-root",
             "http://example.test/v1/dgce/artifact-manifest?workspace_path=workspace-root",
         ]
 

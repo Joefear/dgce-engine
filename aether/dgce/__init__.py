@@ -71,6 +71,7 @@ from aether.dgce.incremental import (
 from aether.dgce.inspector import inspect_workspace
 from aether.dgce.read_api import (
     get_game_adapter_stage2_preview_artifact,
+    get_game_adapter_unreal_project_structure_manifest,
     get_gce_stage0_artifact,
     get_artifact_manifest,
     get_consumer_contract,
@@ -80,6 +81,7 @@ from aether.dgce.read_api import (
     get_workspace_index,
     list_available_artifacts,
     list_game_adapter_stage2_preview_artifacts,
+    list_game_adapter_unreal_project_structure_manifests,
     list_gce_stage0_artifacts,
 )
 from aether.dgce.sdk import DGCEClient
@@ -134,11 +136,13 @@ __all__ = [
     "get_dashboard",
     "get_export_contract",
     "get_game_adapter_stage2_preview_artifact",
+    "get_game_adapter_unreal_project_structure_manifest",
     "get_gce_stage0_artifact",
     "get_lifecycle_trace",
     "get_workspace_index",
     "list_available_artifacts",
     "list_game_adapter_stage2_preview_artifacts",
+    "list_game_adapter_unreal_project_structure_manifests",
     "list_gce_stage0_artifacts",
     "DGCEClient",
     "write_file_plan",

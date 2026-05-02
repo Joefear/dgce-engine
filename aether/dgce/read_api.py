@@ -17,6 +17,14 @@ from aether.dgce.game_adapter_preview import (
     DOMAIN as GAME_ADAPTER_STAGE2_PREVIEW_DOMAIN,
     validate_game_adapter_stage2_preview_contract,
 )
+from aether.dgce.game_adapter_unreal_manifest import (
+    ADAPTER as UNREAL_MANIFEST_ADAPTER,
+    ARTIFACT_TYPE as UNREAL_MANIFEST_ARTIFACT_TYPE,
+    CONTRACT_NAME as UNREAL_MANIFEST_CONTRACT_NAME,
+    CONTRACT_VERSION as UNREAL_MANIFEST_CONTRACT_VERSION,
+    DOMAIN as UNREAL_MANIFEST_DOMAIN,
+    validate_unreal_project_structure_manifest,
+)
 from aether.dgce.gce_ingestion import compute_gce_clarification_request_fingerprint
 from aether.dgce.path_utils import resolve_workspace_path
 
@@ -25,6 +33,8 @@ GCE_STAGE0_READ_MODEL_CONTRACT_NAME = "GCEStage0ReadModel"
 GCE_STAGE0_READ_MODEL_CONTRACT_VERSION = "gce.stage0.read_model.v1"
 GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterStage2PreviewReadModel"
 GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.stage2.preview.read_model.v1"
+UNREAL_MANIFEST_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterUnrealProjectStructureManifestReadModel"
+UNREAL_MANIFEST_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.unreal_project_structure_manifest.read_model.v1"
 
 
 def _workspace_root_path(workspace_path: str | Path) -> Path:
@@ -151,6 +161,52 @@ def get_game_adapter_stage2_preview_artifact(workspace_path: str | Path, artifac
             source_artifact_fingerprint=None,
         )
     return _read_game_adapter_stage2_preview_file(artifact_path, workspace_root=workspace_root)
+
+
+def list_game_adapter_unreal_project_structure_manifests(workspace_path: str | Path) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_dir = workspace_root / ".dce" / "plans"
+    artifacts = []
+    if artifact_dir.is_dir():
+        artifacts = [
+            _read_unreal_project_structure_manifest_file(path, workspace_root=workspace_root)
+            for path in sorted(
+                artifact_dir.glob("unreal-project-structure*.manifest.json"),
+                key=lambda candidate: candidate.name,
+            )
+        ]
+    return {
+        "artifact_type": "game_adapter_unreal_project_structure_manifest_index",
+        "adapter": UNREAL_MANIFEST_ADAPTER,
+        "domain": UNREAL_MANIFEST_DOMAIN,
+        "contract_name": UNREAL_MANIFEST_READ_MODEL_CONTRACT_NAME,
+        "contract_version": UNREAL_MANIFEST_READ_MODEL_CONTRACT_VERSION,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def get_game_adapter_unreal_project_structure_manifest(
+    workspace_path: str | Path,
+    artifact_name: str,
+) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_path = _unreal_project_structure_manifest_artifact_path(workspace_root, artifact_name)
+    if artifact_path is None:
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=None,
+            reason_code="artifact_name_invalid",
+            source_artifact_fingerprint=None,
+        )
+    if not artifact_path.exists():
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=_artifact_path_for_read_model(artifact_path, workspace_root),
+            reason_code="artifact_missing",
+            source_artifact_fingerprint=None,
+        )
+    return _read_unreal_project_structure_manifest_file(artifact_path, workspace_root=workspace_root)
 
 
 def _gce_stage0_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
@@ -304,6 +360,80 @@ def _read_game_adapter_stage2_preview_file(path: Path, *, workspace_root: Path) 
         "governance_context_summary": _game_adapter_stage2_governance_summary(governance_context),
         "machine_view": payload["machine_view"],
         "human_view": payload["human_view"],
+    }
+
+
+def _unreal_project_structure_manifest_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
+    name_path = Path(artifact_name)
+    if (
+        name_path.name != artifact_name
+        or not artifact_name.startswith("unreal-project-structure")
+        or not artifact_name.endswith(".manifest.json")
+    ):
+        return None
+    return workspace_root / ".dce" / "plans" / artifact_name
+
+
+def _read_unreal_project_structure_manifest_file(path: Path, *, workspace_root: Path) -> dict[str, Any]:
+    artifact_name = path.name
+    artifact_path = _artifact_path_for_read_model(path, workspace_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+    if not isinstance(payload, dict):
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+
+    artifact_fingerprint = _string_or_none(payload.get("artifact_fingerprint"))
+    if artifact_fingerprint is None:
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_missing",
+            source_artifact_fingerprint=None,
+        )
+    if not verify_artifact_fingerprint(path):
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+    try:
+        validate_unreal_project_structure_manifest(payload)
+    except ValueError:
+        return _unreal_project_structure_manifest_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="contract_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+
+    return {
+        "read_model_type": "game_adapter_unreal_project_structure_manifest_read_model",
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "artifact_type": payload["artifact_type"],
+        "contract_name": payload["contract_name"],
+        "contract_version": payload["contract_version"],
+        "read_model_contract_name": UNREAL_MANIFEST_READ_MODEL_CONTRACT_NAME,
+        "read_model_contract_version": UNREAL_MANIFEST_READ_MODEL_CONTRACT_VERSION,
+        "adapter": payload["adapter"],
+        "domain": payload["domain"],
+        "project_root_reference": payload["project_root_reference"],
+        "structural_summary": payload["structural_summary"],
+        "discovered_paths": payload["discovered_paths"],
+        "artifact_fingerprint": artifact_fingerprint,
     }
 
 
@@ -483,6 +613,33 @@ def _game_adapter_stage2_preview_read_error(
         "governance_context_summary": None,
         "machine_view": None,
         "human_view": None,
+    }
+
+
+def _unreal_project_structure_manifest_read_error(
+    *,
+    artifact_name: str,
+    artifact_path: str | None,
+    reason_code: str,
+    source_artifact_fingerprint: str | None,
+) -> dict[str, Any]:
+    return {
+        "read_model_type": "game_adapter_unreal_project_structure_manifest_read_error",
+        "artifact_type": "game_adapter_unreal_project_structure_manifest_read_error",
+        "adapter": UNREAL_MANIFEST_ADAPTER,
+        "domain": UNREAL_MANIFEST_DOMAIN,
+        "contract_name": UNREAL_MANIFEST_READ_MODEL_CONTRACT_NAME,
+        "contract_version": UNREAL_MANIFEST_READ_MODEL_CONTRACT_VERSION,
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "reason_code": reason_code,
+        "artifact_fingerprint": source_artifact_fingerprint,
+        "manifest_artifact_type": UNREAL_MANIFEST_ARTIFACT_TYPE,
+        "manifest_contract_name": UNREAL_MANIFEST_CONTRACT_NAME,
+        "manifest_contract_version": UNREAL_MANIFEST_CONTRACT_VERSION,
+        "project_root_reference": None,
+        "structural_summary": None,
+        "discovered_paths": None,
     }
 
 

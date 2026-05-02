@@ -7,10 +7,11 @@ graphs, or perform execution writes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aether.dgce.decompose import compute_json_payload_fingerprint
+from aether.dgce.decompose import _write_json_with_artifact_fingerprint, compute_json_payload_fingerprint
 
 
 ARTIFACT_TYPE = "game_adapter_unreal_project_structure_manifest"
@@ -19,10 +20,20 @@ CONTRACT_VERSION = "dgce.game_adapter.unreal_project_structure_manifest.v1"
 ADAPTER = "game"
 DOMAIN = "game_adapter"
 DEFAULT_MAX_DISCOVERED_PATHS = 2000
+UNREAL_PROJECT_STRUCTURE_MANIFEST_ID = "unreal-project-structure"
+UNREAL_PROJECT_STRUCTURE_MANIFEST_RELATIVE_PATH = (
+    Path(".dce") / "plans" / f"{UNREAL_PROJECT_STRUCTURE_MANIFEST_ID}.manifest.json"
+)
 
 _HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
 _SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx")
 _BLUEPRINT_LIKE_SUFFIXES = (".uasset",)
+
+
+@dataclass(frozen=True)
+class UnrealProjectStructureManifestPersistResult:
+    manifest_artifact: dict[str, Any]
+    artifact_path: str
 
 
 def build_unreal_project_structure_manifest(
@@ -52,6 +63,28 @@ def build_unreal_project_structure_manifest(
     payload["artifact_fingerprint"] = compute_json_payload_fingerprint(payload)
     validate_unreal_project_structure_manifest(payload)
     return payload
+
+
+def persist_unreal_project_structure_manifest(
+    project_path: str | Path,
+    *,
+    workspace_path: str | Path,
+    manifest_id: str = UNREAL_PROJECT_STRUCTURE_MANIFEST_ID,
+    max_discovered_paths: int = DEFAULT_MAX_DISCOVERED_PATHS,
+) -> UnrealProjectStructureManifestPersistResult:
+    """Persist the manifest artifact under a DGCE preview-safe `.dce/plans` path."""
+    manifest = build_unreal_project_structure_manifest(
+        project_path,
+        max_discovered_paths=max_discovered_paths,
+    )
+    relative_path = Path(".dce") / "plans" / f"{_safe_manifest_id(manifest_id)}.manifest.json"
+    workspace_root = _resolve_manifest_workspace(workspace_path)
+    persisted = _write_json_with_artifact_fingerprint(workspace_root / relative_path, manifest)
+    validate_unreal_project_structure_manifest(persisted)
+    return UnrealProjectStructureManifestPersistResult(
+        manifest_artifact=persisted,
+        artifact_path=relative_path.as_posix(),
+    )
 
 
 def validate_unreal_project_structure_manifest(payload: dict[str, Any]) -> bool:
@@ -86,6 +119,31 @@ def validate_unreal_project_structure_manifest(payload: dict[str, Any]) -> bool:
     if payload["artifact_fingerprint"] != compute_json_payload_fingerprint(payload):
         raise ValueError("artifact_fingerprint invalid")
     return True
+
+
+def _safe_manifest_id(manifest_id: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(manifest_id).strip())
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
+    normalized = normalized.strip("-")
+    if not normalized or not normalized.startswith(UNREAL_PROJECT_STRUCTURE_MANIFEST_ID):
+        raise ValueError("manifest_id must start with unreal-project-structure")
+    return normalized
+
+
+def _resolve_manifest_workspace(workspace_path: str | Path) -> Path:
+    raw_path = Path(workspace_path)
+    if ".." in raw_path.parts:
+        raise ValueError("workspace_path must not contain traversal segments")
+    base_root = Path.cwd().resolve()
+    resolved_path = (base_root / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
+    if not raw_path.is_absolute():
+        try:
+            resolved_path.relative_to(base_root)
+        except ValueError as exc:
+            raise ValueError("workspace_path must remain within the current working directory") from exc
+    resolved_path.mkdir(parents=True, exist_ok=True)
+    return resolved_path
 
 
 def _resolve_project_root(project_path: str | Path) -> Path:
@@ -235,6 +293,10 @@ __all__ = [
     "CONTRACT_VERSION",
     "DEFAULT_MAX_DISCOVERED_PATHS",
     "DOMAIN",
+    "UNREAL_PROJECT_STRUCTURE_MANIFEST_ID",
+    "UNREAL_PROJECT_STRUCTURE_MANIFEST_RELATIVE_PATH",
+    "UnrealProjectStructureManifestPersistResult",
     "build_unreal_project_structure_manifest",
+    "persist_unreal_project_structure_manifest",
     "validate_unreal_project_structure_manifest",
 ]

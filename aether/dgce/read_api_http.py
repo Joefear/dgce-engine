@@ -116,3 +116,20 @@ def get_game_adapter_stage2_preview_artifact(artifact_name: str, workspace_path:
         workspace_path,
         artifact_name,
     )
+
+
+@router.get("/game-adapter/unreal-project-structure-manifests")
+def list_game_adapter_unreal_project_structure_manifests(workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_artifact_over_http(read_api.list_game_adapter_unreal_project_structure_manifests, workspace_path)
+
+
+@router.get("/game-adapter/unreal-project-structure-manifests/{artifact_name}")
+def get_game_adapter_unreal_project_structure_manifest(
+    artifact_name: str,
+    workspace_path: str = Query(...),
+) -> dict[str, Any]:
+    return _read_named_artifact_over_http(
+        read_api.get_game_adapter_unreal_project_structure_manifest,
+        workspace_path,
+        artifact_name,
+    )
