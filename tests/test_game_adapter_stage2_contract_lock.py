@@ -236,6 +236,8 @@ def test_contract_lock_game_adapter_http_routes_are_get_only():
         "/v1/dgce/game-adapter/unreal-project-structure-manifests/{artifact_name}": {"GET"},
         "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes": {"GET"},
         "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/{artifact_name}": {"GET"},
+        "/v1/dgce/game-adapter/unreal-symbol-resolutions": {"GET"},
+        "/v1/dgce/game-adapter/unreal-symbol-resolutions/{artifact_name}": {"GET"},
     }
 
 
@@ -266,9 +268,11 @@ def test_contract_lock_game_adapter_sdk_helpers_are_get_only(monkeypatch):
     client.get_game_adapter_unreal_project_structure_manifest("workspace-root", "unreal-project-structure.manifest.json")
     client.list_game_adapter_unreal_symbol_candidate_indexes("workspace-root")
     client.get_game_adapter_unreal_symbol_candidate_index("workspace-root", "unreal-symbol-candidates.index.json")
+    client.list_game_adapter_unreal_symbol_resolver_outputs("workspace-root")
+    client.get_game_adapter_unreal_symbol_resolver_output("workspace-root", "unreal-symbol-resolver.resolution.json")
 
     assert {method for method, _ in calls} == {"GET"}
-    assert len(calls) == 6
+    assert len(calls) == 8
 
 
 def test_contract_lock_gce_stage0_release_and_lifecycle_order_remain_locked():

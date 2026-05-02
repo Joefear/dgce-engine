@@ -150,3 +150,20 @@ def get_game_adapter_unreal_symbol_candidate_index(
         workspace_path,
         artifact_name,
     )
+
+
+@router.get("/game-adapter/unreal-symbol-resolutions")
+def list_game_adapter_unreal_symbol_resolver_outputs(workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_artifact_over_http(read_api.list_game_adapter_unreal_symbol_resolver_outputs, workspace_path)
+
+
+@router.get("/game-adapter/unreal-symbol-resolutions/{artifact_name}")
+def get_game_adapter_unreal_symbol_resolver_output(
+    artifact_name: str,
+    workspace_path: str = Query(...),
+) -> dict[str, Any]:
+    return _read_named_artifact_over_http(
+        read_api.get_game_adapter_unreal_symbol_resolver_output,
+        workspace_path,
+        artifact_name,
+    )

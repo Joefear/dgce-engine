@@ -242,6 +242,7 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/game-adapter/stage2-preview-artifacts",
             "/v1/dgce/game-adapter/unreal-project-structure-manifests",
             "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes",
+            "/v1/dgce/game-adapter/unreal-symbol-resolutions",
         ):
             response = client.get(route_path, params={"workspace_path": str(project_root)})
             assert response.status_code == 200
@@ -271,6 +272,8 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/game-adapter/unreal-project-structure-manifests/{artifact_name}": {"GET"},
             "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes": {"GET"},
             "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/{artifact_name}": {"GET"},
+            "/v1/dgce/game-adapter/unreal-symbol-resolutions": {"GET"},
+            "/v1/dgce/game-adapter/unreal-symbol-resolutions/{artifact_name}": {"GET"},
         }
 
     def test_app_exposes_no_non_get_methods_for_read_routes(self):

@@ -149,5 +149,31 @@ class DGCEClient:
                 raise FileNotFoundError(detail) from exc
             raise RuntimeError(detail) from exc
 
+    def list_game_adapter_unreal_symbol_resolver_outputs(self, workspace_path: str | Path) -> dict[str, Any]:
+        return self._get("/v1/dgce/game-adapter/unreal-symbol-resolutions", workspace_path)
+
+    def get_game_adapter_unreal_symbol_resolver_output(
+        self,
+        workspace_path: str | Path,
+        artifact_name: str,
+    ) -> dict[str, Any]:
+        query = urlencode({"workspace_path": str(workspace_path)})
+        headers = {"X-API-Key": self.api_key} if self.api_key is not None else {}
+        request = Request(
+            f"{self.base_url}/v1/dgce/game-adapter/unreal-symbol-resolutions/{quote(artifact_name, safe='')}?{query}",
+            headers=headers,
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = self._read_error_detail(exc)
+            if exc.code == 400:
+                raise ValueError(detail) from exc
+            if exc.code == 404:
+                raise FileNotFoundError(detail) from exc
+            raise RuntimeError(detail) from exc
+
     def list_available_artifacts(self, workspace_path: str | Path) -> dict[str, Any]:
         return self.get_artifact_manifest(workspace_path)

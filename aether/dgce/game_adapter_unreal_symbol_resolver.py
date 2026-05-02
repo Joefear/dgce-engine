@@ -9,10 +9,11 @@ runtime artifacts.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aether.dgce.decompose import compute_json_payload_fingerprint
+from aether.dgce.decompose import _write_json_with_artifact_fingerprint, compute_json_payload_fingerprint
 from aether.dgce.game_adapter_unreal_manifest import validate_unreal_project_structure_manifest
 from aether.dgce.game_adapter_unreal_symbol_candidates import validate_unreal_symbol_candidate_index
 from aether.dgce.game_adapter_unreal_symbol_resolver_contract import (
@@ -37,6 +38,16 @@ _CANDIDATE_KIND_ORDER = {
     "config_directory": 5,
 }
 _REQUEST_SEPARATOR_ALIASES = (".", "#", ":")
+UNREAL_SYMBOL_RESOLVER_OUTPUT_ID = "unreal-symbol-resolver"
+UNREAL_SYMBOL_RESOLVER_OUTPUT_RELATIVE_PATH = (
+    Path(".dce") / "plans" / f"{UNREAL_SYMBOL_RESOLVER_OUTPUT_ID}.resolution.json"
+)
+
+
+@dataclass(frozen=True)
+class UnrealSymbolResolverOutputPersistResult:
+    resolver_output_artifact: dict[str, Any]
+    artifact_path: str
 
 
 def resolve_unreal_symbols_from_path_metadata(
@@ -94,6 +105,25 @@ def resolve_unreal_symbols_from_path_metadata(
     payload["artifact_fingerprint"] = compute_json_payload_fingerprint(payload)
     validate_resolver_output_contract(payload)
     return payload
+
+
+def persist_unreal_symbol_resolver_output(
+    resolver_output_payload: Mapping[str, Any],
+    *,
+    workspace_path: str | Path,
+    resolution_id: str = UNREAL_SYMBOL_RESOLVER_OUTPUT_ID,
+) -> UnrealSymbolResolverOutputPersistResult:
+    """Persist one resolver output artifact under a preview-safe `.dce/plans` path."""
+    payload = dict(resolver_output_payload)
+    validate_resolver_output_contract(payload)
+    relative_path = Path(".dce") / "plans" / f"{_safe_resolution_id(resolution_id)}.resolution.json"
+    workspace_root = _resolve_resolver_workspace(workspace_path)
+    persisted = _write_json_with_artifact_fingerprint(workspace_root / relative_path, payload)
+    validate_resolver_output_contract(persisted)
+    return UnrealSymbolResolverOutputPersistResult(
+        resolver_output_artifact=persisted,
+        artifact_path=relative_path.as_posix(),
+    )
 
 
 def _validate_source_fingerprints(
@@ -308,4 +338,35 @@ def _path_aliases(path_text: str) -> set[str]:
     return {alias for alias in aliases if alias}
 
 
-__all__ = ["resolve_unreal_symbols_from_path_metadata"]
+def _safe_resolution_id(resolution_id: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(resolution_id).strip())
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
+    normalized = normalized.strip("-")
+    if not normalized or not normalized.startswith(UNREAL_SYMBOL_RESOLVER_OUTPUT_ID):
+        raise ValueError("resolution_id must start with unreal-symbol-resolver")
+    return normalized
+
+
+def _resolve_resolver_workspace(workspace_path: str | Path) -> Path:
+    raw_path = Path(workspace_path)
+    if ".." in raw_path.parts:
+        raise ValueError("workspace_path must not contain traversal segments")
+    base_root = Path.cwd().resolve()
+    resolved_path = (base_root / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
+    if not raw_path.is_absolute():
+        try:
+            resolved_path.relative_to(base_root)
+        except ValueError as exc:
+            raise ValueError("workspace_path must remain within the current working directory") from exc
+    resolved_path.mkdir(parents=True, exist_ok=True)
+    return resolved_path
+
+
+__all__ = [
+    "UNREAL_SYMBOL_RESOLVER_OUTPUT_ID",
+    "UNREAL_SYMBOL_RESOLVER_OUTPUT_RELATIVE_PATH",
+    "UnrealSymbolResolverOutputPersistResult",
+    "persist_unreal_symbol_resolver_output",
+    "resolve_unreal_symbols_from_path_metadata",
+]

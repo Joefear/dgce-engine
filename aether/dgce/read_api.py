@@ -31,6 +31,12 @@ from aether.dgce.game_adapter_unreal_symbol_candidates import (
     CONTRACT_VERSION as UNREAL_SYMBOL_CANDIDATE_INDEX_CONTRACT_VERSION,
     validate_unreal_symbol_candidate_index,
 )
+from aether.dgce.game_adapter_unreal_symbol_resolver_contract import (
+    CONTRACT_NAME as UNREAL_SYMBOL_RESOLVER_OUTPUT_CONTRACT_NAME,
+    CONTRACT_VERSION as UNREAL_SYMBOL_RESOLVER_OUTPUT_CONTRACT_VERSION,
+    OUTPUT_ARTIFACT_TYPE as UNREAL_SYMBOL_RESOLVER_OUTPUT_ARTIFACT_TYPE,
+    validate_resolver_output_contract,
+)
 from aether.dgce.gce_ingestion import compute_gce_clarification_request_fingerprint
 from aether.dgce.path_utils import resolve_workspace_path
 
@@ -43,6 +49,8 @@ UNREAL_MANIFEST_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterUnrealProjectStructur
 UNREAL_MANIFEST_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.unreal_project_structure_manifest.read_model.v1"
 UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterUnrealSymbolCandidateIndexReadModel"
 UNREAL_SYMBOL_CANDIDATE_INDEX_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.unreal_symbol_candidate_index.read_model.v1"
+UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterUnrealSymbolResolverOutputReadModel"
+UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.unreal_symbol_resolver.output.read_model.v1"
 
 
 def _workspace_root_path(workspace_path: str | Path) -> Path:
@@ -261,6 +269,52 @@ def get_game_adapter_unreal_symbol_candidate_index(
             source_artifact_fingerprint=None,
         )
     return _read_unreal_symbol_candidate_index_file(artifact_path, workspace_root=workspace_root)
+
+
+def list_game_adapter_unreal_symbol_resolver_outputs(workspace_path: str | Path) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_dir = workspace_root / ".dce" / "plans"
+    artifacts = []
+    if artifact_dir.is_dir():
+        artifacts = [
+            _read_unreal_symbol_resolver_output_file(path, workspace_root=workspace_root)
+            for path in sorted(
+                artifact_dir.glob("unreal-symbol-resolver*.resolution.json"),
+                key=lambda candidate: candidate.name,
+            )
+        ]
+    return {
+        "artifact_type": "game_adapter_unreal_symbol_resolver_output_index",
+        "adapter": UNREAL_MANIFEST_ADAPTER,
+        "domain": UNREAL_MANIFEST_DOMAIN,
+        "contract_name": UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_NAME,
+        "contract_version": UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_VERSION,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def get_game_adapter_unreal_symbol_resolver_output(
+    workspace_path: str | Path,
+    artifact_name: str,
+) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_path = _unreal_symbol_resolver_output_artifact_path(workspace_root, artifact_name)
+    if artifact_path is None:
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=None,
+            reason_code="artifact_name_invalid",
+            source_artifact_fingerprint=None,
+        )
+    if not artifact_path.exists():
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=_artifact_path_for_read_model(artifact_path, workspace_root),
+            reason_code="artifact_missing",
+            source_artifact_fingerprint=None,
+        )
+    return _read_unreal_symbol_resolver_output_file(artifact_path, workspace_root=workspace_root)
 
 
 def _gce_stage0_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
@@ -502,6 +556,17 @@ def _unreal_symbol_candidate_index_artifact_path(workspace_root: Path, artifact_
     return workspace_root / ".dce" / "plans" / artifact_name
 
 
+def _unreal_symbol_resolver_output_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
+    name_path = Path(artifact_name)
+    if (
+        name_path.name != artifact_name
+        or not artifact_name.startswith("unreal-symbol-resolver")
+        or not artifact_name.endswith(".resolution.json")
+    ):
+        return None
+    return workspace_root / ".dce" / "plans" / artifact_name
+
+
 def _read_unreal_symbol_candidate_index_file(path: Path, *, workspace_root: Path) -> dict[str, Any]:
     artifact_name = path.name
     artifact_path = _artifact_path_for_read_model(path, workspace_root)
@@ -561,6 +626,73 @@ def _read_unreal_symbol_candidate_index_file(path: Path, *, workspace_root: Path
         "source_manifest_fingerprint": payload["source_manifest_fingerprint"],
         "structural_summary": payload["structural_summary"],
         "candidates": payload["candidates"],
+        "artifact_fingerprint": artifact_fingerprint,
+    }
+
+
+def _read_unreal_symbol_resolver_output_file(path: Path, *, workspace_root: Path) -> dict[str, Any]:
+    artifact_name = path.name
+    artifact_path = _artifact_path_for_read_model(path, workspace_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+    if not isinstance(payload, dict):
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+
+    artifact_fingerprint = _string_or_none(payload.get("artifact_fingerprint"))
+    if artifact_fingerprint is None:
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_missing",
+            source_artifact_fingerprint=None,
+        )
+    if not verify_artifact_fingerprint(path):
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+    try:
+        validate_resolver_output_contract(payload)
+    except ValueError:
+        return _unreal_symbol_resolver_output_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="contract_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+
+    return {
+        "read_model_type": "game_adapter_unreal_symbol_resolver_output_read_model",
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "artifact_type": payload["artifact_type"],
+        "contract_name": payload["contract_name"],
+        "contract_version": payload["contract_version"],
+        "read_model_contract_name": UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_NAME,
+        "read_model_contract_version": UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_VERSION,
+        "adapter": payload["adapter"],
+        "domain": payload["domain"],
+        "source_input_fingerprint": payload["source_input_fingerprint"],
+        "resolution_status": payload["resolution_status"],
+        "resolved_symbols_summary": _unreal_symbol_resolution_summary(payload["resolved_symbols"]),
+        "resolved_symbols": payload["resolved_symbols"],
+        "unresolved_symbols_summary": _unreal_symbol_resolution_summary(payload["unresolved_symbols"]),
+        "unresolved_symbols": payload["unresolved_symbols"],
+        "integration_points": payload["integration_points"],
         "artifact_fingerprint": artifact_fingerprint,
     }
 
@@ -684,6 +816,27 @@ def _game_adapter_stage2_governance_summary(governance_context: Any) -> dict[str
     }
 
 
+def _unreal_symbol_resolution_summary(symbols: Any) -> dict[str, Any]:
+    if not isinstance(symbols, list):
+        return {
+            "symbol_count": 0,
+            "symbol_kinds": {},
+            "confidence": {},
+        }
+    symbol_kinds: dict[str, int] = {}
+    confidence: dict[str, int] = {}
+    for symbol in symbols:
+        if not isinstance(symbol, dict):
+            continue
+        _increment_count(symbol_kinds, symbol.get("symbol_kind"))
+        _increment_count(confidence, symbol.get("confidence"))
+    return {
+        "symbol_count": len(symbols),
+        "symbol_kinds": symbol_kinds,
+        "confidence": confidence,
+    }
+
+
 def _increment_count(counts: dict[str, int], value: Any) -> None:
     if isinstance(value, str) and value:
         counts[value] = counts.get(value, 0) + 1
@@ -795,6 +948,37 @@ def _unreal_symbol_candidate_index_read_error(
         "source_manifest_fingerprint": None,
         "structural_summary": None,
         "candidates": None,
+    }
+
+
+def _unreal_symbol_resolver_output_read_error(
+    *,
+    artifact_name: str,
+    artifact_path: str | None,
+    reason_code: str,
+    source_artifact_fingerprint: str | None,
+) -> dict[str, Any]:
+    return {
+        "read_model_type": "game_adapter_unreal_symbol_resolver_output_read_error",
+        "artifact_type": "game_adapter_unreal_symbol_resolver_output_read_error",
+        "adapter": UNREAL_MANIFEST_ADAPTER,
+        "domain": UNREAL_MANIFEST_DOMAIN,
+        "contract_name": UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_NAME,
+        "contract_version": UNREAL_SYMBOL_RESOLVER_OUTPUT_READ_MODEL_CONTRACT_VERSION,
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "reason_code": reason_code,
+        "artifact_fingerprint": source_artifact_fingerprint,
+        "resolver_output_artifact_type": UNREAL_SYMBOL_RESOLVER_OUTPUT_ARTIFACT_TYPE,
+        "resolver_output_contract_name": UNREAL_SYMBOL_RESOLVER_OUTPUT_CONTRACT_NAME,
+        "resolver_output_contract_version": UNREAL_SYMBOL_RESOLVER_OUTPUT_CONTRACT_VERSION,
+        "source_input_fingerprint": None,
+        "resolution_status": None,
+        "resolved_symbols_summary": None,
+        "resolved_symbols": None,
+        "unresolved_symbols_summary": None,
+        "unresolved_symbols": None,
+        "integration_points": None,
     }
 
 
