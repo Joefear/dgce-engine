@@ -102,3 +102,17 @@ def list_gce_stage0_artifacts(workspace_path: str = Query(...)) -> dict[str, Any
 @router.get("/gce/stage0-artifacts/{artifact_name}")
 def get_gce_stage0_artifact(artifact_name: str, workspace_path: str = Query(...)) -> dict[str, Any]:
     return _read_named_artifact_over_http(read_api.get_gce_stage0_artifact, workspace_path, artifact_name)
+
+
+@router.get("/game-adapter/stage2-preview-artifacts")
+def list_game_adapter_stage2_preview_artifacts(workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_artifact_over_http(read_api.list_game_adapter_stage2_preview_artifacts, workspace_path)
+
+
+@router.get("/game-adapter/stage2-preview-artifacts/{artifact_name}")
+def get_game_adapter_stage2_preview_artifact(artifact_name: str, workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_named_artifact_over_http(
+        read_api.get_game_adapter_stage2_preview_artifact,
+        workspace_path,
+        artifact_name,
+    )

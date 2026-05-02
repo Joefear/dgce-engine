@@ -113,6 +113,11 @@ class TestDGCEReadAPIHTTP:
         monkeypatch.setattr(dgce_read_api, "get_export_contract", reader("export_contract"))
         monkeypatch.setattr(dgce_read_api, "get_artifact_manifest", reader("artifact_manifest"))
         monkeypatch.setattr(dgce_read_api, "list_gce_stage0_artifacts", reader("gce_stage0_artifact_index"))
+        monkeypatch.setattr(
+            dgce_read_api,
+            "list_game_adapter_stage2_preview_artifacts",
+            reader("game_adapter_stage2_preview_index"),
+        )
 
         expected_routes = [
             ("/v1/dgce/dashboard", "dashboard"),
@@ -122,6 +127,7 @@ class TestDGCEReadAPIHTTP:
             ("/v1/dgce/export-contract", "export_contract"),
             ("/v1/dgce/artifact-manifest", "artifact_manifest"),
             ("/v1/dgce/gce/stage0-artifacts", "gce_stage0_artifact_index"),
+            ("/v1/dgce/game-adapter/stage2-preview-artifacts", "game_adapter_stage2_preview_index"),
         ]
 
         for path, artifact_type in expected_routes:
@@ -215,6 +221,7 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/export-contract",
             "/v1/dgce/artifact-manifest",
             "/v1/dgce/gce/stage0-artifacts",
+            "/v1/dgce/game-adapter/stage2-preview-artifacts",
         ):
             response = client.get(route_path, params={"workspace_path": str(project_root)})
             assert response.status_code == 200
@@ -238,6 +245,8 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/artifact-manifest": {"GET"},
             "/v1/dgce/gce/stage0-artifacts": {"GET"},
             "/v1/dgce/gce/stage0-artifacts/{artifact_name}": {"GET"},
+            "/v1/dgce/game-adapter/stage2-preview-artifacts": {"GET"},
+            "/v1/dgce/game-adapter/stage2-preview-artifacts/{artifact_name}": {"GET"},
         }
 
     def test_app_exposes_no_non_get_methods_for_read_routes(self):

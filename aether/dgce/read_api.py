@@ -9,12 +9,22 @@ from typing import Any
 from aether.dgce.context_assembly import STAGE0_CONTRACT_NAME, STAGE0_CONTRACT_VERSION
 from aether.dgce.decompose import _validate_locked_artifact_schema
 from aether.dgce.decompose import verify_artifact_fingerprint
+from aether.dgce.game_adapter_preview import (
+    ADAPTER as GAME_ADAPTER_STAGE2_PREVIEW_ADAPTER,
+    ARTIFACT_TYPE as GAME_ADAPTER_STAGE2_PREVIEW_ARTIFACT_TYPE,
+    CONTRACT_NAME as GAME_ADAPTER_STAGE2_PREVIEW_CONTRACT_NAME,
+    CONTRACT_VERSION as GAME_ADAPTER_STAGE2_PREVIEW_CONTRACT_VERSION,
+    DOMAIN as GAME_ADAPTER_STAGE2_PREVIEW_DOMAIN,
+    validate_game_adapter_stage2_preview_contract,
+)
 from aether.dgce.gce_ingestion import compute_gce_clarification_request_fingerprint
 from aether.dgce.path_utils import resolve_workspace_path
 
 
 GCE_STAGE0_READ_MODEL_CONTRACT_NAME = "GCEStage0ReadModel"
 GCE_STAGE0_READ_MODEL_CONTRACT_VERSION = "gce.stage0.read_model.v1"
+GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_NAME = "DGCEGameAdapterStage2PreviewReadModel"
+GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_VERSION = "dgce.game_adapter.stage2.preview.read_model.v1"
 
 
 def _workspace_root_path(workspace_path: str | Path) -> Path:
@@ -103,6 +113,46 @@ def get_gce_stage0_artifact(workspace_path: str | Path, artifact_name: str) -> d
     return _read_gce_stage0_artifact_file(artifact_path, workspace_root=workspace_root)
 
 
+def list_game_adapter_stage2_preview_artifacts(workspace_path: str | Path) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_dir = workspace_root / ".dce" / "plans"
+    artifacts = []
+    if artifact_dir.is_dir():
+        artifacts = [
+            _read_game_adapter_stage2_preview_file(path, workspace_root=workspace_root)
+            for path in sorted(artifact_dir.glob("game-adapter-stage2*.preview.json"), key=lambda candidate: candidate.name)
+        ]
+    return {
+        "artifact_type": "game_adapter_stage2_preview_index",
+        "adapter": GAME_ADAPTER_STAGE2_PREVIEW_ADAPTER,
+        "domain": GAME_ADAPTER_STAGE2_PREVIEW_DOMAIN,
+        "contract_name": GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_NAME,
+        "contract_version": GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_VERSION,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def get_game_adapter_stage2_preview_artifact(workspace_path: str | Path, artifact_name: str) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    artifact_path = _game_adapter_stage2_preview_artifact_path(workspace_root, artifact_name)
+    if artifact_path is None:
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=None,
+            reason_code="artifact_name_invalid",
+            source_artifact_fingerprint=None,
+        )
+    if not artifact_path.exists():
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=_artifact_path_for_read_model(artifact_path, workspace_root),
+            reason_code="artifact_missing",
+            source_artifact_fingerprint=None,
+        )
+    return _read_game_adapter_stage2_preview_file(artifact_path, workspace_root=workspace_root)
+
+
 def _gce_stage0_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
     name_path = Path(artifact_name)
     if name_path.name != artifact_name or not artifact_name.endswith(".stage0.json"):
@@ -175,6 +225,85 @@ def _read_gce_stage0_artifact_file(path: Path, *, workspace_root: Path) -> dict[
             payload.get("normalized_session_intent")
         ),
         "clarification_request_summary": _clarification_request_summary(payload.get("clarification_request")),
+    }
+
+
+def _game_adapter_stage2_preview_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
+    name_path = Path(artifact_name)
+    if (
+        name_path.name != artifact_name
+        or not artifact_name.startswith("game-adapter-stage2")
+        or not artifact_name.endswith(".preview.json")
+    ):
+        return None
+    return workspace_root / ".dce" / "plans" / artifact_name
+
+
+def _read_game_adapter_stage2_preview_file(path: Path, *, workspace_root: Path) -> dict[str, Any]:
+    artifact_name = path.name
+    artifact_path = _artifact_path_for_read_model(path, workspace_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+    if not isinstance(payload, dict):
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_malformed",
+            source_artifact_fingerprint=None,
+        )
+
+    artifact_fingerprint = _string_or_none(payload.get("artifact_fingerprint"))
+    if artifact_fingerprint is None:
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_missing",
+            source_artifact_fingerprint=None,
+        )
+    if not verify_artifact_fingerprint(path):
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="artifact_fingerprint_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+    try:
+        validate_game_adapter_stage2_preview_contract(payload)
+    except ValueError:
+        return _game_adapter_stage2_preview_read_error(
+            artifact_name=artifact_name,
+            artifact_path=artifact_path,
+            reason_code="contract_invalid",
+            source_artifact_fingerprint=artifact_fingerprint,
+        )
+
+    planned_changes = payload["planned_changes"]
+    governance_context = payload["governance_context"]
+    return {
+        "read_model_type": "game_adapter_stage2_preview_read_model",
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "artifact_type": payload["artifact_type"],
+        "contract_name": payload["contract_name"],
+        "contract_version": payload["contract_version"],
+        "read_model_contract_name": GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_NAME,
+        "read_model_contract_version": GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_VERSION,
+        "adapter": payload["adapter"],
+        "domain": payload["domain"],
+        "source_stage0_fingerprint": _string_or_none(payload.get("source_stage0_fingerprint")),
+        "source_input_reference": _string_or_none(payload.get("source_input_reference")),
+        "artifact_fingerprint": artifact_fingerprint,
+        "planned_changes_summary": _game_adapter_stage2_planned_changes_summary(planned_changes),
+        "governance_context_summary": _game_adapter_stage2_governance_summary(governance_context),
+        "machine_view": payload["machine_view"],
+        "human_view": payload["human_view"],
     }
 
 
@@ -263,6 +392,45 @@ def _clarification_questions(value: Any) -> list[dict[str, Any]]:
     return questions
 
 
+def _game_adapter_stage2_planned_changes_summary(planned_changes: Any) -> dict[str, Any]:
+    if not isinstance(planned_changes, list):
+        return {
+            "change_count": 0,
+            "operations": {},
+            "domain_types": {},
+            "strategies": {},
+        }
+    operations: dict[str, int] = {}
+    domain_types: dict[str, int] = {}
+    strategies: dict[str, int] = {}
+    for change in planned_changes:
+        if not isinstance(change, dict):
+            continue
+        _increment_count(operations, change.get("operation"))
+        _increment_count(domain_types, change.get("domain_type"))
+        _increment_count(strategies, change.get("strategy"))
+    return {
+        "change_count": len(planned_changes),
+        "operations": operations,
+        "domain_types": domain_types,
+        "strategies": strategies,
+    }
+
+
+def _game_adapter_stage2_governance_summary(governance_context: Any) -> dict[str, Any] | None:
+    if not isinstance(governance_context, dict):
+        return None
+    return {
+        "policy_pack": _string_or_none(governance_context.get("policy_pack")),
+        "guardrail_required": governance_context.get("guardrail_required") is True,
+    }
+
+
+def _increment_count(counts: dict[str, int], value: Any) -> None:
+    if isinstance(value, str) and value:
+        counts[value] = counts.get(value, 0) + 1
+
+
 def _gce_stage0_read_error(
     *,
     artifact_name: str,
@@ -285,6 +453,36 @@ def _gce_stage0_read_error(
             "blocked": True,
             "reason_code": reason_code,
         },
+    }
+
+
+def _game_adapter_stage2_preview_read_error(
+    *,
+    artifact_name: str,
+    artifact_path: str | None,
+    reason_code: str,
+    source_artifact_fingerprint: str | None,
+) -> dict[str, Any]:
+    return {
+        "read_model_type": "game_adapter_stage2_preview_read_error",
+        "artifact_type": "game_adapter_stage2_preview_read_error",
+        "adapter": GAME_ADAPTER_STAGE2_PREVIEW_ADAPTER,
+        "domain": GAME_ADAPTER_STAGE2_PREVIEW_DOMAIN,
+        "contract_name": GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_NAME,
+        "contract_version": GAME_ADAPTER_STAGE2_PREVIEW_READ_MODEL_CONTRACT_VERSION,
+        "artifact_name": artifact_name,
+        "artifact_path": artifact_path,
+        "reason_code": reason_code,
+        "artifact_fingerprint": source_artifact_fingerprint,
+        "preview_artifact_type": GAME_ADAPTER_STAGE2_PREVIEW_ARTIFACT_TYPE,
+        "preview_contract_name": GAME_ADAPTER_STAGE2_PREVIEW_CONTRACT_NAME,
+        "preview_contract_version": GAME_ADAPTER_STAGE2_PREVIEW_CONTRACT_VERSION,
+        "source_stage0_fingerprint": None,
+        "source_input_reference": None,
+        "planned_changes_summary": None,
+        "governance_context_summary": None,
+        "machine_view": None,
+        "human_view": None,
     }
 
 
