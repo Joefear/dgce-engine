@@ -128,7 +128,8 @@ def build_game_adapter_stage2_preview(
     if source_stage0_fingerprint is None and source_input_reference is None:
         raise ValueError("source_stage0_fingerprint or source_input_reference is required")
 
-    normalized_changes = _normalize_planned_changes(planned_changes)
+    selected_changes = apply_game_adapter_stage2_strategy_selection(planned_changes)
+    normalized_changes = _normalize_planned_changes(selected_changes)
     payload = {
         "artifact_type": ARTIFACT_TYPE,
         "contract_name": CONTRACT_NAME,
@@ -168,6 +169,7 @@ def validate_game_adapter_stage2_preview_contract(payload: Mapping[str, Any]) ->
 
     governance_context = _normalize_governance_context(_expect_mapping(payload.get("governance_context"), "governance_context"))
     planned_changes = _normalize_planned_changes(_expect_list(payload.get("planned_changes"), "planned_changes"))
+    apply_game_adapter_stage2_strategy_selection(planned_changes)
     if payload.get("planned_changes") != planned_changes:
         raise ValueError("planned_changes must be canonical")
     if payload.get("governance_context") != governance_context:
@@ -184,6 +186,89 @@ def validate_game_adapter_stage2_preview_contract(payload: Mapping[str, Any]) ->
     if artifact_fingerprint != compute_json_payload_fingerprint(dict(payload)):
         raise ValueError("artifact_fingerprint invalid")
     return True
+
+
+def select_game_adapter_stage2_strategy(planned_change: Mapping[str, Any]) -> str:
+    """Select the preview-only Blueprint/C++ output strategy from bounded fields."""
+    if not isinstance(planned_change, Mapping):
+        raise ValueError("planned_change must be an object")
+    domain_type = planned_change.get("domain_type")
+    if not isinstance(domain_type, str) or domain_type not in ALLOWED_DOMAIN_TYPES:
+        raise ValueError("planned_change.domain_type is unsupported")
+    target = planned_change.get("target")
+    if not isinstance(target, Mapping):
+        raise ValueError("planned_change.target must be an object")
+    target_kind = target.get("target_kind")
+    if not isinstance(target_kind, str) or target_kind not in ALLOWED_TARGET_KINDS:
+        raise ValueError("planned_change.target.target_kind is unsupported")
+    summary = planned_change.get("summary")
+    if not isinstance(summary, Mapping):
+        raise ValueError("planned_change.summary must be an object")
+    intent = summary.get("intent")
+    review_focus = summary.get("review_focus")
+    if not isinstance(intent, str) or intent not in ALLOWED_SUMMARY_INTENTS:
+        raise ValueError("planned_change.summary.intent is unsupported")
+    if not isinstance(review_focus, str) or review_focus not in ALLOWED_SUMMARY_REVIEW_FOCUS:
+        raise ValueError("planned_change.summary.review_focus is unsupported")
+
+    selected = _strategy_from_bounded_fields(
+        domain_type=domain_type,
+        target_kind=target_kind,
+        intent=intent,
+        review_focus=review_focus,
+    )
+    explicit_strategy = planned_change.get("strategy")
+    if explicit_strategy is None:
+        return selected
+    if not isinstance(explicit_strategy, str) or explicit_strategy not in ALLOWED_STRATEGIES:
+        raise ValueError("planned_change.strategy is unsupported")
+    if explicit_strategy != selected:
+        raise ValueError("planned_change.strategy does not match selected strategy")
+    return explicit_strategy
+
+
+def apply_game_adapter_stage2_strategy_selection(
+    planned_changes: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return planned changes with selected strategies recorded before preview build."""
+    if not isinstance(planned_changes, list) or not planned_changes:
+        raise ValueError("planned_changes must be a non-empty array")
+    selected_changes: list[dict[str, Any]] = []
+    for change in planned_changes:
+        if not isinstance(change, Mapping):
+            raise ValueError("planned_changes entries must be objects")
+        selected = dict(change)
+        selected["strategy"] = select_game_adapter_stage2_strategy(change)
+        selected_changes.append(selected)
+    return selected_changes
+
+
+def _strategy_from_bounded_fields(
+    *,
+    domain_type: str,
+    target_kind: str,
+    intent: str,
+    review_focus: str,
+) -> str:
+    if domain_type == "C++" or target_kind == "CppClass":
+        if domain_type != "C++" or target_kind != "CppClass":
+            raise ValueError("planned_change strategy fields are ambiguous")
+        return "C++"
+    if domain_type == "Blueprint" or target_kind == "BlueprintClass":
+        if domain_type != "Blueprint" or target_kind != "BlueprintClass":
+            raise ValueError("planned_change strategy fields are ambiguous")
+        return "Blueprint"
+    if domain_type in {"binding", "asset", "input_action"}:
+        if target_kind not in {"Binding", "Asset", "InputAction"}:
+            raise ValueError("planned_change strategy fields are ambiguous")
+        return "Blueprint"
+    if domain_type in {"component", "variable", "event"}:
+        if target_kind not in {"ActorComponent", "Variable", "Event"}:
+            raise ValueError("planned_change strategy fields are ambiguous")
+        if intent == "prepare_for_review" and review_focus == "logic_flow":
+            return "both"
+        return "Blueprint"
+    raise ValueError("planned_change.domain_type is unsupported")
 
 
 def render_game_adapter_stage2_machine_view(
@@ -414,8 +499,10 @@ __all__ = [
     "CONTRACT_NAME",
     "CONTRACT_VERSION",
     "DOMAIN",
+    "apply_game_adapter_stage2_strategy_selection",
     "build_game_adapter_stage2_preview",
     "render_game_adapter_stage2_human_view",
     "render_game_adapter_stage2_machine_view",
+    "select_game_adapter_stage2_strategy",
     "validate_game_adapter_stage2_preview_contract",
 ]

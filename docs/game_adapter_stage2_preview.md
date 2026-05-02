@@ -52,7 +52,19 @@ Each `planned_changes` entry must contain:
 
 Allowed operation values are `create`, `modify`, and `delete`.
 
-Allowed strategy values are `Blueprint`, `C++`, and `both`. This field is only a bounded preview descriptor; it is not a Blueprint/C++ execution strategy selector.
+Allowed strategy values are `Blueprint`, `C++`, and `both`. This field is only a bounded preview descriptor; it is not an execution mechanism.
+
+Before preview artifact creation, DGCE applies a deterministic preview-only strategy selector. The selector uses only bounded fields already present on each planned change: `domain_type`, `target.target_kind`, `summary.intent`, and `summary.review_focus`. It does not call a model, inspect an Unreal project, resolve symbols, validate Blueprint graphs, or write files.
+
+The current selector rules are:
+
+- `domain_type: C++` with `target_kind: CppClass` selects `C++`.
+- `domain_type: Blueprint` with `target_kind: BlueprintClass` selects `Blueprint`.
+- `binding`, `asset`, and `input_action` planned changes select `Blueprint` for bounded matching target kinds.
+- `component`, `variable`, and `event` planned changes select `Blueprint` for bounded matching target kinds.
+- `component`, `variable`, and `event` planned changes with `summary.intent: prepare_for_review` and `summary.review_focus: logic_flow` select `both`.
+
+If a planned change already provides `strategy`, the value must match the selector result. Unknown domain types, unsupported target kinds, ambiguous domain/target combinations, and mismatched explicit strategies fail closed.
 
 Allowed domain and target vocabularies are defined in `aether/dgce/game_adapter_preview.py`. Invalid, unknown, raw, or free-form fields fail closed during contract validation.
 
@@ -124,4 +136,3 @@ This slice does not implement:
 - Code Graph or `dcg.facts.v1` changes,
 - new external adapter families,
 - raw model/provider text exposure.
-
