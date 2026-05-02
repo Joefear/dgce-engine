@@ -1,0 +1,65 @@
+{
+  "columns": [
+    "change_id",
+    "target",
+    "operation",
+    "domain_type",
+    "strategy",
+    "intent",
+    "impact",
+    "risk",
+    "review_focus",
+    "guardrail"
+  ],
+  "contract_version": "dgce.game_adapter.stage2.preview.v1",
+  "rows": [
+    {
+      "change_id": "change.interact-binding",
+      "domain_type": "binding",
+      "guardrail": "required",
+      "impact": "input",
+      "intent": "connect_existing_systems",
+      "operation": "create",
+      "review_focus": "event_binding",
+      "risk": "low",
+      "strategy": "Blueprint",
+      "target": "InputAction:/Game/Input/IA_Interact#IA_Interact"
+    },
+    {
+      "change_id": "change.player-component",
+      "domain_type": "component",
+      "guardrail": "required",
+      "impact": "gameplay",
+      "intent": "add_gameplay_capability",
+      "operation": "modify",
+      "review_focus": "component_setup",
+      "risk": "medium",
+      "strategy": "Blueprint",
+      "target": "ActorComponent:/Game/Blueprints/BP_Player#BP_Player.InventoryComponent"
+    }
+  ],
+  "totals": {
+    "change_count": 2,
+    "domain_types": {
+      "Blueprint": 0,
+      "C++": 0,
+      "asset": 0,
+      "binding": 1,
+      "component": 1,
+      "event": 0,
+      "input_action": 0,
+      "variable": 0
+    },
+    "operations": {
+      "create": 1,
+      "delete": 0,
+      "modify": 1
+    },
+    "strategies": {
+      "Blueprint": 2,
+      "C++": 0,
+      "both": 0
+    }
+  },
+  "view_type": "human"
+}

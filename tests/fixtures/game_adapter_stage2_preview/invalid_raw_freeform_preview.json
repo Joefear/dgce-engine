@@ -1,0 +1,42 @@
+{
+  "adapter": "game",
+  "artifact_fingerprint": "invalid-fixture-fingerprint",
+  "artifact_type": "game_adapter_stage2_preview",
+  "contract_name": "DGCEGameAdapterStage2Preview",
+  "contract_version": "dgce.game_adapter.stage2.preview.v1",
+  "domain": "game_adapter",
+  "governance_context": {
+    "guardrail_required": true,
+    "policy_pack": "game_adapter_stage2_preview"
+  },
+  "human_view": {
+    "free_form": "The provider suggested changing arbitrary Blueprint nodes.",
+    "view_type": "human"
+  },
+  "machine_view": {
+    "raw_model_text": "unbounded provider text must not be exposed",
+    "view_type": "machine"
+  },
+  "planned_changes": [
+    {
+      "change_id": "change.raw-leak",
+      "domain_type": "Blueprint",
+      "operation": "modify",
+      "raw_provider_text": "internal provider response",
+      "strategy": "Blueprint",
+      "summary": {
+        "impact": "gameplay",
+        "intent": "adjust_existing_behavior",
+        "review_focus": "logic_flow",
+        "risk": "high"
+      },
+      "target": {
+        "target_id": "BP_Player",
+        "target_kind": "BlueprintClass",
+        "target_path": "/Game/Blueprints/BP_Player"
+      }
+    }
+  ],
+  "source_input_reference": "structured_intent",
+  "source_stage0_fingerprint": null
+}

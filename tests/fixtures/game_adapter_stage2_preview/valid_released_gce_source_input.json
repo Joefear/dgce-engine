@@ -1,0 +1,67 @@
+{
+  "ambiguities": [],
+  "contract_name": "GCEIngestionCore",
+  "contract_version": "gce.ingestion.core.v1",
+  "input_path": "structured_intent",
+  "intent": {
+    "sections": [
+      {
+        "authorship": "human",
+        "classification": "durable",
+        "content": {
+          "adapter_domain": "game_adapter",
+          "game_adapter_stage2_preview": {
+            "planned_changes": [
+              {
+                "change_id": "change.player-component",
+                "domain_type": "component",
+                "operation": "modify",
+                "strategy": "Blueprint",
+                "summary": {
+                  "impact": "gameplay",
+                  "intent": "add_gameplay_capability",
+                  "review_focus": "component_setup",
+                  "risk": "medium"
+                },
+                "target": {
+                  "target_id": "BP_Player.InventoryComponent",
+                  "target_kind": "ActorComponent",
+                  "target_path": "/Game/Blueprints/BP_Player"
+                }
+              },
+              {
+                "change_id": "change.interact-binding",
+                "domain_type": "binding",
+                "operation": "create",
+                "strategy": "Blueprint",
+                "summary": {
+                  "impact": "input",
+                  "intent": "connect_existing_systems",
+                  "review_focus": "event_binding",
+                  "risk": "low"
+                },
+                "target": {
+                  "target_id": "IA_Interact",
+                  "target_kind": "InputAction",
+                  "target_path": "/Game/Input/IA_Interact"
+                }
+              }
+            ]
+          }
+        },
+        "required": true,
+        "section_id": "game_adapter_stage2_scope",
+        "title": "Game Adapter Stage 2 Scope"
+      }
+    ],
+    "session_objective": "Generate a bounded Game Adapter Stage 2 preview."
+  },
+  "metadata": {
+    "created_at": "2026-04-27T00:00:00Z",
+    "owner": "Design Authority",
+    "project_id": "frontier-colony",
+    "project_name": "Frontier Colony",
+    "source_id": "frontier-colony-stage2-fixture",
+    "updated_at": "2026-04-27T00:00:00Z"
+  }
+}

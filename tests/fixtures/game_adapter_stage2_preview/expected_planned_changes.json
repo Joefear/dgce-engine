@@ -1,0 +1,36 @@
+[
+  {
+    "change_id": "change.interact-binding",
+    "domain_type": "binding",
+    "operation": "create",
+    "strategy": "Blueprint",
+    "summary": {
+      "impact": "input",
+      "intent": "connect_existing_systems",
+      "review_focus": "event_binding",
+      "risk": "low"
+    },
+    "target": {
+      "target_id": "IA_Interact",
+      "target_kind": "InputAction",
+      "target_path": "/Game/Input/IA_Interact"
+    }
+  },
+  {
+    "change_id": "change.player-component",
+    "domain_type": "component",
+    "operation": "modify",
+    "strategy": "Blueprint",
+    "summary": {
+      "impact": "gameplay",
+      "intent": "add_gameplay_capability",
+      "review_focus": "component_setup",
+      "risk": "medium"
+    },
+    "target": {
+      "target_id": "BP_Player.InventoryComponent",
+      "target_kind": "ActorComponent",
+      "target_path": "/Game/Blueprints/BP_Player"
+    }
+  }
+]
