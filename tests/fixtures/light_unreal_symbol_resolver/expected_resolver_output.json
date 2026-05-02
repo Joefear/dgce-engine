@@ -1,0 +1,47 @@
+{
+  "adapter": "game",
+  "artifact_fingerprint": "f5625de690d4c6a3176590f9ee7eb2a72047aea5cb84742d3a0492f1f4a1e10d",
+  "artifact_type": "game_adapter_unreal_symbol_resolver_output",
+  "contract_name": "DGCEGameAdapterUnrealSymbolResolver",
+  "contract_version": "dgce.game_adapter.unreal_symbol_resolver.v1",
+  "domain": "game_adapter",
+  "integration_points": {
+    "stage2_preview_context": {
+      "context_kind": "resolver_metadata",
+      "stage": "Stage2Preview",
+      "symbol_metadata_available": true
+    },
+    "stage7_alignment_context": {
+      "context_kind": "resolver_metadata",
+      "stage": "Stage7Alignment",
+      "symbol_metadata_available": true
+    }
+  },
+  "resolution_status": "partially_resolved",
+  "resolved_symbols": [
+    {
+      "confidence": "candidate_match",
+      "resolution_method": "path_metadata",
+      "source_path": "Content/Blueprints/BP_Player.uasset",
+      "symbol_kind": "BlueprintClass",
+      "symbol_name": "BP_Player"
+    },
+    {
+      "confidence": "candidate_match",
+      "resolution_method": "path_metadata",
+      "source_path": "Source/FixtureGame/Public/InventoryComponent.h",
+      "symbol_kind": "CppClass",
+      "symbol_name": "InventoryComponent"
+    }
+  ],
+  "source_input_fingerprint": "5e85993ae29246864c383dc466e9aa0f08c8ba963aef69be4bc5abfc9813c2ad",
+  "unresolved_symbols": [
+    {
+      "confidence": "unresolved",
+      "resolution_method": "path_metadata",
+      "source_path": null,
+      "symbol_kind": "BlueprintClass",
+      "symbol_name": "MissingInventoryEvent"
+    }
+  ]
+}

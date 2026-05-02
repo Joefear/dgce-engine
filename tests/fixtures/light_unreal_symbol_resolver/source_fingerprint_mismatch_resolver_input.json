@@ -1,0 +1,20 @@
+{
+  "adapter": "game",
+  "allowed_symbol_kinds": [
+    "BlueprintClass",
+    "CppClass",
+    "Event"
+  ],
+  "artifact_type": "game_adapter_unreal_symbol_resolver_input",
+  "contract_name": "DGCEGameAdapterUnrealSymbolResolver",
+  "contract_version": "dgce.game_adapter.unreal_symbol_resolver.v1",
+  "domain": "game_adapter",
+  "requested_symbols": [
+    "BP_Player",
+    "InventoryComponent",
+    "MissingInventoryEvent"
+  ],
+  "source_candidate_index_fingerprint": "24db2be9d3a59848576b36616f2f2b19f901da3814a3e37026ba23a5c47aceb9",
+  "source_manifest_fingerprint": "wrongmanifestfingerprint",
+  "stage_usage": "both"
+}
