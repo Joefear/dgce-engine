@@ -39,6 +39,10 @@ from aether.dgce.game_adapter_unreal_symbol_resolver_contract import (
 )
 from aether.dgce.gce_ingestion import compute_gce_clarification_request_fingerprint
 from aether.dgce.path_utils import resolve_workspace_path
+from packages.dgce_contracts.alignment_artifacts import (
+    alignment_record_artifact_path,
+    load_alignment_record_read_model_v1,
+)
 
 
 GCE_STAGE0_READ_MODEL_CONTRACT_NAME = "GCEStage0ReadModel"
@@ -315,6 +319,28 @@ def get_game_adapter_unreal_symbol_resolver_output(
             source_artifact_fingerprint=None,
         )
     return _read_unreal_symbol_resolver_output_file(artifact_path, workspace_root=workspace_root)
+
+
+def get_stage7_alignment_read_model(workspace_path: str | Path, section_id: str) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    try:
+        return load_alignment_record_read_model_v1(workspace_root, section_id)
+    except ValueError as exc:
+        reason_code = _stage7_alignment_read_error_reason(exc)
+        artifact_path = None
+        if reason_code != "section_id_invalid":
+            try:
+                artifact_path = _artifact_path_for_read_model(
+                    alignment_record_artifact_path(workspace_root, section_id),
+                    workspace_root,
+                )
+            except ValueError:
+                reason_code = "section_id_invalid"
+        return _stage7_alignment_read_error(
+            section_id=section_id,
+            artifact_path=artifact_path,
+            reason_code=reason_code,
+        )
 
 
 def _gce_stage0_artifact_path(workspace_root: Path, artifact_name: str) -> Path | None:
@@ -980,6 +1006,32 @@ def _unreal_symbol_resolver_output_read_error(
         "unresolved_symbols": None,
         "integration_points": None,
     }
+
+
+def _stage7_alignment_read_error(
+    *,
+    section_id: str,
+    artifact_path: str | None,
+    reason_code: str,
+) -> dict[str, Any]:
+    return {
+        "read_model_type": "stage7_alignment_read_error",
+        "artifact_type": "stage7_alignment_read_error",
+        "section_id": section_id,
+        "artifact_path": artifact_path,
+        "reason_code": reason_code,
+    }
+
+
+def _stage7_alignment_read_error_reason(exc: ValueError) -> str:
+    message = str(exc)
+    if "section_id" in message:
+        return "section_id_invalid"
+    if "alignment artifact missing" in message:
+        return "artifact_missing"
+    if "alignment artifact malformed" in message:
+        return "artifact_malformed"
+    return "contract_invalid"
 
 
 def _artifact_path_for_read_model(path: Path, workspace_root: Path) -> str:

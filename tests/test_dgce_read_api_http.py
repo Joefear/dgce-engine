@@ -274,6 +274,7 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/{artifact_name}": {"GET"},
             "/v1/dgce/game-adapter/unreal-symbol-resolutions": {"GET"},
             "/v1/dgce/game-adapter/unreal-symbol-resolutions/{artifact_name}": {"GET"},
+            "/v1/dgce/stage7/alignment/{section_id}": {"GET"},
         }
 
     def test_app_exposes_no_non_get_methods_for_read_routes(self):

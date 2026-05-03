@@ -167,3 +167,12 @@ def get_game_adapter_unreal_symbol_resolver_output(
         workspace_path,
         artifact_name,
     )
+
+
+@router.get("/stage7/alignment/{section_id}")
+def get_stage7_alignment_read_model(section_id: str, workspace_path: str = Query(...)) -> dict[str, Any]:
+    return _read_named_artifact_over_http(
+        read_api.get_stage7_alignment_read_model,
+        workspace_path,
+        section_id,
+    )
