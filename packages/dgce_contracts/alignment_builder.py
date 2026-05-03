@@ -34,6 +34,7 @@ def build_alignment_record_v1(
     approved_design_expectations: Sequence[Mapping[str, Any]],
     preview_proposed_targets: Sequence[Mapping[str, Any]],
     current_observed_targets: Sequence[Mapping[str, Any]] | None = None,
+    resolver_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic schema-valid Stage 7 alignment record."""
     approved_targets = _normalize_targets(approved_design_expectations, "approved_design_expectations")
@@ -44,7 +45,11 @@ def build_alignment_record_v1(
         else dict(preview_targets)
     )
     available_targets = {**preview_targets, **observed_targets}
-    drift_items = _build_drift_items(approved_targets, preview_targets, observed_targets, available_targets)
+    resolver_enrichment = _normalize_resolver_context(resolver_context)
+    drift_items = _sort_drift_items(
+        _build_drift_items(approved_targets, preview_targets, observed_targets, available_targets)
+        + resolver_enrichment["drift_items"]
+    )
     blocking_count = sum(1 for item in drift_items if item["severity"] == "blocking")
     informational_count = sum(1 for item in drift_items if item["severity"] == "informational")
     alignment_result = "misaligned" if blocking_count else "aligned"
@@ -57,11 +62,16 @@ def build_alignment_record_v1(
         "alignment_result": alignment_result,
         "drift_detected": bool(blocking_count),
         "drift_items": drift_items,
-        "evidence": _build_evidence(approved_targets, preview_targets, observed_targets),
+        "evidence": _build_evidence(
+            approved_targets,
+            preview_targets,
+            observed_targets,
+            resolver_enrichment["evidence"],
+        ),
         "alignment_enrichment": {
             "code_graph_used": False,
-            "resolver_used": False,
-            "enrichment_status": "not_used",
+            "resolver_used": resolver_enrichment["resolver_used"],
+            "enrichment_status": resolver_enrichment["enrichment_status"],
         },
         "execution_permitted": alignment_result == "aligned",
         "alignment_summary": {
@@ -172,7 +182,7 @@ def _build_drift_items(
                     severity="informational",
                 )
             )
-    return sorted(drift_items, key=lambda item: (item["severity"] != "blocking", item["code"], item["target"]))
+    return _sort_drift_items(drift_items)
 
 
 def _drift_item(*, code: str, summary: str, target: str, severity: str) -> dict[str, str]:
@@ -184,10 +194,18 @@ def _drift_item(*, code: str, summary: str, target: str, severity: str) -> dict[
     }
 
 
+def _sort_drift_items(drift_items: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    return sorted(
+        [dict(item) for item in drift_items],
+        key=lambda item: (item["severity"] != "blocking", item["code"], item["target"]),
+    )
+
+
 def _build_evidence(
     approved_targets: Mapping[str, dict[str, Any]],
     preview_targets: Mapping[str, dict[str, Any]],
     observed_targets: Mapping[str, dict[str, Any]],
+    resolver_evidence: Sequence[Mapping[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     evidence_by_key: dict[tuple[str, str], dict[str, str]] = {}
     for source, targets in (
@@ -201,7 +219,132 @@ def _build_evidence(
                 "source": source,
                 "reference": reference,
             }
+    for evidence in resolver_evidence or []:
+        source = _required_string(evidence.get("source"), "resolver_evidence.source")
+        reference = _required_string(evidence.get("reference"), "resolver_evidence.reference")
+        snippet_hash = evidence.get("snippet_hash")
+        normalized = {
+            "source": source,
+            "reference": reference,
+        }
+        if snippet_hash is not None:
+            normalized["snippet_hash"] = _required_string(snippet_hash, "resolver_evidence.snippet_hash")
+        evidence_by_key[(source, reference)] = normalized
     return [evidence_by_key[key] for key in sorted(evidence_by_key)]
+
+
+def _normalize_resolver_context(resolver_context: Mapping[str, Any] | None) -> dict[str, Any]:
+    if resolver_context is None:
+        return {
+            "resolver_used": False,
+            "enrichment_status": "not_used",
+            "drift_items": [],
+            "evidence": [],
+        }
+    if not isinstance(resolver_context, Mapping):
+        raise ValueError("resolver_context must be an object")
+    allowed_keys = {"resolved_symbols", "unresolved_symbols", "resolution_status"}
+    extra = sorted(set(resolver_context) - allowed_keys)
+    if extra:
+        raise ValueError(f"resolver_context contains unsupported fields: {', '.join(extra)}")
+    resolved_symbols = _normalize_resolver_symbols(
+        resolver_context.get("resolved_symbols"),
+        "resolver_context.resolved_symbols",
+        resolved=True,
+    )
+    unresolved_symbols = _normalize_resolver_symbols(
+        resolver_context.get("unresolved_symbols"),
+        "resolver_context.unresolved_symbols",
+        resolved=False,
+    )
+    if not resolved_symbols and not unresolved_symbols:
+        return {
+            "resolver_used": False,
+            "enrichment_status": "not_used",
+            "drift_items": [],
+            "evidence": [],
+        }
+    drift_items: list[dict[str, str]] = []
+    evidence: list[dict[str, str]] = []
+    for symbol in resolved_symbols:
+        symbol_name = symbol["symbol_name"]
+        symbol_kind = symbol["symbol_kind"]
+        confidence = symbol["confidence"]
+        evidence.append(
+            {
+                "source": "resolver",
+                "reference": f"resolver:resolved:{symbol_kind}:{symbol_name}",
+            }
+        )
+        if confidence == "candidate_match":
+            drift_items.append(
+                _drift_item(
+                    code="symbol_resolution_conflict",
+                    summary="Resolver selected a non-exact candidate match from bounded path metadata.",
+                    target=symbol_name,
+                    severity="informational",
+                )
+            )
+    for symbol in unresolved_symbols:
+        symbol_name = symbol["symbol_name"]
+        symbol_kind = symbol["symbol_kind"]
+        evidence.append(
+            {
+                "source": "resolver",
+                "reference": f"resolver:unresolved:{symbol_kind}:{symbol_name}",
+            }
+        )
+        drift_items.append(
+            _drift_item(
+                code="symbol_resolution_conflict",
+                summary="Resolver could not resolve requested symbol from bounded path metadata.",
+                target=symbol_name,
+                severity="blocking",
+            )
+        )
+    return {
+        "resolver_used": True,
+        "enrichment_status": "full" if resolved_symbols and not drift_items else "partial",
+        "drift_items": _sort_drift_items(drift_items),
+        "evidence": sorted(evidence, key=lambda item: (item["source"], item["reference"])),
+    }
+
+
+def _normalize_resolver_symbols(value: Any, field_name: str, *, resolved: bool) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"{field_name} must be an array")
+    normalized: list[dict[str, str]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{field_name}[{index}] must be an object")
+        allowed_keys = {"symbol_name", "symbol_kind", "source_path", "resolution_method", "confidence"}
+        extra = sorted(set(item) - allowed_keys)
+        if extra:
+            raise ValueError(f"{field_name}[{index}] contains unsupported fields: {', '.join(extra)}")
+        symbol_name = _required_string(item.get("symbol_name"), f"{field_name}[{index}].symbol_name")
+        symbol_kind = _required_string(item.get("symbol_kind"), f"{field_name}[{index}].symbol_kind")
+        resolution_method = _required_string(item.get("resolution_method"), f"{field_name}[{index}].resolution_method")
+        if resolution_method != "path_metadata":
+            raise ValueError(f"{field_name}[{index}].resolution_method must be path_metadata")
+        confidence = _required_string(item.get("confidence"), f"{field_name}[{index}].confidence")
+        allowed_confidences = {"exact_path_match", "candidate_match"} if resolved else {"unresolved"}
+        if confidence not in allowed_confidences:
+            raise ValueError(f"{field_name}[{index}].confidence unsupported")
+        if resolved:
+            _required_string(item.get("source_path"), f"{field_name}[{index}].source_path")
+        elif item.get("source_path") is not None:
+            raise ValueError(f"{field_name}[{index}].source_path must be null for unresolved symbols")
+        normalized.append(
+            {
+                "symbol_name": symbol_name,
+                "symbol_kind": symbol_kind,
+                "resolution_method": resolution_method,
+                "confidence": confidence,
+            }
+        )
+    return sorted(normalized, key=lambda entry: (entry["symbol_kind"], entry["symbol_name"], entry["confidence"]))
 
 
 def _primary_reason(drift_items: Sequence[Mapping[str, str]]) -> str:

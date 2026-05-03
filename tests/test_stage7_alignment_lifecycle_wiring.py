@@ -14,7 +14,7 @@ from aether.dgce import (
     record_section_execution_gate,
     run_section_with_workspace,
 )
-from aether.dgce.decompose import _stage7_alignment_lifecycle_view
+from aether.dgce.decompose import _stage7_alignment_lifecycle_view, compute_json_payload_fingerprint
 from aether.dgce.file_plan import FilePlan
 from aether.dgce.read_api import get_stage7_alignment_read_model
 from packages.dgce_contracts.alignment_builder import build_alignment_record_v1, validate_alignment_record_v1
@@ -166,6 +166,94 @@ def _patch_stub_executor(monkeypatch) -> None:
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _resolver_symbol(*, symbol_name: str, symbol_kind: str = "BlueprintClass", confidence: str = "exact_path_match") -> dict:
+    return {
+        "symbol_name": symbol_name,
+        "symbol_kind": symbol_kind,
+        "source_path": f"Content/{symbol_name}.uasset",
+        "resolution_method": "path_metadata",
+        "confidence": confidence,
+    }
+
+
+def _unresolved_resolver_symbol(*, symbol_name: str, symbol_kind: str = "BlueprintClass") -> dict:
+    return {
+        "symbol_name": symbol_name,
+        "symbol_kind": symbol_kind,
+        "source_path": None,
+        "resolution_method": "path_metadata",
+        "confidence": "unresolved",
+    }
+
+
+def _write_resolver_output(
+    project_root: Path,
+    *,
+    resolved_symbols: list[dict] | None = None,
+    unresolved_symbols: list[dict] | None = None,
+) -> Path:
+    resolved_symbols = sorted(
+        list(resolved_symbols or []),
+        key=lambda entry: (entry["symbol_kind"], entry["symbol_name"], entry["source_path"]),
+    )
+    unresolved_symbols = sorted(
+        list(unresolved_symbols or []),
+        key=lambda entry: (entry["symbol_kind"], entry["symbol_name"], ""),
+    )
+    if resolved_symbols and unresolved_symbols:
+        resolution_status = "partially_resolved"
+    elif resolved_symbols:
+        resolution_status = "resolved"
+    else:
+        resolution_status = "unresolved"
+    payload = {
+        "artifact_type": "game_adapter_unreal_symbol_resolver_output",
+        "contract_name": "DGCEGameAdapterUnrealSymbolResolver",
+        "contract_version": "dgce.game_adapter.unreal_symbol_resolver.v1",
+        "adapter": "game",
+        "domain": "game_adapter",
+        "source_input_fingerprint": "a" * 64,
+        "resolved_symbols": resolved_symbols,
+        "unresolved_symbols": unresolved_symbols,
+        "resolution_status": resolution_status,
+        "integration_points": {
+            "stage2_preview_context": {
+                "stage": "Stage2Preview",
+                "context_kind": "resolver_metadata",
+                "symbol_metadata_available": False,
+            },
+            "stage7_alignment_context": {
+                "stage": "Stage7Alignment",
+                "context_kind": "resolver_metadata",
+                "symbol_metadata_available": bool(resolved_symbols),
+            },
+        },
+    }
+    payload["artifact_fingerprint"] = compute_json_payload_fingerprint(payload)
+    artifact_path = project_root / ".dce" / "plans" / "unreal-symbol-resolver.resolution.json"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return artifact_path
+
+
+def _write_invalid_resolver_output(project_root: Path) -> Path:
+    artifact_path = project_root / ".dce" / "plans" / "unreal-symbol-resolver.resolution.json"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "artifact_type": "game_adapter_unreal_symbol_resolver_output",
+                "raw_model_text": "forbidden",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return artifact_path
 
 
 def _approve_preview(project_root: Path, *, plan: FilePlan) -> None:
@@ -427,6 +515,188 @@ def test_aligned_stage7_artifact_is_produced_after_stage6_pass(monkeypatch):
     assert alignment["execution_permitted"] is True
     assert result.run_outcome_class != "blocked_alignment"
     assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_resolver_absent_keeps_enrichment_not_used_and_allows_lifecycle(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_resolver_absent")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert result.run_outcome_class != "blocked_alignment"
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": False,
+        "enrichment_status": "not_used",
+    }
+    assert "resolver" not in {item["source"] for item in alignment["evidence"]}
+    assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_uses_bounded_resolver_evidence_when_persisted_output_is_available(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_resolver_evidence")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+    _write_resolver_output(project_root, resolved_symbols=[_resolver_symbol(symbol_name="BP_MissionBoard")])
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+    read_model = get_stage7_alignment_read_model(project_root, "mission-board")
+
+    assert result.run_outcome_class != "blocked_alignment"
+    assert validate_alignment_record_v1(alignment) is True
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": True,
+        "enrichment_status": "full",
+    }
+    assert {"source": "resolver", "reference": "resolver:resolved:BlueprintClass:BP_MissionBoard"} in alignment["evidence"]
+    assert read_model["resolver_used"] is True
+    assert read_model["enrichment_status"] == "full"
+    assert "resolver" in read_model["evidence_sources"]
+    assert sorted(read_model.keys()) == STAGE7_READ_MODEL_KEYS
+    assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_resolver_unresolved_symbol_conflict_blocks_before_stage75_and_stage8(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_resolver_blocks")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+    _write_resolver_output(project_root, unresolved_symbols=[_unresolved_resolver_symbol(symbol_name="MissingMissionBoard")])
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+    read_model = get_stage7_alignment_read_model(project_root, "mission-board")
+
+    assert result.run_outcome_class == "blocked_alignment"
+    assert result.execution_outcome["drift_findings"] == ["symbol_resolution_conflict"]
+    assert alignment["alignment_result"] == "misaligned"
+    assert alignment["execution_permitted"] is False
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": True,
+        "enrichment_status": "partial",
+    }
+    assert alignment["drift_items"] == [
+        {
+            "code": "symbol_resolution_conflict",
+            "summary": "Resolver could not resolve requested symbol from bounded path metadata.",
+            "target": "MissingMissionBoard",
+            "severity": "blocking",
+        }
+    ]
+    assert {"source": "resolver", "reference": "resolver:unresolved:BlueprintClass:MissingMissionBoard"} in alignment["evidence"]
+    assert read_model["resolver_used"] is True
+    assert read_model["enrichment_status"] == "partial"
+    assert read_model["drift_codes"] == ["symbol_resolution_conflict"]
+    assert "resolver" in read_model["evidence_sources"]
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").exists()
+    assert not (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_resolver_candidate_match_informational_drift_does_not_block_lifecycle(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_resolver_informational")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+    _write_resolver_output(
+        project_root,
+        resolved_symbols=[_resolver_symbol(symbol_name="BP_MissionBoard", confidence="candidate_match")],
+    )
+
+    legacy_view = _record_alignment_direct(project_root, plan=plan)
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert validate_alignment_record_v1(alignment) is True
+    assert alignment["alignment_result"] == "aligned"
+    assert alignment["execution_permitted"] is True
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": True,
+        "enrichment_status": "partial",
+    }
+    assert alignment["drift_items"] == [
+        {
+            "code": "symbol_resolution_conflict",
+            "summary": "Resolver selected a non-exact candidate match from bounded path metadata.",
+            "target": "BP_MissionBoard",
+            "severity": "informational",
+        }
+    ]
+    assert legacy_view["alignment_blocked"] is False
+    assert legacy_view["alignment_status"] == "aligned"
+    assert legacy_view["drift_findings"] == []
+    assert "evidence" not in legacy_view
+
+
+def test_stage7_invalid_resolver_output_is_ignored_when_normal_alignment_blocks(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_invalid_resolver_normal_block")
+    approved_plan = _infra_file_plan()
+    drifted_plan = _infra_file_plan(include_extra=True)
+    _approve_preview(project_root, plan=approved_plan)
+    _write_invalid_resolver_output(project_root)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=drifted_plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert result.run_outcome_class == "blocked_alignment"
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": False,
+        "enrichment_status": "not_used",
+    }
+    assert [item["code"] for item in alignment["drift_items"]] == ["unexpected_artifact"]
+    assert "resolver" not in {item["source"] for item in alignment["evidence"]}
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").exists()
+    assert not (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
 
 
 def test_stage7_does_not_run_when_stage6_gate_blocks(monkeypatch):

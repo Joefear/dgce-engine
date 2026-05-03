@@ -1383,6 +1383,7 @@ def _build_stage7_alignment_record_v1(
         approved_design_expectations=_stage7_approved_expected_targets(alignment_input_payload),
         preview_proposed_targets=_stage7_preview_proposed_targets(alignment_input_payload),
         current_observed_targets=_stage7_current_observed_targets(alignment_input_payload),
+        resolver_context=_stage7_resolver_context(workspace_root),
     )
 
 
@@ -1436,6 +1437,34 @@ def _stage7_current_observed_targets(alignment_input_payload: dict[str, Any]) ->
         for entry in alignment_input_payload["current_execution_context"].get("execution_targets", [])
         if isinstance(entry, dict) and _normalize_alignment_path(entry.get("path")) is not None
     ]
+
+
+def _stage7_resolver_context(workspace_root: Path) -> dict[str, Any] | None:
+    resolver_paths = sorted(
+        {
+            workspace_root / "plans" / "unreal-symbol-resolver.resolution.json",
+            *workspace_root.glob("plans/unreal-symbol-resolver*.resolution.json"),
+        },
+        key=lambda path: path.as_posix(),
+    )
+    for resolver_path in resolver_paths:
+        if not resolver_path.exists():
+            continue
+        try:
+            payload = json.loads(resolver_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
+            from aether.dgce.game_adapter_unreal_symbol_resolver_contract import validate_resolver_output_contract
+
+            validate_resolver_output_contract(payload)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        return {
+            "resolved_symbols": [dict(entry) for entry in payload.get("resolved_symbols", [])],
+            "unresolved_symbols": [dict(entry) for entry in payload.get("unresolved_symbols", [])],
+            "resolution_status": str(payload.get("resolution_status", "")),
+        }
+    return None
 
 
 def _stage7_alignment_target(path_value: Any, *, reference: str, operation: Any) -> dict[str, Any]:
