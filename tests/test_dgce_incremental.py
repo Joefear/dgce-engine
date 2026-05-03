@@ -7606,8 +7606,8 @@ def test_run_section_with_workspace_alignment_blocks_no_changes_without_project_
     assert result.run_outcome_class == "blocked_alignment"
     assert result.execution_outcome["status"] == "blocked"
     assert result.execution_outcome["alignment_status"] == "misaligned"
-    assert "target_set_expanded" in alignment_artifact["drift_findings"]
-    assert "approved_scope_mismatch" in alignment_artifact["drift_findings"]
+    assert [item["code"] for item in alignment_artifact["drift_items"]] == ["unexpected_artifact"]
+    assert alignment_artifact["execution_permitted"] is False
     assert (project_root / "mission_board" / "drift.py").exists() is False
 
 
@@ -7673,9 +7673,11 @@ def test_run_section_with_workspace_alignment_blocks_create_only_when_modify_wou
 
     assert result.written_files == []
     assert result.run_outcome_class == "blocked_alignment"
-    assert alignment_artifact["alignment_blocked"] is True
-    assert alignment_artifact["alignment_status"] == "misaligned"
-    assert "design_constraint_mismatch" in alignment_artifact["drift_findings"]
+    assert result.execution_outcome["alignment_status"] == "misaligned"
+    assert "design_constraint_mismatch" in result.execution_outcome["drift_findings"]
+    assert alignment_artifact["alignment_result"] == "aligned"
+    assert alignment_artifact["execution_permitted"] is True
+    assert alignment_artifact["drift_items"] == []
     assert (project_root / "api" / "missionboardservice.py").read_text(encoding="utf-8") == "old-content"
     assert (project_root / "mission_board" / "models.py").exists() is False
 
@@ -7811,9 +7813,9 @@ def test_run_section_with_workspace_alignment_passes_safe_modify_and_executes(mo
         "mission_board/service.py",
         "models/mission.py",
     ]
-    assert alignment_artifact["alignment_status"] == "aligned"
-    assert alignment_artifact["alignment_blocked"] is False
-    assert alignment_artifact["effective_execution_mode"] == "safe_modify"
+    assert alignment_artifact["alignment_result"] == "aligned"
+    assert alignment_artifact["execution_permitted"] is True
+    assert alignment_artifact["drift_items"] == []
 
 
 def test_run_section_with_workspace_simulation_skip_path_proceeds(monkeypatch):

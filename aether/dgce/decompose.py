@@ -56,6 +56,8 @@ from aether_core.contracts.validator import validate_output
 from aether_core.models import ClassificationRequest
 from aether_core.models.request import OutputContract
 from aether_core.router.planner import RouterPlanner
+from packages.dgce_contracts.alignment_artifacts import persist_alignment_record_v1
+from packages.dgce_contracts.alignment_builder import build_alignment_record_v1, validate_alignment_record_v1
 
 
 STAGE6_GUARDRAIL_DECISION_ALLOW = "ALLOW"
@@ -825,15 +827,6 @@ def run_section_with_workspace(
             write_transparency=write_transparency,
         )
         if alignment_artifact["alignment_blocked"]:
-            execution_artifact = record_section_execution_stamp(
-                project_root,
-                section_id,
-                require_preflight_pass=True,
-                execution=SectionExecutionStampInput(execution_timestamp=execution_timestamp),
-                run_outcome_class="blocked_alignment",
-                execution_blocked=True,
-                write_transparency=write_transparency,
-            )
             _write_state(
                 state_path,
                 section_id,
@@ -855,7 +848,7 @@ def run_section_with_workspace(
                     "alignment_status": alignment_artifact["alignment_status"],
                     "alignment_reason": alignment_artifact["alignment_reason"],
                     "drift_findings": list(alignment_artifact.get("drift_findings", [])),
-                    "execution_status": execution_artifact["execution_status"],
+                    "execution_status": "not_run_alignment_blocked",
                     "written_files_count": 0,
                 },
                 advisory=None,
@@ -1306,7 +1299,20 @@ def record_section_alignment(
     """Persist a deterministic alignment artifact and refresh workspace linkage."""
     workspace = _ensure_workspace(project_root)
     alignment_input = alignment or SectionAlignmentInput()
-    alignment_artifact = _build_alignment_artifact(
+    alignment_input_payload = _build_alignment_input_artifact(
+        workspace["root"],
+        section_id,
+        file_plan=file_plan or FilePlan(project_name="DGCE", files=[]),
+        change_plan=change_plan or [],
+        write_transparency=write_transparency or {},
+    )
+    alignment_record = _build_stage7_alignment_record_v1(
+        workspace["root"],
+        section_id,
+        alignment_input=alignment_input,
+        alignment_input_payload=alignment_input_payload,
+    )
+    legacy_alignment_view = _build_alignment_artifact(
         workspace["root"],
         section_id,
         require_preflight_pass=require_preflight_pass,
@@ -1315,12 +1321,19 @@ def record_section_alignment(
         change_plan=change_plan or [],
         write_transparency=write_transparency or {},
     )
-    alignment_artifact = _write_json_with_artifact_fingerprint(
-        workspace["alignment"] / f"{section_id}.alignment.json",
-        alignment_artifact,
+    persisted = persist_alignment_record_v1(
+        alignment_record,
+        workspace_path=project_root,
+        section_id=section_id,
     )
     _refresh_workspace_views(workspace)
-    return alignment_artifact
+    return _stage7_alignment_lifecycle_view(
+        persisted.alignment_record_artifact,
+        section_id=section_id,
+        require_preflight_pass=require_preflight_pass,
+        alignment_input=alignment_input,
+        legacy_alignment_view=legacy_alignment_view,
+    )
 
 
 def record_section_simulation_trigger(
@@ -1345,6 +1358,144 @@ def record_section_simulation_trigger(
     )
     _refresh_workspace_views(workspace)
     return trigger_artifact
+
+
+def _build_stage7_alignment_record_v1(
+    workspace_root: Path,
+    section_id: str,
+    *,
+    alignment_input: SectionAlignmentInput,
+    alignment_input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    approved_scope = alignment_input_payload["approved_scope"]
+    return build_alignment_record_v1(
+        alignment_id=_stage7_alignment_id(section_id, alignment_input_payload),
+        timestamp=str(alignment_input.alignment_timestamp),
+        input_fingerprint=str(alignment_input_payload["alignment_input_fingerprint"]),
+        approval_fingerprint=_stage7_source_fingerprint(
+            workspace_root / "approvals" / f"{section_id}.approval.json",
+            approved_scope.get("approval_fingerprint"),
+        ),
+        preview_fingerprint=_stage7_source_fingerprint(
+            workspace_root / "plans" / f"{section_id}.preview.json",
+            approved_scope.get("preview_fingerprint"),
+        ),
+        approved_design_expectations=_stage7_approved_expected_targets(alignment_input_payload),
+        preview_proposed_targets=_stage7_preview_proposed_targets(alignment_input_payload),
+        current_observed_targets=_stage7_current_observed_targets(alignment_input_payload),
+    )
+
+
+def _stage7_alignment_id(section_id: str, alignment_input_payload: dict[str, Any]) -> str:
+    input_fingerprint = str(alignment_input_payload.get("alignment_input_fingerprint", ""))
+    safe_section_id = re.sub(r"[^A-Za-z0-9_.:-]+", "-", section_id).strip("-") or "section"
+    return f"stage7:{safe_section_id}:{input_fingerprint[:16]}"
+
+
+def _stage7_source_fingerprint(path: Path, preferred_fingerprint: Any) -> str:
+    if isinstance(preferred_fingerprint, str) and re.fullmatch(r"[a-f0-9]{64}", preferred_fingerprint):
+        return preferred_fingerprint
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        payload = {}
+    return compute_json_payload_fingerprint(payload if isinstance(payload, dict) else {})
+
+
+def _stage7_approved_expected_targets(alignment_input_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _stage7_alignment_target(
+            entry.get("path"),
+            reference="approval",
+            operation=entry.get("operation"),
+        )
+        for entry in alignment_input_payload["approved_scope"].get("approved_targets", [])
+        if isinstance(entry, dict) and _normalize_alignment_path(entry.get("path")) is not None
+    ]
+
+
+def _stage7_preview_proposed_targets(alignment_input_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _stage7_alignment_target(
+            entry.get("path"),
+            reference="preview",
+            operation=entry.get("planned_action"),
+        )
+        for entry in alignment_input_payload["approved_preview_context"].get("preview_targets", [])
+        if isinstance(entry, dict) and _normalize_alignment_path(entry.get("path")) is not None
+    ]
+
+
+def _stage7_current_observed_targets(alignment_input_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _stage7_alignment_target(
+            entry.get("path"),
+            reference="runtime_state",
+            operation=entry.get("operation"),
+        )
+        for entry in alignment_input_payload["current_execution_context"].get("execution_targets", [])
+        if isinstance(entry, dict) and _normalize_alignment_path(entry.get("path")) is not None
+    ]
+
+
+def _stage7_alignment_target(path_value: Any, *, reference: str, operation: Any) -> dict[str, Any]:
+    normalized_path = _normalize_alignment_path(path_value)
+    if normalized_path is None:
+        raise ValueError("Stage 7 alignment target path is required")
+    return {
+        "target": normalized_path,
+        "reference": f"{reference}:{normalized_path}",
+        "structure": {
+            "operation": str(operation or "unknown"),
+        },
+    }
+
+
+def _stage7_alignment_lifecycle_view(
+    alignment_record: dict[str, Any],
+    *,
+    section_id: str,
+    require_preflight_pass: bool,
+    alignment_input: SectionAlignmentInput,
+    legacy_alignment_view: dict[str, Any],
+) -> dict[str, Any]:
+    legacy_view = dict(legacy_alignment_view)
+    legacy_drift_findings = [str(item) for item in legacy_view.get("drift_findings", [])]
+    v1_blocking_drift_findings = [
+        str(item["code"])
+        for item in alignment_record["drift_items"]
+        if item.get("severity") == "blocking"
+    ]
+    v1_blocked = alignment_record["execution_permitted"] is False
+    legacy_blocked = legacy_view.get("alignment_blocked") is True
+    alignment_blocked = v1_blocked or legacy_blocked
+    drift_findings = legacy_drift_findings or (v1_blocking_drift_findings if v1_blocked else [])
+    alignment_status = "misaligned" if alignment_blocked else alignment_record["alignment_result"]
+    legacy_reason = str(legacy_view.get("alignment_reason") or "")
+    v1_reason = str(alignment_record["alignment_summary"]["primary_reason"])
+    if v1_blocked:
+        alignment_reason = v1_reason
+    elif legacy_blocked:
+        alignment_reason = legacy_reason or (drift_findings[0] if drift_findings else v1_reason)
+    else:
+        alignment_reason = legacy_reason or v1_reason
+    legacy_view.pop("artifact_fingerprint", None)
+    legacy_view.pop("alignment_fingerprint", None)
+    legacy_view.update(
+        {
+            "section_id": section_id,
+            "alignment_status": alignment_status,
+            "alignment_blocked": alignment_blocked,
+            "alignment_reason": alignment_reason,
+            "alignment_timestamp": str(alignment_input.alignment_timestamp),
+            "require_preflight_pass": require_preflight_pass,
+            "drift_findings": drift_findings,
+            "code_graph_used": alignment_record["alignment_enrichment"]["code_graph_used"],
+        }
+    )
+    legacy_view["alignment_fingerprint"] = compute_json_payload_fingerprint(legacy_view)
+    legacy_view["artifact_fingerprint"] = compute_json_payload_fingerprint(legacy_view)
+    return legacy_view
 
 
 def record_section_simulation(
@@ -2178,6 +2329,7 @@ def _supported_consumer_artifact_specs() -> list[dict[str, Any]]:
 def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dict[str, Any]) -> list[dict[str, Any]]:
     artifact_paths = section_artifacts["artifact_paths"]
     payloads = section_artifacts["payloads"]
+    alignment_payload = payloads["alignment_path"]
     stage_specs = [
         ("preview", artifact_paths.get("preview_path"), payloads["preview_path"].get("preview_outcome_class"), ["input_path", "review_path", "approval_path"]),
         (
@@ -2207,7 +2359,7 @@ def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dic
         (
             "alignment",
             artifact_paths.get("alignment_path"),
-            payloads["alignment_path"].get("alignment_status"),
+            _alignment_status_from_payload(alignment_payload),
             ["approval_path", "execution_gate_path", "simulation_trigger_path", "simulation_path"],
         ),
         (
@@ -2229,6 +2381,26 @@ def _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts: dic
         }
         for stage_index, (stage_name, artifact_path, stage_status, linkage_names) in enumerate(stage_specs, start=1)
     ]
+
+
+def _alignment_status_from_payload(payload: dict[str, Any]) -> str | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if isinstance(payload.get("alignment_status"), str):
+        return payload["alignment_status"]
+    if payload.get("alignment_result") in {"aligned", "misaligned"}:
+        return str(payload["alignment_result"])
+    return None
+
+
+def _alignment_blocked_from_payload(payload: dict[str, Any]) -> bool | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if isinstance(payload.get("alignment_blocked"), bool):
+        return bool(payload["alignment_blocked"])
+    if isinstance(payload.get("execution_permitted"), bool):
+        return not bool(payload["execution_permitted"])
+    return None
 
 
 def _build_section_convergence_summary(section_artifacts: dict[str, Any], trace_entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3219,6 +3391,11 @@ def _artifact_path_matches_simulation_json(path: Path) -> bool:
     return len(parts) >= 4 and tuple(parts[-4:-1]) == (".dce", "execution", "simulation") and parts[-1].endswith(".simulation.json") and not parts[-1].endswith(".simulation_trigger.json")
 
 
+def _artifact_path_matches_alignment_json(path: Path) -> bool:
+    parts = _normalized_path_parts(path)
+    return len(parts) >= 4 and tuple(parts[-4:-1]) == (".dce", "execution", "alignment") and parts[-1].endswith(".alignment.json")
+
+
 def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
     if _artifact_path_matches(path, (".dce", "reviews", "index.json")):
         _validate_review_index_schema(payload)
@@ -3244,6 +3421,8 @@ def _validate_locked_artifact_schema(path: Path, payload: object) -> None:
         _validate_simulation_trigger_schema(payload)
     elif _artifact_path_matches_simulation_json(path):
         _validate_simulation_record_schema(payload)
+    elif _artifact_path_matches_alignment_json(path):
+        validate_alignment_record_v1(_expect_dict(payload, path.name, path.name))
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -3366,6 +3545,12 @@ def verify_artifact_fingerprint(path: Path) -> bool:
     if not isinstance(payload, dict):
         return False
     stored_fingerprint = payload.get("artifact_fingerprint")
+    if stored_fingerprint is None and _artifact_path_matches_alignment_json(path):
+        try:
+            validate_alignment_record_v1(payload)
+        except ValueError:
+            return False
+        return True
     if not isinstance(stored_fingerprint, str):
         return False
     return stored_fingerprint == _compute_json_artifact_fingerprint(payload)
@@ -8049,6 +8234,7 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
         ):
             continue
         payloads = section_artifacts["payloads"]
+        alignment_payload = payloads["alignment_path"]
         section_summary = _build_section_convergence_summary(
             section_artifacts,
             _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts),
@@ -8077,8 +8263,8 @@ def _build_review_index(workspace_root: Path, section_ids: List[str]) -> dict:
                 "guardrail_decision": payloads["execution_gate_path"].get("guardrail_decision"),
                 "guardrail_decision_supported": payloads["execution_gate_path"].get("guardrail_decision_supported"),
                 "alignment_path": artifact_paths.get("alignment_path"),
-                "alignment_status": payloads["alignment_path"].get("alignment_status"),
-                "alignment_blocked": payloads["alignment_path"].get("alignment_blocked"),
+                "alignment_status": _alignment_status_from_payload(alignment_payload),
+                "alignment_blocked": _alignment_blocked_from_payload(alignment_payload),
                 "execution_path": artifact_paths.get("execution_path"),
                 "execution_status": payloads["execution_path"].get("execution_status"),
                 "approval_consumed": payloads["execution_path"].get("approval_consumed"),
@@ -8156,6 +8342,7 @@ def _build_workspace_summary(
         validation = execution_outcome.get("validation_summary", {})
         execution = execution_outcome.get("execution_summary", {})
         review_entry = review_sections.get(section_id, {})
+        alignment_payload = payloads["alignment_path"]
         section_summary = _build_section_convergence_summary(
             section_artifacts,
             _build_section_lifecycle_trace_entries_from_artifacts(section_artifacts),
@@ -8192,8 +8379,8 @@ def _build_workspace_summary(
                 "guardrail_decision": review_entry.get("guardrail_decision"),
                 "guardrail_decision_supported": review_entry.get("guardrail_decision_supported"),
                 "alignment_path": review_entry.get("alignment_path"),
-                "alignment_status": review_entry.get("alignment_status"),
-                "alignment_blocked": review_entry.get("alignment_blocked"),
+                "alignment_status": _alignment_status_from_payload(alignment_payload),
+                "alignment_blocked": _alignment_blocked_from_payload(alignment_payload),
                 "execution_path": review_entry.get("execution_path"),
                 "execution_status": review_entry.get("execution_status"),
                 "approval_consumed": review_entry.get("approval_consumed"),
