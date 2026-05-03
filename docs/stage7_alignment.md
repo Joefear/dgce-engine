@@ -124,12 +124,16 @@ The API and SDK are read-only. Missing, malformed, contract-invalid, or unsafe s
 
 Stage 7 Alignment currently does not perform policy evaluation, simulation validation, execution, Blueprint mutation, Unreal project writes, lifecycle advancement, Stage 8 invocation, mandatory resolver execution, mandatory Code Graph execution, Code Graph mutation, full graph storage, or raw `dcg.facts.v1` persistence.
 
-## Subsystem Lock Declaration v0.1
+## Final Lock Declaration v0.2
 
-Stage 7 Alignment is implemented through resolver enrichment v0.1 and Code Graph enrichment v0.1.
+Stage 7 Alignment is implemented and locked through Resolver Enrichment v0.1 and Code Graph Enrichment v0.1.
+
+Stage 7 is now complete for the current Phase 6 alignment scope.
 
 Locked lineage:
 
+- Previous Stage 7 lock declaration: `c765255`
+- Latest Code Graph enrichment commit: `2daf330`
 - Stage 7 Alignment Contract Schema v1.0: `47c2a4a`
 - Stage 7 Alignment Record Builder v0.1: `21b05c0`
 - Stage 7 Artifact Persistence + Read Model v0.1: `529c222`
@@ -166,9 +170,14 @@ Locked declaration:
 
 - Legacy lifecycle compatibility view is preserved separately from the canonical v1 artifact.
 - Resolver enrichment is optional bounded enrichment.
-- Code Graph enrichment is optional bounded evidence only.
+- Code Graph enrichment is optional bounded non-authoritative enrichment.
 - Code Graph absence, invalid facts, or malformed facts do not block lifecycle.
 - Code Graph remains non-authoritative and does not bypass Stage 6 Gate.
+- Code Graph does not modify dcg.facts.v1.
+- Code Graph evidence is bounded and does not store raw facts.
+- Code Graph evidence is bounded and does not store full graphs.
+- Code Graph evidence is bounded and does not store file contents.
+- Code Graph evidence is bounded and does not store policy outcomes.
 - Stage 7.5 remains unchanged.
 - Stage 8 remains unchanged.
 - Stage 7 blocks before Stage 7.5 and Stage 8 when `execution_permitted` is `false`.
