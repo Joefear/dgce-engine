@@ -2,14 +2,16 @@
 
 This module builds only the locked alignment_record.v1 contract object. It does
 not wire into DGCE lifecycle stages, execute Stage 8, read project files, call
-LLMs, or integrate resolver/code-graph systems.
+LLMs, or treat resolver/code-graph systems as required authorities.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -35,6 +37,7 @@ def build_alignment_record_v1(
     preview_proposed_targets: Sequence[Mapping[str, Any]],
     current_observed_targets: Sequence[Mapping[str, Any]] | None = None,
     resolver_context: Mapping[str, Any] | None = None,
+    code_graph_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic schema-valid Stage 7 alignment record."""
     approved_targets = _normalize_targets(approved_design_expectations, "approved_design_expectations")
@@ -46,9 +49,19 @@ def build_alignment_record_v1(
     )
     available_targets = {**preview_targets, **observed_targets}
     resolver_enrichment = _normalize_resolver_context(resolver_context)
+    code_graph_enrichment = _normalize_code_graph_context(
+        code_graph_context,
+        approved_targets=approved_targets,
+        preview_targets=preview_targets,
+        observed_targets=observed_targets,
+        available_targets=available_targets,
+    )
     drift_items = _sort_drift_items(
-        _build_drift_items(approved_targets, preview_targets, observed_targets, available_targets)
-        + resolver_enrichment["drift_items"]
+        _deduplicate_drift_items(
+            _build_drift_items(approved_targets, preview_targets, observed_targets, available_targets)
+            + resolver_enrichment["drift_items"]
+            + code_graph_enrichment["drift_items"]
+        )
     )
     blocking_count = sum(1 for item in drift_items if item["severity"] == "blocking")
     informational_count = sum(1 for item in drift_items if item["severity"] == "informational")
@@ -66,12 +79,12 @@ def build_alignment_record_v1(
             approved_targets,
             preview_targets,
             observed_targets,
-            resolver_enrichment["evidence"],
+            [*resolver_enrichment["evidence"], *code_graph_enrichment["evidence"]],
         ),
         "alignment_enrichment": {
-            "code_graph_used": False,
+            "code_graph_used": code_graph_enrichment["code_graph_used"],
             "resolver_used": resolver_enrichment["resolver_used"],
-            "enrichment_status": resolver_enrichment["enrichment_status"],
+            "enrichment_status": _combined_enrichment_status(resolver_enrichment, code_graph_enrichment),
         },
         "execution_permitted": alignment_result == "aligned",
         "alignment_summary": {
@@ -201,11 +214,20 @@ def _sort_drift_items(drift_items: Sequence[Mapping[str, str]]) -> list[dict[str
     )
 
 
+def _deduplicate_drift_items(drift_items: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    deduplicated: dict[tuple[str, str, str], dict[str, str]] = {}
+    for item in drift_items:
+        normalized = dict(item)
+        key = (normalized["severity"], normalized["code"], normalized["target"])
+        deduplicated.setdefault(key, normalized)
+    return list(deduplicated.values())
+
+
 def _build_evidence(
     approved_targets: Mapping[str, dict[str, Any]],
     preview_targets: Mapping[str, dict[str, Any]],
     observed_targets: Mapping[str, dict[str, Any]],
-    resolver_evidence: Sequence[Mapping[str, str]] | None = None,
+    enrichment_evidence: Sequence[Mapping[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     evidence_by_key: dict[tuple[str, str], dict[str, str]] = {}
     for source, targets in (
@@ -219,16 +241,16 @@ def _build_evidence(
                 "source": source,
                 "reference": reference,
             }
-    for evidence in resolver_evidence or []:
-        source = _required_string(evidence.get("source"), "resolver_evidence.source")
-        reference = _required_string(evidence.get("reference"), "resolver_evidence.reference")
+    for evidence in enrichment_evidence or []:
+        source = _required_string(evidence.get("source"), "enrichment_evidence.source")
+        reference = _required_string(evidence.get("reference"), "enrichment_evidence.reference")
         snippet_hash = evidence.get("snippet_hash")
         normalized = {
             "source": source,
             "reference": reference,
         }
         if snippet_hash is not None:
-            normalized["snippet_hash"] = _required_string(snippet_hash, "resolver_evidence.snippet_hash")
+            normalized["snippet_hash"] = _required_string(snippet_hash, "enrichment_evidence.snippet_hash")
         evidence_by_key[(source, reference)] = normalized
     return [evidence_by_key[key] for key in sorted(evidence_by_key)]
 
@@ -308,6 +330,227 @@ def _normalize_resolver_context(resolver_context: Mapping[str, Any] | None) -> d
         "drift_items": _sort_drift_items(drift_items),
         "evidence": sorted(evidence, key=lambda item: (item["source"], item["reference"])),
     }
+
+
+def _normalize_code_graph_context(
+    code_graph_context: Mapping[str, Any] | None,
+    *,
+    approved_targets: Mapping[str, dict[str, Any]],
+    preview_targets: Mapping[str, dict[str, Any]],
+    observed_targets: Mapping[str, dict[str, Any]],
+    available_targets: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    facts = _parse_optional_code_graph_facts(code_graph_context)
+    if facts is None or not _code_graph_has_usable_facts(facts):
+        return {
+            "code_graph_used": False,
+            "enrichment_status": "not_used",
+            "drift_items": [],
+            "evidence": [],
+        }
+
+    drift_items: list[dict[str, str]] = []
+    relevant_paths = _code_graph_relevant_paths(facts)
+    target = _code_graph_primary_target(facts, relevant_paths)
+
+    placement_facts = facts.get("placement_facts")
+    if isinstance(placement_facts, Mapping):
+        insertion_candidates = placement_facts.get("insertion_candidates")
+        if placement_facts.get("generation_collision_detected") is True and not insertion_candidates:
+            drift_items.append(
+                _drift_item(
+                    code="insertion_point_invalid",
+                    summary="Code Graph placement facts indicate no bounded insertion candidate is available.",
+                    target=target,
+                    severity="blocking",
+                )
+            )
+
+    patch_facts = facts.get("patch_facts")
+    if isinstance(patch_facts, Mapping) and (
+        patch_facts.get("claimed_intent_match") is False
+        or patch_facts.get("structural_scope_expanded") is True
+    ):
+        drift_items.append(
+            _drift_item(
+                code="structure_mismatch",
+                summary="Code Graph structural facts differ from the approved bounded target shape.",
+                target=target,
+                severity="informational",
+            )
+        )
+
+    approved_names = set(approved_targets)
+    available_names = set(available_targets)
+    observed_names = set(observed_targets)
+    preview_names = set(preview_targets)
+    for path in relevant_paths:
+        if path in approved_names and path not in available_names:
+            drift_items.append(
+                _drift_item(
+                    code="missing_expected_artifact",
+                    summary="Code Graph references an approved artifact absent from preview and observed targets.",
+                    target=path,
+                    severity="blocking",
+                )
+            )
+        elif path not in approved_names and path not in preview_names and path not in observed_names:
+            drift_items.append(
+                _drift_item(
+                    code="unexpected_artifact",
+                    summary="Code Graph references a bounded artifact outside approved expectations.",
+                    target=path,
+                    severity="informational",
+                )
+            )
+
+    impact_facts = facts.get("impact_facts")
+    if isinstance(impact_facts, Mapping) and impact_facts.get("dependency_crossings"):
+        drift_items.append(
+            _drift_item(
+                code="dependency_mismatch",
+                summary="Code Graph dependency facts identify a bounded dependency crossing.",
+                target=target,
+                severity="informational",
+            )
+        )
+
+    drift_items = _sort_drift_items(_deduplicate_drift_items(drift_items))
+    return {
+        "code_graph_used": True,
+        "enrichment_status": "full" if not drift_items else "partial",
+        "drift_items": drift_items,
+        "evidence": [_code_graph_evidence(facts, target)],
+    }
+
+
+def _parse_optional_code_graph_facts(code_graph_context: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if code_graph_context is None or not isinstance(code_graph_context, Mapping):
+        return None
+    raw_context: Any
+    if code_graph_context.get("availability_status") == "available":
+        raw_context = code_graph_context.get("facts")
+    elif "contract_version" in code_graph_context or "contract_name" in code_graph_context:
+        raw_context = code_graph_context
+    else:
+        return None
+    if not isinstance(raw_context, Mapping):
+        return None
+    try:
+        from aether.dgce.code_graph_context import parse_code_graph_context
+
+        return dict(parse_code_graph_context(dict(raw_context)))
+    except Exception:
+        return None
+
+
+def _code_graph_has_usable_facts(facts: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(facts.get(key), Mapping)
+        for key in ("target", "intent_facts", "patch_facts", "placement_facts", "impact_facts", "ownership_facts")
+    )
+
+
+def _code_graph_relevant_paths(facts: Mapping[str, Any]) -> list[str]:
+    paths: set[str] = set()
+    target = facts.get("target")
+    if isinstance(target, Mapping):
+        target_path = _bounded_path(target.get("file_path"))
+        if target_path is not None:
+            paths.add(target_path)
+    patch_facts = facts.get("patch_facts")
+    if isinstance(patch_facts, Mapping):
+        for path in patch_facts.get("touched_files") or []:
+            normalized = _bounded_path(path)
+            if normalized is not None:
+                paths.add(normalized)
+    placement_facts = facts.get("placement_facts")
+    if isinstance(placement_facts, Mapping):
+        for candidate in placement_facts.get("insertion_candidates") or []:
+            if not isinstance(candidate, Mapping):
+                continue
+            normalized = _bounded_path(candidate.get("file_path"))
+            if normalized is not None:
+                paths.add(normalized)
+    return sorted(paths)
+
+
+def _code_graph_primary_target(facts: Mapping[str, Any], relevant_paths: Sequence[str]) -> str:
+    target = facts.get("target")
+    if isinstance(target, Mapping):
+        for key in ("file_path", "symbol_name", "symbol_id"):
+            normalized = _bounded_reference_fragment(target.get(key))
+            if normalized is not None:
+                return normalized
+    if relevant_paths:
+        return relevant_paths[0]
+    return "dcg.facts.v1"
+
+
+def _code_graph_evidence(facts: Mapping[str, Any], target: str) -> dict[str, str]:
+    graph_id = _required_string(facts.get("graph_id"), "code_graph_context.graph_id")
+    graph_digest = hashlib.sha256(graph_id.encode("utf-8")).hexdigest()[:16]
+    anchor = _bounded_reference_fragment(target) or "facts"
+    reference = f"code_graph:{graph_digest}#{anchor}"
+    bounded_hash_payload = {
+        "graph_id": graph_id,
+        "target": target,
+        "paths": _code_graph_relevant_paths(facts),
+        "placement": _code_graph_bounded_mapping(
+            facts.get("placement_facts"),
+            ("generation_collision_detected", "recommended_edit_strategy"),
+        ),
+        "patch": _code_graph_bounded_mapping(
+            facts.get("patch_facts"),
+            ("claimed_intent_match", "structural_scope_expanded"),
+        ),
+        "impact": {
+            "dependency_crossing_count": len(facts.get("impact_facts", {}).get("dependency_crossings") or [])
+            if isinstance(facts.get("impact_facts"), Mapping)
+            else 0,
+        },
+    }
+    return {
+        "source": "code_graph",
+        "reference": reference[:256],
+        "snippet_hash": hashlib.sha256(
+            json.dumps(bounded_hash_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _code_graph_bounded_mapping(value: Any, keys: Sequence[str]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: value.get(key) for key in keys}
+
+
+def _bounded_path(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip() or "\n" in value or "\r" in value:
+        return None
+    normalized = Path(value.strip()).as_posix()
+    return normalized[:256] if normalized else None
+
+
+def _bounded_reference_fragment(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = re.sub(r"[^A-Za-z0-9_.:/-]+", "-", value.strip()).strip("-")
+    return normalized[:96] if normalized else None
+
+
+def _combined_enrichment_status(
+    resolver_enrichment: Mapping[str, Any],
+    code_graph_enrichment: Mapping[str, Any],
+) -> str:
+    statuses: list[str] = []
+    if resolver_enrichment.get("resolver_used") is True:
+        statuses.append(str(resolver_enrichment.get("enrichment_status")))
+    if code_graph_enrichment.get("code_graph_used") is True:
+        statuses.append(str(code_graph_enrichment.get("enrichment_status")))
+    if not statuses:
+        return "not_used"
+    return "full" if all(status == "full" for status in statuses) else "partial"
 
 
 def _normalize_resolver_symbols(value: Any, field_name: str, *, resolved: bool) -> list[dict[str, str]]:

@@ -9,6 +9,8 @@ from jsonschema import Draft202012Validator, FormatChecker
 CONTRACT_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = CONTRACT_ROOT / "schemas" / "alignment" / "alignment_record.v1.schema.json"
 FIXTURE_DIR = CONTRACT_ROOT / "fixtures" / "alignment"
+DCG_SCHEMA_PATH = CONTRACT_ROOT.parents[1] / "contracts" / "dcg" / "dcg-facts-v1.schema.json"
+DCG_CHECKSUM_PATH = CONTRACT_ROOT.parents[1] / "contracts" / "dcg" / "dcg-facts-v1.sha256"
 
 DRIFT_CODES = [
     "missing_expected_artifact",
@@ -166,6 +168,17 @@ def test_alignment_contract_allows_optional_snippet_hash_only_when_valid():
     invalid_hash = copy.deepcopy(payload)
     invalid_hash["evidence"][0]["snippet_hash"] = "not-a-sha256"
     assert list(_validator().iter_errors(invalid_hash))
+
+
+def test_stage7_code_graph_enrichment_does_not_change_dcg_facts_v1_contract():
+    import hashlib
+
+    expected = DCG_CHECKSUM_PATH.read_text(encoding="utf-8").strip().split()[0]
+
+    assert hashlib.sha256(DCG_SCHEMA_PATH.read_bytes()).hexdigest() == expected
+    dcg_schema = json.loads(DCG_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert dcg_schema["properties"]["contract_version"]["const"] == "dcg.facts.v1"
+    assert "alignment_enrichment" not in json.dumps(dcg_schema, sort_keys=True)
 
 
 def test_alignment_fixtures_lock_resolver_enrichment_fields():

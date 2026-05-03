@@ -54,7 +54,21 @@ When resolver evidence is used, Stage 7 records only bounded metadata:
 
 Resolver evidence must not include raw symbol tables, raw resolver payloads, raw file contents, model/provider text, Blueprint graph data, binary Blueprint payloads, or unbounded blobs. The resolver does not perform policy evaluation, simulation validation, Unreal project mutation, Blueprint mutation, Unreal project writes, Blueprint asset parsing, or binary Blueprint parsing.
 
-Code Graph remains not integrated into Stage 7 in this slice. `code_graph_used` remains `false`.
+## Code Graph Enrichment
+
+Stage 7 may use valid `dcg.facts.v1` Code Graph facts as optional bounded enrichment when those facts are already present on the section input and pass the existing Code Graph contract validation. Code Graph is never required, never bypasses Stage 6 Gate, and is not policy authority.
+
+Code Graph absence, unavailability, malformed facts, invalid facts, or facts without usable bounded Stage 7 context result in `code_graph_used=false`. If resolver enrichment is also absent, `enrichment_status=not_used`; otherwise resolver enrichment status remains governed by the resolver behavior above.
+
+When Code Graph evidence is used, Stage 7 records only bounded metadata:
+
+- `source=code_graph`
+- a bounded deterministic reference
+- an optional deterministic `snippet_hash`
+
+Code Graph enrichment may only contribute to existing drift codes: `insertion_point_invalid`, `structure_mismatch`, `missing_expected_artifact`, `unexpected_artifact`, and `dependency_mismatch`. Blocking Code Graph drift can block lifecycle only through those existing drift codes. Informational Code Graph drift does not block lifecycle advancement, and the legacy compatibility view exposes only blocking `drift_findings`.
+
+Code Graph evidence must not include raw `dcg.facts.v1` payloads, full graphs, unbounded file contents, raw file bodies, policy outcomes, Blueprint graph data, binary Blueprint payloads, or write endpoints.
 
 ## Reserved Drift Codes
 
@@ -108,11 +122,11 @@ The API and SDK are read-only. Missing, malformed, contract-invalid, or unsafe s
 
 ## Explicit Boundaries
 
-Stage 7 Alignment currently does not perform policy evaluation, simulation validation, execution, Blueprint mutation, Unreal project writes, lifecycle advancement, Stage 8 invocation, mandatory resolver execution, or Code Graph integration.
+Stage 7 Alignment currently does not perform policy evaluation, simulation validation, execution, Blueprint mutation, Unreal project writes, lifecycle advancement, Stage 8 invocation, mandatory resolver execution, mandatory Code Graph execution, Code Graph mutation, full graph storage, or raw `dcg.facts.v1` persistence.
 
 ## Subsystem Lock Declaration v0.1
 
-Stage 7 Alignment is implemented through resolver enrichment v0.1.
+Stage 7 Alignment is implemented through resolver enrichment v0.1 and Code Graph enrichment v0.1.
 
 Locked lineage:
 
@@ -152,10 +166,13 @@ Locked declaration:
 
 - Legacy lifecycle compatibility view is preserved separately from the canonical v1 artifact.
 - Resolver enrichment is optional bounded enrichment.
-- Code Graph Stage 7 enrichment remains NOT implemented.
+- Code Graph enrichment is optional bounded evidence only.
+- Code Graph absence, invalid facts, or malformed facts do not block lifecycle.
+- Code Graph remains non-authoritative and does not bypass Stage 6 Gate.
 - Stage 7.5 remains unchanged.
 - Stage 8 remains unchanged.
 - Stage 7 blocks before Stage 7.5 and Stage 8 when `execution_permitted` is `false`.
 - informational drift does not block lifecycle.
 - legacy drift_findings expose blocking-only drift.
 - Resolver evidence is bounded and does not store raw symbol tables or raw resolver payloads.
+- Code Graph evidence is bounded and does not store raw `dcg.facts.v1` payloads or full graphs.

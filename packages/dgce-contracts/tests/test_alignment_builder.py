@@ -64,6 +64,85 @@ def _build(**kwargs) -> dict:
     return build_alignment_record_v1(**defaults)
 
 
+def _code_graph_context(
+    *,
+    file_path: str = "api/mission.py",
+    collision: bool = False,
+    candidates: list[dict] | None = None,
+    claimed_intent_match: bool = True,
+    dependency_crossings: list[str] | None = None,
+) -> dict:
+    return {
+        "contract_name": "DefiantCodeGraphFacts",
+        "contract_version": "dcg.facts.v1",
+        "graph_id": "graph:stage7-builder",
+        "workspace_id": "workspace:stage7",
+        "repo_id": "repo:stage7",
+        "language": "python",
+        "generated_at": "2026-05-02T19:00:00Z",
+        "source": "defiant-code-graph",
+        "target": {
+            "file_path": file_path,
+            "symbol_id": "sym:mission_api",
+            "symbol_name": "MissionApi",
+            "symbol_kind": "module",
+            "span": {"start_line": 1, "end_line": 20},
+        },
+        "intent_facts": {
+            "structural_scope": "file",
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": False,
+            "related_symbols": ["sym:mission_model"],
+            "related_files": [file_path],
+        },
+        "patch_facts": {
+            "touched_files": [file_path],
+            "touched_symbols": ["sym:mission_api"],
+            "structural_scope_expanded": False,
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": False,
+            "claimed_intent_match": claimed_intent_match,
+        },
+        "placement_facts": {
+            "insertion_candidates": (
+                candidates
+                if candidates is not None
+                else [
+                    {
+                        "file_path": file_path,
+                        "symbol_id": "sym:mission_api",
+                        "symbol_name": "MissionApi",
+                        "strategy": "append_after_symbol",
+                        "span": {"start_line": 20, "end_line": 20},
+                    }
+                ]
+            ),
+            "generation_collision_detected": collision,
+            "recommended_edit_strategy": "bounded_insert",
+        },
+        "impact_facts": {
+            "blast_radius": {"files": 1, "symbols": 1},
+            "dependency_crossings": list(dependency_crossings or []),
+            "dependent_symbols": [],
+        },
+        "ownership_facts": {
+            "target_ownership": "generated",
+            "touched_ownership_classes": ["generated"],
+        },
+        "meta": {
+            "parser_family": "tree-sitter",
+            "snapshot_id": "snapshot:stage7-builder",
+            "notes": ["bounded read-only facts"],
+        },
+    }
+
+
 def test_aligned_baseline_produces_schema_valid_record():
     record = _build()
 
@@ -321,3 +400,102 @@ def test_resolver_evidence_keys_are_bounded_to_source_and_reference_only():
         assert set(evidence_item.keys()) <= {"source", "reference", "snippet_hash"}
         for forbidden in ("raw_symbols", "symbol_table", "resolver_payload", "raw_model_text", "raw_file_content"):
             assert forbidden not in evidence_item
+
+
+def test_code_graph_valid_facts_add_bounded_evidence_and_full_enrichment():
+    record = _build(code_graph_context=_code_graph_context())
+
+    _assert_schema_valid(record)
+    assert record["alignment_result"] == "aligned"
+    assert record["execution_permitted"] is True
+    assert record["alignment_enrichment"] == {
+        "code_graph_used": True,
+        "resolver_used": False,
+        "enrichment_status": "full",
+    }
+    code_graph_evidence = [item for item in record["evidence"] if item["source"] == "code_graph"]
+    assert len(code_graph_evidence) == 1
+    assert code_graph_evidence[0]["reference"].startswith("code_graph:")
+    assert set(code_graph_evidence[0]) <= {"source", "reference", "snippet_hash"}
+    for forbidden in ("raw_symbols", "symbol_table", "raw_file_content", "policy_outcome", "dcg_facts"):
+        assert forbidden not in code_graph_evidence[0]
+
+
+def test_code_graph_blocking_insertion_point_invalid_blocks_with_existing_code():
+    record = _build(code_graph_context=_code_graph_context(collision=True, candidates=[]))
+
+    _assert_schema_valid(record)
+    assert record["alignment_result"] == "misaligned"
+    assert record["execution_permitted"] is False
+    assert record["alignment_enrichment"]["code_graph_used"] is True
+    assert record["alignment_enrichment"]["enrichment_status"] == "partial"
+    assert record["drift_items"] == [
+        {
+            "code": "insertion_point_invalid",
+            "summary": "Code Graph placement facts indicate no bounded insertion candidate is available.",
+            "target": "api/mission.py",
+            "severity": "blocking",
+        }
+    ]
+
+
+def test_code_graph_informational_structure_mismatch_does_not_block():
+    record = _build(code_graph_context=_code_graph_context(claimed_intent_match=False))
+
+    _assert_schema_valid(record)
+    assert record["alignment_result"] == "aligned"
+    assert record["execution_permitted"] is True
+    assert record["alignment_enrichment"]["code_graph_used"] is True
+    assert record["alignment_enrichment"]["enrichment_status"] == "partial"
+    assert record["drift_items"] == [
+        {
+            "code": "structure_mismatch",
+            "summary": "Code Graph structural facts differ from the approved bounded target shape.",
+            "target": "api/mission.py",
+            "severity": "informational",
+        }
+    ]
+
+
+def test_code_graph_invalid_or_absent_context_is_not_required():
+    malformed = {"contract_name": "DefiantCodeGraphFacts", "contract_version": "dcg.facts.v2", "graph_id": "graph:bad"}
+
+    for context in (None, malformed, {"availability_status": "invalid", "degradation_reason": "facts_malformed"}):
+        record = _build(code_graph_context=context)
+
+        _assert_schema_valid(record)
+        assert record["alignment_result"] == "aligned"
+        assert record["execution_permitted"] is True
+        assert record["alignment_enrichment"] == {
+            "code_graph_used": False,
+            "resolver_used": False,
+            "enrichment_status": "not_used",
+        }
+        assert "code_graph" not in {item["source"] for item in record["evidence"]}
+
+
+def test_resolver_enrichment_status_is_full_with_full_code_graph_enrichment():
+    record = _build(
+        resolver_context={
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_PlayerShip",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/Blueprints/BP_PlayerShip.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "exact_path_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        },
+        code_graph_context=_code_graph_context(),
+    )
+
+    _assert_schema_valid(record)
+    assert record["alignment_enrichment"] == {
+        "code_graph_used": True,
+        "resolver_used": True,
+        "enrichment_status": "full",
+    }
+    assert {"code_graph", "resolver"}.issubset({item["source"] for item in record["evidence"]})

@@ -256,9 +256,87 @@ def _write_invalid_resolver_output(project_root: Path) -> Path:
     return artifact_path
 
 
-def _approve_preview(project_root: Path, *, plan: FilePlan) -> None:
+def _stage7_code_graph_context(
+    *,
+    file_path: str = "deploy/docker-compose.yaml",
+    collision: bool = False,
+    candidates: list[dict] | None = None,
+    claimed_intent_match: bool = True,
+) -> dict:
+    return {
+        "contract_name": "DefiantCodeGraphFacts",
+        "contract_version": "dcg.facts.v1",
+        "graph_id": "graph:stage7-lifecycle",
+        "workspace_id": "workspace:stage7",
+        "repo_id": "repo:stage7",
+        "language": "yaml",
+        "generated_at": "2026-05-02T22:30:00Z",
+        "source": "defiant-code-graph",
+        "target": {
+            "file_path": file_path,
+            "symbol_id": "sym:deployment_manifest",
+            "symbol_name": "DeploymentManifest",
+            "symbol_kind": "manifest",
+            "span": {"start_line": 1, "end_line": 20},
+        },
+        "intent_facts": {
+            "structural_scope": "file",
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": False,
+            "related_symbols": ["sym:deployment_service"],
+            "related_files": [file_path],
+        },
+        "patch_facts": {
+            "touched_files": [file_path],
+            "touched_symbols": ["sym:deployment_manifest"],
+            "structural_scope_expanded": False,
+            "module_boundary_crossed": False,
+            "trust_boundary_crossed": False,
+            "ownership_boundary_crossed": False,
+            "protected_region_overlap": False,
+            "governed_region_overlap": False,
+            "claimed_intent_match": claimed_intent_match,
+        },
+        "placement_facts": {
+            "insertion_candidates": (
+                candidates
+                if candidates is not None
+                else [
+                    {
+                        "file_path": file_path,
+                        "symbol_id": "sym:deployment_manifest",
+                        "symbol_name": "DeploymentManifest",
+                        "strategy": "append_after_symbol",
+                        "span": {"start_line": 20, "end_line": 20},
+                    }
+                ]
+            ),
+            "generation_collision_detected": collision,
+            "recommended_edit_strategy": "bounded_insert",
+        },
+        "impact_facts": {
+            "blast_radius": {"files": 1, "symbols": 1},
+            "dependency_crossings": [],
+            "dependent_symbols": [],
+        },
+        "ownership_facts": {
+            "target_ownership": "generated",
+            "touched_ownership_classes": ["generated"],
+        },
+        "meta": {
+            "parser_family": "tree-sitter",
+            "snapshot_id": "snapshot:stage7-lifecycle",
+            "notes": ["bounded read-only facts"],
+        },
+    }
+
+
+def _approve_preview(project_root: Path, *, plan: FilePlan, section: DGCESection | None = None) -> None:
     run_section_with_workspace(
-        _section(),
+        section or _section(),
         project_root,
         incremental_mode="incremental_v2_2",
         prepared_file_plan=plan,
@@ -542,6 +620,182 @@ def test_stage7_resolver_absent_keeps_enrichment_not_used_and_allows_lifecycle(m
         "enrichment_status": "not_used",
     }
     assert "resolver" not in {item["source"] for item in alignment["evidence"]}
+    assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_code_graph_absent_keeps_enrichment_not_used_and_allows_lifecycle(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_code_graph_absent")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert result.run_outcome_class != "blocked_alignment"
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": False,
+        "enrichment_status": "not_used",
+    }
+    assert "code_graph" not in {item["source"] for item in alignment["evidence"]}
+    assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_valid_code_graph_evidence_is_bounded_and_visible_in_read_model(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_code_graph_evidence")
+    plan = _infra_file_plan()
+    section = _section().model_copy(update={"code_graph_context": _stage7_code_graph_context()})
+    _approve_preview(project_root, plan=plan, section=section)
+
+    result = run_section_with_workspace(
+        section,
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+    read_model = get_stage7_alignment_read_model(project_root, "mission-board")
+    code_graph_evidence = [item for item in alignment["evidence"] if item["source"] == "code_graph"]
+
+    assert result.run_outcome_class != "blocked_alignment"
+    assert validate_alignment_record_v1(alignment) is True
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": True,
+        "resolver_used": False,
+        "enrichment_status": "full",
+    }
+    assert len(code_graph_evidence) == 1
+    assert code_graph_evidence[0]["reference"].startswith("code_graph:")
+    assert set(code_graph_evidence[0]) <= {"source", "reference", "snippet_hash"}
+    assert read_model["code_graph_used"] is True
+    assert read_model["enrichment_status"] == "full"
+    assert "code_graph" in read_model["evidence_sources"]
+    assert sorted(read_model.keys()) == STAGE7_READ_MODEL_KEYS
+    assert "facts" not in json.dumps(alignment["evidence"], sort_keys=True).lower()
+    assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_code_graph_insertion_point_invalid_blocks_before_stage75_and_stage8(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_code_graph_blocks")
+    plan = _infra_file_plan()
+    section = _section().model_copy(
+        update={"code_graph_context": _stage7_code_graph_context(collision=True, candidates=[])}
+    )
+    _approve_preview(project_root, plan=plan, section=section)
+
+    result = run_section_with_workspace(
+        section,
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert result.run_outcome_class == "blocked_alignment"
+    assert result.execution_outcome["drift_findings"] == ["insertion_point_invalid"]
+    assert alignment["alignment_result"] == "misaligned"
+    assert alignment["execution_permitted"] is False
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": True,
+        "resolver_used": False,
+        "enrichment_status": "partial",
+    }
+    assert alignment["drift_items"] == [
+        {
+            "code": "insertion_point_invalid",
+            "summary": "Code Graph placement facts indicate no bounded insertion candidate is available.",
+            "target": "deploy/docker-compose.yaml",
+            "severity": "blocking",
+        }
+    ]
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").exists()
+    assert not (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_code_graph_informational_structure_mismatch_does_not_block_lifecycle(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_code_graph_informational")
+    plan = _infra_file_plan()
+    section = _section().model_copy(
+        update={"code_graph_context": _stage7_code_graph_context(claimed_intent_match=False)}
+    )
+    _approve_preview(project_root, plan=plan, section=section)
+
+    legacy_view = _record_alignment_direct(project_root, plan=plan)
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert validate_alignment_record_v1(alignment) is True
+    assert alignment["alignment_result"] == "aligned"
+    assert alignment["execution_permitted"] is True
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": True,
+        "resolver_used": False,
+        "enrichment_status": "partial",
+    }
+    assert alignment["drift_items"] == [
+        {
+            "code": "structure_mismatch",
+            "summary": "Code Graph structural facts differ from the approved bounded target shape.",
+            "target": "deploy/docker-compose.yaml",
+            "severity": "informational",
+        }
+    ]
+    assert legacy_view["alignment_blocked"] is False
+    assert legacy_view["alignment_status"] == "aligned"
+    assert legacy_view["drift_findings"] == []
+
+
+def test_stage7_invalid_code_graph_facts_are_ignored_and_not_required(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_code_graph_invalid")
+    plan = _infra_file_plan()
+    section = _section().model_copy(
+        update={"code_graph_context": {"contract_name": "DefiantCodeGraphFacts", "contract_version": "wrong", "graph_id": "graph:bad"}}
+    )
+    _approve_preview(project_root, plan=plan, section=section)
+
+    result = run_section_with_workspace(
+        section,
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    alignment = _read_json(project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json")
+
+    assert result.run_outcome_class != "blocked_alignment"
+    assert alignment["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": False,
+        "enrichment_status": "not_used",
+    }
+    assert "code_graph" not in {item["source"] for item in alignment["evidence"]}
     assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
 
 

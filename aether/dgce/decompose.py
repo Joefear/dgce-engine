@@ -1384,6 +1384,7 @@ def _build_stage7_alignment_record_v1(
         preview_proposed_targets=_stage7_preview_proposed_targets(alignment_input_payload),
         current_observed_targets=_stage7_current_observed_targets(alignment_input_payload),
         resolver_context=_stage7_resolver_context(workspace_root),
+        code_graph_context=alignment_input_payload.get("code_graph_context"),
     )
 
 
