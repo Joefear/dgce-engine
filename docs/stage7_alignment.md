@@ -109,3 +109,53 @@ The API and SDK are read-only. Missing, malformed, contract-invalid, or unsafe s
 ## Explicit Boundaries
 
 Stage 7 Alignment currently does not perform policy evaluation, simulation validation, execution, Blueprint mutation, Unreal project writes, lifecycle advancement, Stage 8 invocation, mandatory resolver execution, or Code Graph integration.
+
+## Subsystem Lock Declaration v0.1
+
+Stage 7 Alignment is implemented through resolver enrichment v0.1.
+
+Locked lineage:
+
+- Stage 7 Alignment Contract Schema v1.0: `47c2a4a`
+- Stage 7 Alignment Record Builder v0.1: `21b05c0`
+- Stage 7 Artifact Persistence + Read Model v0.1: `529c222`
+- Stage 7 Read API + SDK v0.1: `d73452b`
+- Stage 7 Docs + Fixtures + Contract-Lock Expansion: `07fd535`
+- Stage 7 Resolver Enrichment v0.1: `7ecaf7d`
+- Stage 7 Resolver Enrichment docs/contract-lock: `5349d49`
+
+Canonical artifact:
+
+```text
+.dce/execution/alignment/{section_id}.alignment.json
+```
+
+Canonical schema:
+
+```text
+packages/dgce-contracts/schemas/alignment/alignment_record.v1.schema.json
+```
+
+Read API route:
+
+```text
+GET /v1/dgce/stage7/alignment/{section_id}
+```
+
+SDK helper:
+
+```text
+DGCEClient.get_stage7_alignment_read_model
+```
+
+Locked declaration:
+
+- Legacy lifecycle compatibility view is preserved separately from the canonical v1 artifact.
+- Resolver enrichment is optional bounded enrichment.
+- Code Graph Stage 7 enrichment remains NOT implemented.
+- Stage 7.5 remains unchanged.
+- Stage 8 remains unchanged.
+- Stage 7 blocks before Stage 7.5 and Stage 8 when `execution_permitted` is `false`.
+- informational drift does not block lifecycle.
+- legacy drift_findings expose blocking-only drift.
+- Resolver evidence is bounded and does not store raw symbol tables or raw resolver payloads.
