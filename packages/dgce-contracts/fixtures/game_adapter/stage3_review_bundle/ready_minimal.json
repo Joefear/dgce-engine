@@ -1,0 +1,53 @@
+{
+  "adapter": "game",
+  "approval_readiness": {
+    "blocking_review_issues_count": 0,
+    "informational_review_issues_count": 0,
+    "ready_for_approval": true
+  },
+  "artifact_type": "game_adapter_stage3_review_bundle",
+  "contract_name": "DGCEGameAdapterStage3ReviewBundle",
+  "contract_version": "dgce.game_adapter.stage3.review_bundle.v1",
+  "created_at": "2026-05-03T12:00:00Z",
+  "dependency_notes": [],
+  "domain": "game_adapter",
+  "evidence": [
+    {
+      "reference": ".dce/plans/game-adapter-stage2.preview.json",
+      "source": "preview"
+    }
+  ],
+  "forbidden_runtime_actions": [
+    "no_approval_granted",
+    "no_execution_performed",
+    "no_stage8_write_instructions",
+    "no_blueprint_mutation",
+    "no_unreal_project_writes",
+    "no_binary_blueprint_parsing",
+    "no_simulation_run",
+    "no_guardrail_policy_decision"
+  ],
+  "operator_questions": [],
+  "proposed_changes": [
+    {
+      "change_id": "change.inventory-component",
+      "human_readable_summary": "Review the proposed InventoryComponent attachment for the player Blueprint.",
+      "operation": "modify",
+      "output_strategy": "blueprint",
+      "review_risk": "medium",
+      "target_kind": "blueprint",
+      "target_path": "Content/Blueprints/BP_Player.uasset"
+    }
+  ],
+  "review_id": "review:mission-board:001",
+  "review_status": "ready_for_operator_review",
+  "review_summary": {
+    "operator_summary": "Review one proposed Blueprint-scoped gameplay change before approval.",
+    "primary_intent": "Add inventory component behavior to the player-facing gameplay flow.",
+    "risk_summary": "Medium risk because the change touches a player Blueprint but does not execute or mutate assets.",
+    "title": "Mission Board Inventory Review"
+  },
+  "section_id": "mission-board",
+  "source_input_fingerprint": null,
+  "source_preview_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+}

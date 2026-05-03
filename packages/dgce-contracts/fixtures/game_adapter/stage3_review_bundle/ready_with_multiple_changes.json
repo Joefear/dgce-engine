@@ -1,0 +1,87 @@
+{
+  "adapter": "game",
+  "approval_readiness": {
+    "blocking_review_issues_count": 0,
+    "informational_review_issues_count": 2,
+    "ready_for_approval": true
+  },
+  "artifact_type": "game_adapter_stage3_review_bundle",
+  "contract_name": "DGCEGameAdapterStage3ReviewBundle",
+  "contract_version": "dgce.game_adapter.stage3.review_bundle.v1",
+  "created_at": "2026-05-03T12:15:00Z",
+  "dependency_notes": [
+    "BP_Player is referenced as the bounded target for component review.",
+    "InventoryComponent candidates came from path metadata only."
+  ],
+  "domain": "game_adapter",
+  "evidence": [
+    {
+      "reference": ".dce/plans/game-adapter-stage2.preview.json",
+      "source": "preview"
+    },
+    {
+      "reference": ".dce/plans/unreal-project-structure.manifest.json#Content/Blueprints/BP_Player.uasset",
+      "source": "unreal_manifest"
+    },
+    {
+      "reference": ".dce/plans/unreal-symbol-candidates.index.json#InventoryComponent",
+      "source": "symbol_candidate_index"
+    },
+    {
+      "reference": ".dce/plans/unreal-symbol-resolver.resolution.json#BP_Player",
+      "snippet_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "source": "resolver"
+    }
+  ],
+  "forbidden_runtime_actions": [
+    "no_approval_granted",
+    "no_execution_performed",
+    "no_stage8_write_instructions",
+    "no_blueprint_mutation",
+    "no_unreal_project_writes",
+    "no_binary_blueprint_parsing",
+    "no_simulation_run",
+    "no_guardrail_policy_decision"
+  ],
+  "operator_questions": [],
+  "proposed_changes": [
+    {
+      "change_id": "change.player-inventory-component",
+      "human_readable_summary": "Review adding InventoryComponent to BP_Player through a Blueprint-oriented output strategy.",
+      "operation": "modify",
+      "output_strategy": "blueprint",
+      "review_risk": "medium",
+      "target_kind": "blueprint",
+      "target_path": "Content/Blueprints/BP_Player.uasset"
+    },
+    {
+      "change_id": "change.inventory-component-cpp",
+      "human_readable_summary": "Review the proposed C++ component shell before any approval or project write.",
+      "operation": "create",
+      "output_strategy": "cpp",
+      "review_risk": "medium",
+      "target_kind": "cpp",
+      "target_path": "Source/FixtureGame/Public/InventoryComponent.h"
+    },
+    {
+      "change_id": "change.default-game-config-note",
+      "human_readable_summary": "Review the config note and keep it as informational because no config write is planned.",
+      "operation": "ignore",
+      "output_strategy": "none",
+      "review_risk": "low",
+      "target_kind": "config",
+      "target_path": "Config/DefaultGame.ini"
+    }
+  ],
+  "review_id": "review:mission-board:002",
+  "review_status": "ready_for_operator_review",
+  "review_summary": {
+    "operator_summary": "Review Blueprint and C++ proposed changes as bounded descriptions before approval.",
+    "primary_intent": "Prepare inventory gameplay changes for operator review.",
+    "risk_summary": "Medium aggregate risk because both Blueprint and C++ surfaces are represented, but this bundle does not write files.",
+    "title": "Mission Board Multi-Change Review"
+  },
+  "section_id": "mission-board",
+  "source_input_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_preview_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

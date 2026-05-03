@@ -1,0 +1,68 @@
+{
+  "adapter": "game",
+  "approval_readiness": {
+    "blocking_review_issues_count": 1,
+    "informational_review_issues_count": 1,
+    "ready_for_approval": false
+  },
+  "artifact_type": "game_adapter_stage3_review_bundle",
+  "contract_name": "DGCEGameAdapterStage3ReviewBundle",
+  "contract_version": "dgce.game_adapter.stage3.review_bundle.v1",
+  "created_at": "2026-05-03T12:30:00Z",
+  "dependency_notes": [
+    "The requested target path could not be resolved to a bounded Blueprint or C++ symbol.",
+    "The operator should clarify the intended gameplay asset before approval."
+  ],
+  "domain": "game_adapter",
+  "evidence": [
+    {
+      "reference": ".dce/plans/game-adapter-stage2.preview.json#change.inventory-unknown",
+      "source": "preview"
+    },
+    {
+      "reference": ".dce/plans/unreal-symbol-resolver.resolution.json#MissingInventoryWidget",
+      "snippet_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "source": "resolver"
+    },
+    {
+      "reference": "operator_context:mission-board-review-note",
+      "source": "operator_context"
+    }
+  ],
+  "forbidden_runtime_actions": [
+    "no_approval_granted",
+    "no_execution_performed",
+    "no_stage8_write_instructions",
+    "no_blueprint_mutation",
+    "no_unreal_project_writes",
+    "no_binary_blueprint_parsing",
+    "no_simulation_run",
+    "no_guardrail_policy_decision"
+  ],
+  "operator_questions": [
+    "Which Blueprint or C++ class should own the inventory display change?",
+    "Should this request create a new asset or modify an existing gameplay asset?"
+  ],
+  "proposed_changes": [
+    {
+      "change_id": "change.inventory-unknown",
+      "human_readable_summary": "Review is blocked because the intended Unreal target is unresolved.",
+      "operation": "ignore",
+      "output_strategy": "unknown",
+      "review_risk": "high",
+      "target_kind": "unknown",
+      "target_path": "Content/Blueprints/UnknownInventoryTarget.uasset"
+    }
+  ],
+  "review_id": "review:mission-board:003",
+  "review_status": "blocked",
+  "review_summary": {
+    "operator_summary": "Review cannot proceed cleanly until the intended Unreal target is clarified.",
+    "primary_intent": "Clarify the target for inventory display behavior before approval.",
+    "risk_summary": "High risk because the target is unresolved and approval readiness is false.",
+    "title": "Mission Board Blocked Review"
+  },
+  "section_id": "mission-board",
+  "source_input_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "source_preview_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}
