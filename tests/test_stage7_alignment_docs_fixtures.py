@@ -34,6 +34,9 @@ FORBIDDEN_READ_MODEL_FIELDS = {
     "timestamp",
     "drift_items",
     "evidence",
+    "raw_symbols",
+    "symbol_table",
+    "resolver_payload",
 }
 TIMESTAMP = "2026-05-02T22:00:00Z"
 INPUT_FP = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -68,7 +71,55 @@ def _target(target: str, *, reference: str | None = None, structure: dict | None
     return payload
 
 
-def _alignment_record(*, alignment_id: str, misaligned: bool = False) -> dict:
+def _resolver_context(case_name: str | None) -> dict | None:
+    if case_name is None:
+        return None
+    if case_name == "exact_match":
+        return {
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_MissionBoard",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/BP_MissionBoard.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "exact_path_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    if case_name == "candidate_match":
+        return {
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_MissionBoard",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/BP_MissionBoard.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "candidate_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    if case_name == "unresolved_symbol":
+        return {
+            "resolved_symbols": [],
+            "unresolved_symbols": [
+                {
+                    "symbol_name": "MissingMissionBoard",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": None,
+                    "resolution_method": "path_metadata",
+                    "confidence": "unresolved",
+                }
+            ],
+            "resolution_status": "unresolved",
+        }
+    raise ValueError(f"unsupported resolver fixture case: {case_name}")
+
+
+def _alignment_record(*, alignment_id: str, misaligned: bool = False, resolver_case: str | None = None) -> dict:
     approved = [
         _target("api/mission.py", structure={"kind": "api", "version": 1}),
         _target("models/mission.py", structure={"kind": "model", "version": 1}),
@@ -93,6 +144,7 @@ def _alignment_record(*, alignment_id: str, misaligned: bool = False) -> dict:
         approved_design_expectations=approved,
         preview_proposed_targets=preview,
         current_observed_targets=observed,
+        resolver_context=_resolver_context(resolver_case),
     )
 
 
@@ -114,6 +166,21 @@ def test_stage7_alignment_document_covers_locked_surfaces_and_boundaries():
         "design_contract_violation",
         "dependency_mismatch",
         "adapter_constraint_violation",
+        "resolver is optional",
+        "resolver_used=false",
+        "enrichment_status=not_used",
+        "invalid, or incomplete resolver output is ignored",
+        "Exact resolved symbols can add bounded resolver evidence",
+        "Candidate matches create informational `symbol_resolution_conflict` drift",
+        "Unresolved symbols create blocking `symbol_resolution_conflict` drift",
+        "block before Stage 7.5 and Stage 8",
+        "Code Graph remains not integrated",
+        "does not perform policy evaluation",
+        "simulation validation",
+        "Unreal project mutation",
+        "Blueprint mutation",
+        "raw symbol tables",
+        "raw resolver payloads",
         "does not perform policy evaluation",
         "simulation validation",
         "Blueprint mutation",
@@ -142,8 +209,48 @@ def test_missing_read_error_fixture_matches_read_api_projection():
     assert get_stage7_alignment_read_model(workspace_path, "mission-board") == _fixture("missing_read_error.json")
 
 
+def test_resolver_absent_read_model_fixture_matches_builder_projection():
+    record = _alignment_record(alignment_id="alignment.docs.fixture.resolver_absent")
+
+    assert build_alignment_record_read_model_v1("mission-board", record) == _fixture("resolver_absent_read_model.json")
+
+
+def test_resolver_exact_match_read_model_fixture_matches_builder_projection():
+    record = _alignment_record(
+        alignment_id="alignment.docs.fixture.resolver_exact_match",
+        resolver_case="exact_match",
+    )
+
+    assert build_alignment_record_read_model_v1("mission-board", record) == _fixture("resolver_exact_match_read_model.json")
+
+
+def test_resolver_unresolved_symbol_read_model_fixture_matches_builder_projection():
+    record = _alignment_record(
+        alignment_id="alignment.docs.fixture.resolver_unresolved_symbol",
+        resolver_case="unresolved_symbol",
+    )
+
+    assert build_alignment_record_read_model_v1("mission-board", record) == _fixture("resolver_unresolved_symbol_read_model.json")
+
+
+def test_resolver_candidate_match_read_model_fixture_matches_builder_projection():
+    record = _alignment_record(
+        alignment_id="alignment.docs.fixture.resolver_candidate_match",
+        resolver_case="candidate_match",
+    )
+
+    assert build_alignment_record_read_model_v1("mission-board", record) == _fixture("resolver_candidate_match_read_model.json")
+
+
 def test_read_model_fixture_field_list_is_exactly_bounded_surface():
-    for fixture_name in ("aligned_read_model.json", "misaligned_read_model.json"):
+    for fixture_name in (
+        "aligned_read_model.json",
+        "misaligned_read_model.json",
+        "resolver_absent_read_model.json",
+        "resolver_exact_match_read_model.json",
+        "resolver_unresolved_symbol_read_model.json",
+        "resolver_candidate_match_read_model.json",
+    ):
         fixture = _fixture(fixture_name)
 
         assert set(fixture) == READ_MODEL_FIELDS
@@ -161,6 +268,51 @@ def test_read_model_fixtures_roundtrip_through_persistence_read_surface():
 
     persist_alignment_record_v1(misaligned, workspace_path=workspace_path, section_id="mission-board")
     assert get_stage7_alignment_read_model(workspace_path, "mission-board") == _fixture("misaligned_read_model.json")
+
+
+def test_resolver_read_model_fixtures_roundtrip_through_persistence_read_surface():
+    workspace_path = _workspace_dir("stage7_alignment_docs_resolver_fixture_roundtrip")
+    cases = [
+        ("resolver_absent_read_model.json", _alignment_record(alignment_id="alignment.docs.fixture.resolver_absent")),
+        (
+            "resolver_exact_match_read_model.json",
+            _alignment_record(alignment_id="alignment.docs.fixture.resolver_exact_match", resolver_case="exact_match"),
+        ),
+        (
+            "resolver_unresolved_symbol_read_model.json",
+            _alignment_record(alignment_id="alignment.docs.fixture.resolver_unresolved_symbol", resolver_case="unresolved_symbol"),
+        ),
+        (
+            "resolver_candidate_match_read_model.json",
+            _alignment_record(alignment_id="alignment.docs.fixture.resolver_candidate_match", resolver_case="candidate_match"),
+        ),
+    ]
+    for fixture_name, record in cases:
+        persist_alignment_record_v1(record, workspace_path=workspace_path, section_id="mission-board")
+        assert get_stage7_alignment_read_model(workspace_path, "mission-board") == _fixture(fixture_name)
+
+
+def test_resolver_read_model_fixtures_lock_enrichment_projection():
+    absent = _fixture("resolver_absent_read_model.json")
+    exact = _fixture("resolver_exact_match_read_model.json")
+    unresolved = _fixture("resolver_unresolved_symbol_read_model.json")
+    candidate = _fixture("resolver_candidate_match_read_model.json")
+
+    assert absent["resolver_used"] is False
+    assert absent["enrichment_status"] == "not_used"
+    assert "resolver" not in absent["evidence_sources"]
+    assert exact["resolver_used"] is True
+    assert exact["enrichment_status"] == "full"
+    assert "resolver" in exact["evidence_sources"]
+    assert unresolved["alignment_result"] == "misaligned"
+    assert unresolved["execution_permitted"] is False
+    assert unresolved["drift_codes"] == ["symbol_resolution_conflict"]
+    assert unresolved["resolver_used"] is True
+    assert unresolved["enrichment_status"] == "partial"
+    assert candidate["alignment_result"] == "aligned"
+    assert candidate["execution_permitted"] is True
+    assert candidate["drift_codes"] == ["symbol_resolution_conflict"]
+    assert candidate["informational_issues_count"] == 1
 
 
 def test_stage7_alignment_api_route_remains_get_only():

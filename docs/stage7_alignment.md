@@ -40,9 +40,25 @@ If any blocking drift exists, the record is `misaligned`, `drift_detected` is `t
 
 The builder does not infer from free text and does not use LLMs.
 
+## Resolver Enrichment
+
+Stage 7 may use the Light Unreal Symbol Resolver as optional bounded enrichment when a valid persisted resolver output is already available under `.dce/plans/`. The resolver is optional, resolver enrichment is never required, and resolver enrichment never bypasses Stage 6 Gate.
+
+Resolver absence results in `resolver_used=false` and `enrichment_status=not_used`. Missing, unavailable, malformed, invalid, or incomplete resolver output is ignored as enrichment and does not crash the lifecycle; Stage 7 continues deterministically from its baseline structured inputs.
+
+When resolver evidence is used, Stage 7 records only bounded metadata:
+
+- Exact resolved symbols can add bounded resolver evidence and set `resolver_used=true`.
+- Candidate matches create informational `symbol_resolution_conflict` drift and do not block lifecycle advancement.
+- Unresolved symbols create blocking `symbol_resolution_conflict` drift and block before Stage 7.5 and Stage 8.
+
+Resolver evidence must not include raw symbol tables, raw resolver payloads, raw file contents, model/provider text, Blueprint graph data, binary Blueprint payloads, or unbounded blobs. The resolver does not perform policy evaluation, simulation validation, Unreal project mutation, Blueprint mutation, Unreal project writes, Blueprint asset parsing, or binary Blueprint parsing.
+
+Code Graph remains not integrated into Stage 7 in this slice. `code_graph_used` remains `false`.
+
 ## Reserved Drift Codes
 
-The contract reserves these drift codes, but the v0.1 builder does not generate them yet:
+The contract reserves these drift codes. The baseline builder generates the first three listed in Builder Behavior, and resolver enrichment may generate `symbol_resolution_conflict` only:
 
 - `symbol_resolution_conflict`
 - `insertion_point_invalid`
@@ -92,4 +108,4 @@ The API and SDK are read-only. Missing, malformed, contract-invalid, or unsafe s
 
 ## Explicit Boundaries
 
-Stage 7 Alignment currently does not perform policy evaluation, simulation validation, execution, Blueprint mutation, Unreal project writes, lifecycle advancement, Stage 8 invocation, Unreal resolver integration, or Code Graph integration.
+Stage 7 Alignment currently does not perform policy evaluation, simulation validation, execution, Blueprint mutation, Unreal project writes, lifecycle advancement, Stage 8 invocation, mandatory resolver execution, or Code Graph integration.

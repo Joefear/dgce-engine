@@ -1,0 +1,20 @@
+{
+  "alignment_id": "alignment.docs.fixture.resolver_exact_match",
+  "alignment_result": "aligned",
+  "blocking_issues_count": 0,
+  "code_graph_used": false,
+  "drift_codes": [],
+  "drift_detected": false,
+  "enrichment_status": "full",
+  "evidence_sources": [
+    "approval",
+    "preview",
+    "resolver",
+    "runtime_state"
+  ],
+  "execution_permitted": true,
+  "informational_issues_count": 0,
+  "primary_reason": "Approved expectations align with preview and observed targets.",
+  "resolver_used": true,
+  "section_id": "mission-board"
+}

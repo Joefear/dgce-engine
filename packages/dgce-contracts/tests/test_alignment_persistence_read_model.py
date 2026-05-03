@@ -194,3 +194,71 @@ def test_persistence_creates_no_lifecycle_execution_or_stage8_artifacts():
     assert not (workspace_path / ".dce" / "execution" / "stage8").exists()
     assert not (workspace_path / ".dce" / "outputs").exists()
     assert not (workspace_path / ".dce" / "output").exists()
+
+
+def test_read_model_projection_is_correct_for_resolver_enriched_record():
+    workspace_path = _workspace_dir("alignment_read_model_resolver_enriched")
+    record = _alignment_record(
+        resolver_context={
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_PlayerShip",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/Blueprints/BP_PlayerShip.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "exact_path_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    )
+    persist_alignment_record_v1(record, workspace_path=workspace_path, section_id="mission-board")
+    projection = load_alignment_record_read_model_v1(workspace_path, "mission-board")
+
+    assert projection["resolver_used"] is True
+    assert projection["enrichment_status"] == "full"
+    assert projection["code_graph_used"] is False
+    assert "resolver" in projection["evidence_sources"]
+    assert projection["alignment_result"] == "aligned"
+    assert projection["execution_permitted"] is True
+    assert set(projection.keys()) == {
+        "section_id", "alignment_id", "alignment_result", "drift_detected",
+        "execution_permitted", "blocking_issues_count", "informational_issues_count",
+        "primary_reason", "drift_codes", "evidence_sources", "enrichment_status",
+        "code_graph_used", "resolver_used",
+    }
+
+
+def test_read_model_excludes_resolver_raw_blobs_and_full_evidence():
+    workspace_path = _workspace_dir("alignment_read_model_resolver_no_blobs")
+    record = _alignment_record(
+        resolver_context={
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_PlayerShip",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/Blueprints/BP_PlayerShip.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "exact_path_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    )
+    persist_alignment_record_v1(record, workspace_path=workspace_path, section_id="mission-board")
+    projection = load_alignment_record_read_model_v1(workspace_path, "mission-board")
+
+    for forbidden in (
+        "input_fingerprint",
+        "approval_fingerprint",
+        "preview_fingerprint",
+        "timestamp",
+        "drift_items",
+        "evidence",
+        "raw_symbols",
+        "symbol_table",
+        "resolver_payload",
+    ):
+        assert forbidden not in projection

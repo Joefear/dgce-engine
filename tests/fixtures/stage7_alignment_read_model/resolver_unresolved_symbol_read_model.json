@@ -1,0 +1,22 @@
+{
+  "alignment_id": "alignment.docs.fixture.resolver_unresolved_symbol",
+  "alignment_result": "misaligned",
+  "blocking_issues_count": 1,
+  "code_graph_used": false,
+  "drift_codes": [
+    "symbol_resolution_conflict"
+  ],
+  "drift_detected": true,
+  "enrichment_status": "partial",
+  "evidence_sources": [
+    "approval",
+    "preview",
+    "resolver",
+    "runtime_state"
+  ],
+  "execution_permitted": false,
+  "informational_issues_count": 0,
+  "primary_reason": "Resolver could not resolve requested symbol from bounded path metadata.",
+  "resolver_used": true,
+  "section_id": "mission-board"
+}

@@ -166,3 +166,18 @@ def test_alignment_contract_allows_optional_snippet_hash_only_when_valid():
     invalid_hash = copy.deepcopy(payload)
     invalid_hash["evidence"][0]["snippet_hash"] = "not-a-sha256"
     assert list(_validator().iter_errors(invalid_hash))
+
+
+def test_alignment_fixtures_lock_resolver_enrichment_fields():
+    blocking = _fixture("misaligned_blocking.json")
+    aligned = _fixture("aligned_minimal.json")
+
+    assert blocking["alignment_enrichment"]["resolver_used"] is True
+    assert blocking["alignment_enrichment"]["code_graph_used"] is False
+    assert blocking["alignment_enrichment"]["enrichment_status"] == "partial"
+    assert any(e["source"] == "resolver" for e in blocking["evidence"])
+
+    assert aligned["alignment_enrichment"]["resolver_used"] is False
+    assert aligned["alignment_enrichment"]["enrichment_status"] == "not_used"
+    assert aligned["alignment_enrichment"]["code_graph_used"] is False
+    assert all(e["source"] != "resolver" for e in aligned["evidence"])

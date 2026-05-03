@@ -1,0 +1,22 @@
+{
+  "alignment_id": "alignment.docs.fixture.resolver_candidate_match",
+  "alignment_result": "aligned",
+  "blocking_issues_count": 0,
+  "code_graph_used": false,
+  "drift_codes": [
+    "symbol_resolution_conflict"
+  ],
+  "drift_detected": false,
+  "enrichment_status": "partial",
+  "evidence_sources": [
+    "approval",
+    "preview",
+    "resolver",
+    "runtime_state"
+  ],
+  "execution_permitted": true,
+  "informational_issues_count": 1,
+  "primary_reason": "Approved expectations align with preview and observed targets.",
+  "resolver_used": true,
+  "section_id": "mission-board"
+}

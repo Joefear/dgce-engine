@@ -205,3 +205,119 @@ def test_builder_outputs_no_policy_simulation_resolver_or_code_graph_evidence():
         "resolver_used": False,
         "enrichment_status": "not_used",
     }
+
+
+def test_resolver_exact_match_produces_full_enrichment_and_schema_valid_record():
+    record = _build(
+        resolver_context={
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_PlayerShip",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/Blueprints/BP_PlayerShip.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "exact_path_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    )
+
+    _assert_schema_valid(record)
+    assert record["alignment_result"] == "aligned"
+    assert record["execution_permitted"] is True
+    assert record["drift_items"] == []
+    assert record["alignment_enrichment"] == {
+        "code_graph_used": False,
+        "resolver_used": True,
+        "enrichment_status": "full",
+    }
+    resolver_evidence = [item for item in record["evidence"] if item["source"] == "resolver"]
+    assert len(resolver_evidence) == 1
+    assert resolver_evidence[0]["reference"] == "resolver:resolved:BlueprintClass:BP_PlayerShip"
+
+
+def test_resolver_candidate_match_produces_informational_drift_and_partial_enrichment():
+    record = _build(
+        resolver_context={
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_PlayerShip",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/Blueprints/BP_PlayerShip.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "candidate_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    )
+
+    _assert_schema_valid(record)
+    assert record["alignment_result"] == "aligned"
+    assert record["execution_permitted"] is True
+    assert len(record["drift_items"]) == 1
+    item = record["drift_items"][0]
+    assert item["code"] == "symbol_resolution_conflict"
+    assert item["severity"] == "informational"
+    assert item["target"] == "BP_PlayerShip"
+    assert record["alignment_enrichment"]["resolver_used"] is True
+    assert record["alignment_enrichment"]["enrichment_status"] == "partial"
+    assert record["alignment_enrichment"]["code_graph_used"] is False
+    assert record["alignment_summary"]["blocking_issues_count"] == 0
+    assert record["alignment_summary"]["informational_issues_count"] == 1
+
+
+def test_resolver_unresolved_symbol_produces_blocking_drift_and_blocks_execution():
+    record = _build(
+        resolver_context={
+            "resolved_symbols": [],
+            "unresolved_symbols": [
+                {
+                    "symbol_name": "MissingEvent",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": None,
+                    "resolution_method": "path_metadata",
+                    "confidence": "unresolved",
+                }
+            ],
+            "resolution_status": "unresolved",
+        }
+    )
+
+    _assert_schema_valid(record)
+    assert record["alignment_result"] == "misaligned"
+    assert record["execution_permitted"] is False
+    assert len(record["drift_items"]) == 1
+    item = record["drift_items"][0]
+    assert item["code"] == "symbol_resolution_conflict"
+    assert item["severity"] == "blocking"
+    assert item["target"] == "MissingEvent"
+    assert record["alignment_enrichment"]["resolver_used"] is True
+    assert record["alignment_enrichment"]["enrichment_status"] == "partial"
+    assert record["alignment_enrichment"]["code_graph_used"] is False
+
+
+def test_resolver_evidence_keys_are_bounded_to_source_and_reference_only():
+    record = _build(
+        resolver_context={
+            "resolved_symbols": [
+                {
+                    "symbol_name": "BP_PlayerShip",
+                    "symbol_kind": "BlueprintClass",
+                    "source_path": "Content/Blueprints/BP_PlayerShip.uasset",
+                    "resolution_method": "path_metadata",
+                    "confidence": "exact_path_match",
+                }
+            ],
+            "unresolved_symbols": [],
+            "resolution_status": "resolved",
+        }
+    )
+
+    for evidence_item in record["evidence"]:
+        assert set(evidence_item.keys()) <= {"source", "reference", "snippet_hash"}
+        for forbidden in ("raw_symbols", "symbol_table", "resolver_payload", "raw_model_text", "raw_file_content"):
+            assert forbidden not in evidence_item
