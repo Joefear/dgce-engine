@@ -65,6 +65,46 @@ STAGE7_READ_MODEL_KEYS = [
 ]
 
 
+LEGACY_ONLY_ALIGNMENT_FIELDS = {
+    "alignment_blocked",
+    "alignment_fingerprint",
+    "alignment_reason",
+    "alignment_status",
+    "alignment_timestamp",
+    "artifact_fingerprint",
+    "artifact_type",
+    "created_written_count",
+    "drift_findings",
+    "effective_execution_mode",
+    "generated_by",
+    "intent_alignment",
+    "justification_alignment",
+    "modify_written_count",
+    "require_preflight_pass",
+    "schema_version",
+    "scope_alignment",
+    "section_id",
+    "strategy_alignment",
+    "written_file_count",
+}
+
+
+V1_ONLY_ALIGNMENT_FIELDS = {
+    "alignment_enrichment",
+    "alignment_id",
+    "alignment_result",
+    "alignment_summary",
+    "approval_fingerprint",
+    "drift_detected",
+    "drift_items",
+    "evidence",
+    "execution_permitted",
+    "input_fingerprint",
+    "preview_fingerprint",
+    "timestamp",
+}
+
+
 def _section() -> DGCESection:
     return DGCESection(
         section_type="game_system",
@@ -285,6 +325,36 @@ def test_v1_blocking_drift_falls_back_into_legacy_blocking_view():
     assert legacy_view["alignment_reason"] == alignment_record["alignment_summary"]["primary_reason"]
 
 
+def test_legacy_blocking_drift_blocks_compatibility_view_without_v1_blocking_drift():
+    alignment_record = _alignment_record_from_targets(
+        approved=[_alignment_target("deploy/docker-compose.yaml", operation="create")],
+        preview=[_alignment_target("deploy/docker-compose.yaml", operation="create")],
+        observed=[_alignment_target("deploy/docker-compose.yaml", operation="create")],
+    )
+
+    legacy_view = _stage7_alignment_lifecycle_view(
+        alignment_record,
+        section_id="mission-board",
+        require_preflight_pass=True,
+        alignment_input=SectionAlignmentInput(alignment_timestamp="2026-05-02T22:30:00Z"),
+        legacy_alignment_view=_legacy_alignment_view_template(
+            alignment_blocked=True,
+            alignment_status="misaligned",
+            alignment_reason="legacy_scope_drift",
+            drift_findings=["legacy_scope_drift"],
+        ),
+    )
+
+    assert validate_alignment_record_v1(alignment_record) is True
+    assert alignment_record["execution_permitted"] is True
+    assert alignment_record["drift_items"] == []
+    assert sorted(legacy_view.keys()) == LEGACY_ALIGNMENT_KEYS
+    assert legacy_view["alignment_status"] == "misaligned"
+    assert legacy_view["alignment_blocked"] is True
+    assert legacy_view["alignment_reason"] == "legacy_scope_drift"
+    assert legacy_view["drift_findings"] == ["legacy_scope_drift"]
+
+
 def test_record_section_alignment_preserves_legacy_view_and_persists_v1_artifact(monkeypatch):
     _patch_stub_executor(monkeypatch)
     project_root = _workspace_dir("stage7_lifecycle_legacy_view_and_v1_artifact")
@@ -308,6 +378,29 @@ def test_record_section_alignment_preserves_legacy_view_and_persists_v1_artifact
     assert legacy_view["intent_alignment"]["status"] == "aligned"
     assert "alignment_status" not in alignment
     assert "scope_alignment" not in alignment
+
+
+def test_dual_surface_contract_keeps_v1_artifact_and_legacy_view_bounded(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_dual_surface_contract")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+
+    legacy_view = _record_alignment_direct(project_root, plan=plan)
+    alignment_path = project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json"
+    alignment = _read_json(alignment_path)
+
+    assert alignment_path.relative_to(project_root).as_posix() == ".dce/execution/alignment/mission-board.alignment.json"
+    assert validate_alignment_record_v1(alignment) is True
+    assert sorted(legacy_view.keys()) == LEGACY_ALIGNMENT_KEYS
+    assert LEGACY_ONLY_ALIGNMENT_FIELDS.isdisjoint(alignment)
+    assert V1_ONLY_ALIGNMENT_FIELDS.isdisjoint(legacy_view)
+    assert alignment["alignment_id"].startswith("stage7:mission-board:")
+    assert legacy_view["alignment_status"] == alignment["alignment_result"]
+    assert legacy_view["alignment_blocked"] is (alignment["execution_permitted"] is False)
+    assert legacy_view["alignment_reason"] == "aligned"
+    assert alignment["alignment_summary"]["primary_reason"] == "Approved expectations align with preview and observed targets."
+    assert legacy_view["code_graph_used"] is alignment["alignment_enrichment"]["code_graph_used"]
 
 
 def test_aligned_stage7_artifact_is_produced_after_stage6_pass(monkeypatch):
@@ -336,6 +429,35 @@ def test_aligned_stage7_artifact_is_produced_after_stage6_pass(monkeypatch):
     assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
 
 
+def test_stage7_does_not_run_when_stage6_gate_blocks(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_gate_block_skips_alignment")
+    plan = _infra_file_plan()
+
+    result = run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+
+    assert result.run_outcome_class == "blocked_stale"
+    assert result.execution_outcome["status"] == "blocked"
+    assert result.execution_outcome["stale_status"] == "stale_missing_approval"
+    assert not (project_root / ".dce" / "execution" / "alignment" / "mission-board.alignment.json").exists()
+    assert not (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").exists()
+    execution = _read_json(project_root / ".dce" / "execution" / "mission-board.execution.json")
+    assert execution["execution_status"] == "execution_blocked"
+    assert execution["execution_blocked"] is True
+
+
 def test_aligned_stage7_allows_existing_downstream_flow_to_continue(monkeypatch):
     _patch_stub_executor(monkeypatch)
     project_root = _workspace_dir("stage7_lifecycle_aligned_downstream")
@@ -360,6 +482,53 @@ def test_aligned_stage7_allows_existing_downstream_flow_to_continue(monkeypatch)
     assert (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation_trigger.json").exists()
     assert (project_root / ".dce" / "execution" / "simulation" / "mission-board.simulation.json").exists()
     assert (project_root / ".dce" / "execution" / "mission-board.execution.json").exists()
+
+
+def test_stage7_lifecycle_order_is_after_gate_and_before_stage75_and_stage8(monkeypatch):
+    _patch_stub_executor(monkeypatch)
+    project_root = _workspace_dir("stage7_lifecycle_order_contract")
+    plan = _infra_file_plan()
+    _approve_preview(project_root, plan=plan)
+
+    run_section_with_workspace(
+        _section(),
+        project_root,
+        require_preflight_pass=True,
+        gate_timestamp="2026-05-02T22:30:00Z",
+        preflight_validation_timestamp="2026-05-02T22:30:00Z",
+        alignment_timestamp="2026-05-02T22:30:00Z",
+        simulation_triggered=True,
+        simulation_provider="infra_dry_run",
+        simulation_trigger_timestamp="2026-05-02T22:30:00Z",
+        execution_timestamp="2026-05-02T22:30:00Z",
+        prepared_file_plan=plan,
+    )
+    lifecycle_trace = _read_json(project_root / ".dce" / "lifecycle_trace.json")
+    section_trace = lifecycle_trace["sections"][0]
+    trace_by_stage = {entry["stage"]: entry for entry in section_trace["trace_entries"]}
+
+    assert lifecycle_trace["lifecycle_order"] == [
+        "preview",
+        "review",
+        "approval",
+        "preflight",
+        "gate",
+        "alignment",
+        "execution",
+        "outputs",
+    ]
+    assert trace_by_stage["gate"]["artifact_present"] is True
+    assert trace_by_stage["alignment"]["artifact_present"] is True
+    assert trace_by_stage["execution"]["artifact_present"] is True
+    assert trace_by_stage["gate"]["stage_order"] < trace_by_stage["alignment"]["stage_order"]
+    assert trace_by_stage["alignment"]["stage_order"] < trace_by_stage["execution"]["stage_order"]
+    assert trace_by_stage["alignment"]["artifact_path"] == ".dce/execution/alignment/mission-board.alignment.json"
+    alignment_linkage = {
+        entry["ref_name"]: entry["ref_path"]
+        for entry in trace_by_stage["alignment"]["linkage"]
+    }
+    assert alignment_linkage["simulation_trigger_path"] == ".dce/execution/simulation/mission-board.simulation_trigger.json"
+    assert alignment_linkage["simulation_path"] == ".dce/execution/simulation/mission-board.simulation.json"
 
 
 def test_misaligned_stage7_artifact_is_produced_and_blocks_before_stage75_and_stage8(monkeypatch):
@@ -447,6 +616,49 @@ def test_stage7_read_api_reads_lifecycle_produced_alignment_artifact(monkeypatch
     assert read_model["alignment_result"] == "aligned"
     assert read_model["execution_permitted"] is True
     assert read_model["drift_codes"] == []
+    assert read_model["resolver_used"] is False
+    assert read_model["code_graph_used"] is False
+    assert read_model["enrichment_status"] == "not_used"
+    assert "alignment_status" not in read_model
+    assert "alignment_blocked" not in read_model
+    assert "alignment_reason" not in read_model
+    assert "artifact_fingerprint" not in read_model
+    assert "input_fingerprint" not in read_model
+    assert "approval_fingerprint" not in read_model
+    assert "preview_fingerprint" not in read_model
     assert "timestamp" not in read_model
     assert "drift_items" not in read_model
     assert "evidence" not in read_model
+
+
+def test_v1_blocking_and_informational_drift_coexist_only_blocking_in_legacy_drift_findings():
+    alignment_record = _alignment_record_from_targets(
+        approved=[
+            _alignment_target("deploy/docker-compose.yaml", operation="create"),
+            _alignment_target("deploy/extra-compose.yaml", operation="create"),
+        ],
+        preview=[_alignment_target("deploy/docker-compose.yaml", operation="modify")],
+        observed=[_alignment_target("deploy/docker-compose.yaml", operation="modify")],
+    )
+
+    legacy_view = _stage7_alignment_lifecycle_view(
+        alignment_record,
+        section_id="mission-board",
+        require_preflight_pass=True,
+        alignment_input=SectionAlignmentInput(alignment_timestamp="2026-05-02T22:30:00Z"),
+        legacy_alignment_view=_legacy_alignment_view_template(),
+    )
+
+    assert validate_alignment_record_v1(alignment_record) is True
+    assert alignment_record["execution_permitted"] is False
+    drift_codes = [item["code"] for item in alignment_record["drift_items"]]
+    drift_severities = {item["code"]: item["severity"] for item in alignment_record["drift_items"]}
+    assert "missing_expected_artifact" in drift_codes
+    assert "structure_mismatch" in drift_codes
+    assert drift_severities["missing_expected_artifact"] == "blocking"
+    assert drift_severities["structure_mismatch"] == "informational"
+    assert sorted(legacy_view.keys()) == LEGACY_ALIGNMENT_KEYS
+    assert legacy_view["alignment_blocked"] is True
+    assert legacy_view["alignment_status"] == "misaligned"
+    assert "structure_mismatch" not in legacy_view["drift_findings"]
+    assert "missing_expected_artifact" in legacy_view["drift_findings"]
