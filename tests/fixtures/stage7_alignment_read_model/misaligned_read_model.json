@@ -1,0 +1,23 @@
+{
+  "alignment_id": "alignment.docs.fixture.misaligned",
+  "alignment_result": "misaligned",
+  "blocking_issues_count": 2,
+  "code_graph_used": false,
+  "drift_codes": [
+    "missing_expected_artifact",
+    "structure_mismatch",
+    "unexpected_artifact"
+  ],
+  "drift_detected": true,
+  "enrichment_status": "not_used",
+  "evidence_sources": [
+    "approval",
+    "preview",
+    "runtime_state"
+  ],
+  "execution_permitted": false,
+  "informational_issues_count": 1,
+  "primary_reason": "Approved expected artifact is missing from preview and observed targets.",
+  "resolver_used": false,
+  "section_id": "mission-board"
+}

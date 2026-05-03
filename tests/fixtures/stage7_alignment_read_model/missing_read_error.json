@@ -1,0 +1,7 @@
+{
+  "artifact_path": ".dce/execution/alignment/mission-board.alignment.json",
+  "artifact_type": "stage7_alignment_read_error",
+  "read_model_type": "stage7_alignment_read_error",
+  "reason_code": "artifact_missing",
+  "section_id": "mission-board"
+}
