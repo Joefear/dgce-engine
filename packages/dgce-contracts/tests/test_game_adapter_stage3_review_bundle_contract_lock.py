@@ -170,6 +170,21 @@ def test_stage3_review_bundle_fixtures_validate_against_schema():
         _assert_valid(_fixture(fixture_name))
 
 
+def test_stage3_review_bundle_accepts_stage2_unreal_package_and_source_paths():
+    baseline = _fixture("ready_minimal.json")
+    for target_path in ("/Game/Blueprints/BP_Player", "/Source/Game/InventorySubsystem"):
+        payload = copy.deepcopy(baseline)
+        payload["proposed_changes"][0]["target_path"] = target_path
+
+        _assert_valid(payload)
+
+    for target_path in ("../Game/Blueprints/BP_Player", "Content\\Blueprints\\BP_Player.uasset"):
+        payload = copy.deepcopy(baseline)
+        payload["proposed_changes"][0]["target_path"] = target_path
+
+        assert list(_validator().iter_errors(payload)), target_path
+
+
 def test_stage3_review_bundle_fixture_field_sets_are_stable():
     for fixture_name in _fixture_names():
         fixture = _fixture(fixture_name)
