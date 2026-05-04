@@ -10,6 +10,38 @@ Stage 3 Review Bundle is not a policy authority and is not an execution mechanis
 
 Lifecycle wiring is implemented at `4c03488`: after a Game Adapter Stage 2 Preview is produced or loaded for a workspace, DGCE builds and persists the Stage 3 Review Bundle before any Stage 4 Approval can be considered. This wiring stops at review and does not auto-approve or advance blocked reviews.
 
+## Final Lock Declaration
+
+Stage 3 Review Bundle is complete for the current Game Adapter review scope.
+
+Final lock declaration commit: pending commit assignment. The locked Stage 3 chain is:
+
+- `09f46dc` - Game Adapter Stage 3 Review Bundle Contract v0.1
+- `ed161fb` - Game Adapter Stage 3 Review Bundle Builder v0.1
+- `5447b6f` - Game Adapter Stage 3 Review Bundle Persistence + Read Model v0.1
+- `239c6b5` - Game Adapter Stage 3 Review Bundle Read API + SDK v0.1
+- `8ecb5c3` - Game Adapter Stage 3 Review Bundle Docs + Fixtures Lock v0.1
+- `4c03488` - Game Adapter Stage 3 Review Bundle Lifecycle Wiring v0.1
+- `2b4fd59` - Game Adapter Stage 3 Review Bundle Lifecycle Contract-Lock Hardening
+
+Latest validation: `1162 passed`.
+
+Canonical schema: `packages/dgce-contracts/schemas/game_adapter/stage3_review_bundle.v1.schema.json`
+
+Canonical artifact: `.dce/review/{section_id}.stage3_review.json`
+
+Read API route: `GET /v1/dgce/game-adapter/stage3-review-bundles/{section_id}`
+
+SDK helper: `DGCEClient.get_stage3_review_bundle_read_model`
+
+Stage 3 runs after Stage 2 Preview and before Stage 4 Approval. Stage 3 stops at human review. Stage 3 does not approve. Stage 3 does not execute. Stage 3 does not advance lifecycle beyond review.
+
+Stage 3 writes only the review artifact. Stage 3 does not write approval, gate, alignment, simulation, execution, output, Unreal project, or Blueprint artifacts.
+
+Valid Unreal package/source paths are accepted. Traversal/backslash paths are rejected.
+
+Stage 4 Approval is the next logical contract milestone, but no Stage 4 implementation is authorized by this declaration.
+
 ## Contract And Artifact
 
 The canonical contract schema is:
