@@ -71,6 +71,7 @@ from aether.dgce.incremental import (
 from aether.dgce.inspector import inspect_workspace
 from aether.dgce.read_api import (
     get_game_adapter_stage2_preview_artifact,
+    get_game_adapter_stage3_review_bundle_read_model,
     get_game_adapter_unreal_project_structure_manifest,
     get_game_adapter_unreal_symbol_candidate_index,
     get_game_adapter_unreal_symbol_resolver_output,
@@ -140,6 +141,7 @@ __all__ = [
     "get_dashboard",
     "get_export_contract",
     "get_game_adapter_stage2_preview_artifact",
+    "get_game_adapter_stage3_review_bundle_read_model",
     "get_game_adapter_unreal_project_structure_manifest",
     "get_game_adapter_unreal_symbol_candidate_index",
     "get_game_adapter_unreal_symbol_resolver_output",

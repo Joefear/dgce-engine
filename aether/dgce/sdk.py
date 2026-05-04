@@ -175,6 +175,25 @@ class DGCEClient:
                 raise FileNotFoundError(detail) from exc
             raise RuntimeError(detail) from exc
 
+    def get_stage3_review_bundle_read_model(self, workspace_path: str | Path, section_id: str) -> dict[str, Any]:
+        query = urlencode({"workspace_path": str(workspace_path)})
+        headers = {"X-API-Key": self.api_key} if self.api_key is not None else {}
+        request = Request(
+            f"{self.base_url}/v1/dgce/game-adapter/stage3-review-bundles/{quote(section_id, safe='')}?{query}",
+            headers=headers,
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = self._read_error_detail(exc)
+            if exc.code == 400:
+                raise ValueError(detail) from exc
+            if exc.code == 404:
+                raise FileNotFoundError(detail) from exc
+            raise RuntimeError(detail) from exc
+
     def get_stage7_alignment_read_model(self, workspace_path: str | Path, section_id: str) -> dict[str, Any]:
         query = urlencode({"workspace_path": str(workspace_path)})
         headers = {"X-API-Key": self.api_key} if self.api_key is not None else {}

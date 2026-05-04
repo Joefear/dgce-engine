@@ -43,6 +43,10 @@ from packages.dgce_contracts.alignment_artifacts import (
     alignment_record_artifact_path,
     load_alignment_record_read_model_v1,
 )
+from packages.dgce_contracts.game_adapter_stage3_review_bundle_artifacts import (
+    load_stage3_review_bundle_read_model_v1,
+    stage3_review_bundle_artifact_path,
+)
 
 
 GCE_STAGE0_READ_MODEL_CONTRACT_NAME = "GCEStage0ReadModel"
@@ -337,6 +341,31 @@ def get_stage7_alignment_read_model(workspace_path: str | Path, section_id: str)
             except ValueError:
                 reason_code = "section_id_invalid"
         return _stage7_alignment_read_error(
+            section_id=section_id,
+            artifact_path=artifact_path,
+            reason_code=reason_code,
+        )
+
+
+def get_game_adapter_stage3_review_bundle_read_model(
+    workspace_path: str | Path,
+    section_id: str,
+) -> dict[str, Any]:
+    workspace_root = _workspace_root_path(workspace_path)
+    try:
+        return load_stage3_review_bundle_read_model_v1(workspace_root, section_id)
+    except ValueError as exc:
+        reason_code = _stage3_review_bundle_read_error_reason(exc)
+        artifact_path = None
+        if reason_code != "section_id_invalid":
+            try:
+                artifact_path = _artifact_path_for_read_model(
+                    stage3_review_bundle_artifact_path(workspace_root, section_id),
+                    workspace_root,
+                )
+            except ValueError:
+                reason_code = "section_id_invalid"
+        return _stage3_review_bundle_read_error(
             section_id=section_id,
             artifact_path=artifact_path,
             reason_code=reason_code,
@@ -1030,6 +1059,32 @@ def _stage7_alignment_read_error_reason(exc: ValueError) -> str:
     if "alignment artifact missing" in message:
         return "artifact_missing"
     if "alignment artifact malformed" in message:
+        return "artifact_malformed"
+    return "contract_invalid"
+
+
+def _stage3_review_bundle_read_error(
+    *,
+    section_id: str,
+    artifact_path: str | None,
+    reason_code: str,
+) -> dict[str, Any]:
+    return {
+        "read_model_type": "game_adapter_stage3_review_bundle_read_error",
+        "artifact_type": "game_adapter_stage3_review_bundle_read_error",
+        "section_id": section_id,
+        "artifact_path": artifact_path,
+        "reason_code": reason_code,
+    }
+
+
+def _stage3_review_bundle_read_error_reason(exc: ValueError) -> str:
+    message = str(exc)
+    if "section_id" in message:
+        return "section_id_invalid"
+    if "stage3 review bundle artifact missing" in message:
+        return "artifact_missing"
+    if "stage3 review bundle artifact malformed" in message:
         return "artifact_malformed"
     return "contract_invalid"
 

@@ -238,6 +238,7 @@ def test_contract_lock_game_adapter_http_routes_are_get_only():
         "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/{artifact_name}": {"GET"},
         "/v1/dgce/game-adapter/unreal-symbol-resolutions": {"GET"},
         "/v1/dgce/game-adapter/unreal-symbol-resolutions/{artifact_name}": {"GET"},
+        "/v1/dgce/game-adapter/stage3-review-bundles/{section_id}": {"GET"},
     }
 
 

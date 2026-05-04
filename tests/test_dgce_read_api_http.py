@@ -250,7 +250,7 @@ class TestDGCEReadAPIHTTP:
 
         assert before == {path: path.read_bytes() for path in artifact_paths}
 
-    def test_read_router_inventory_is_locked_to_six_get_routes(self):
+    def test_read_router_inventory_is_locked_to_get_routes(self):
         dgce_read_routes = {
             route.path: route.methods
             for route in dgce_read_router.routes
@@ -274,6 +274,7 @@ class TestDGCEReadAPIHTTP:
             "/v1/dgce/game-adapter/unreal-symbol-candidate-indexes/{artifact_name}": {"GET"},
             "/v1/dgce/game-adapter/unreal-symbol-resolutions": {"GET"},
             "/v1/dgce/game-adapter/unreal-symbol-resolutions/{artifact_name}": {"GET"},
+            "/v1/dgce/game-adapter/stage3-review-bundles/{section_id}": {"GET"},
             "/v1/dgce/stage7/alignment/{section_id}": {"GET"},
         }
 
