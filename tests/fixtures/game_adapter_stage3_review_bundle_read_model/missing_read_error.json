@@ -1,0 +1,7 @@
+{
+  "artifact_path": ".dce/review/mission-board.stage3_review.json",
+  "artifact_type": "game_adapter_stage3_review_bundle_read_error",
+  "read_model_type": "game_adapter_stage3_review_bundle_read_error",
+  "reason_code": "artifact_missing",
+  "section_id": "mission-board"
+}

@@ -1,0 +1,39 @@
+{
+  "blocking_review_issues_count": 1,
+  "evidence_sources": [
+    "operator_context",
+    "preview",
+    "resolver"
+  ],
+  "forbidden_runtime_actions": [
+    "no_approval_granted",
+    "no_execution_performed",
+    "no_stage8_write_instructions",
+    "no_blueprint_mutation",
+    "no_unreal_project_writes",
+    "no_binary_blueprint_parsing",
+    "no_simulation_run",
+    "no_guardrail_policy_decision"
+  ],
+  "informational_review_issues_count": 1,
+  "operator_question_count": 2,
+  "output_strategies": [
+    "unknown"
+  ],
+  "proposed_change_count": 1,
+  "proposed_change_operations": [
+    "ignore"
+  ],
+  "proposed_change_targets": [
+    "Content/Blueprints/UnknownInventoryTarget.uasset"
+  ],
+  "ready_for_approval": false,
+  "review_id": "review:mission-board:003",
+  "review_risk_summary": {
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "review_status": "blocked",
+  "section_id": "mission-board"
+}

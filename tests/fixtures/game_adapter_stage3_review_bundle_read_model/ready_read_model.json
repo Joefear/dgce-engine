@@ -1,0 +1,37 @@
+{
+  "blocking_review_issues_count": 0,
+  "evidence_sources": [
+    "preview"
+  ],
+  "forbidden_runtime_actions": [
+    "no_approval_granted",
+    "no_execution_performed",
+    "no_stage8_write_instructions",
+    "no_blueprint_mutation",
+    "no_unreal_project_writes",
+    "no_binary_blueprint_parsing",
+    "no_simulation_run",
+    "no_guardrail_policy_decision"
+  ],
+  "informational_review_issues_count": 0,
+  "operator_question_count": 0,
+  "output_strategies": [
+    "blueprint"
+  ],
+  "proposed_change_count": 1,
+  "proposed_change_operations": [
+    "modify"
+  ],
+  "proposed_change_targets": [
+    "Content/Blueprints/BP_Player.uasset"
+  ],
+  "ready_for_approval": true,
+  "review_id": "review:mission-board:001",
+  "review_risk_summary": {
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "review_status": "ready_for_operator_review",
+  "section_id": "mission-board"
+}
