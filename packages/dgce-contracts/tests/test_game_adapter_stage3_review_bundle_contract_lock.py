@@ -78,6 +78,7 @@ EVIDENCE_FIELDS = {
     "reference",
     "snippet_hash",
 }
+SAFE_RELATIVE_PATH_PATTERN = r"^(?!.*\\)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_./:+#-]+$"
 FORBIDDEN_BOUNDARY_FIELDS = [
     "approval_status",
     "approval_granted",
@@ -163,6 +164,7 @@ def test_stage3_review_bundle_schema_enum_locks():
     assert schema["$defs"]["Operation"]["enum"] == OPERATION_ENUM
     assert schema["$defs"]["OutputStrategy"]["enum"] == OUTPUT_STRATEGY_ENUM
     assert schema["$defs"]["EvidenceSource"]["enum"] == EVIDENCE_SOURCE_ENUM
+    assert schema["$defs"]["SafeRelativePath"]["pattern"] == SAFE_RELATIVE_PATH_PATTERN
 
 
 def test_stage3_review_bundle_fixtures_validate_against_schema():
@@ -178,7 +180,38 @@ def test_stage3_review_bundle_accepts_stage2_unreal_package_and_source_paths():
 
         _assert_valid(payload)
 
-    for target_path in ("../Game/Blueprints/BP_Player", "Content\\Blueprints\\BP_Player.uasset"):
+    for target_path in ("../Bad", "/Game/../Bad", "Game\\Bad", "Content\\Blueprints\\BP_Player.uasset"):
+        payload = copy.deepcopy(baseline)
+        payload["proposed_changes"][0]["target_path"] = target_path
+
+        assert list(_validator().iter_errors(payload)), target_path
+
+
+def test_stage3_review_bundle_target_path_character_class_remains_bounded():
+    baseline = _fixture("ready_minimal.json")
+    accepted = (
+        "Content/Blueprints/BP_Player.uasset",
+        "/Game/Blueprints/BP_Player",
+        "/Source/Game/InventorySubsystem",
+        "Source/Game/Public/InventoryComponent.h",
+        "Config/DefaultGame.ini",
+        "Plugin:Inventory+Gameplay#Target",
+    )
+    rejected = (
+        "Content/Blueprints/BP Player.uasset",
+        "Content/Blueprints/BP_Player.uasset?",
+        "Content/Blueprints/BP_Player.uasset*",
+        "Content/Blueprints/BP_Player.uasset|",
+        "Content/Blueprints/\tBP_Player.uasset",
+    )
+
+    for target_path in accepted:
+        payload = copy.deepcopy(baseline)
+        payload["proposed_changes"][0]["target_path"] = target_path
+
+        _assert_valid(payload)
+
+    for target_path in rejected:
         payload = copy.deepcopy(baseline)
         payload["proposed_changes"][0]["target_path"] = target_path
 

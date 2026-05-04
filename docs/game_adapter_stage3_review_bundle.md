@@ -8,6 +8,8 @@ Stage 3 Review Bundle records a bounded operator-facing summary of already-struc
 
 Stage 3 Review Bundle is not a policy authority and is not an execution mechanism.
 
+Lifecycle wiring is implemented at `4c03488`: after a Game Adapter Stage 2 Preview is produced or loaded for a workspace, DGCE builds and persists the Stage 3 Review Bundle before any Stage 4 Approval can be considered. This wiring stops at review and does not auto-approve or advance blocked reviews.
+
 ## Contract And Artifact
 
 The canonical contract schema is:
@@ -62,7 +64,7 @@ Primary helpers:
 - `build_stage3_review_bundle_read_model_v1`
 - `stage3_review_bundle_artifact_path`
 
-Persistence validates the locked Stage 3 schema before writing `.dce/review/{section_id}.stage3_review.json`. Invalid records fail before writing. Persistence does not create approval artifacts, execution artifacts, Stage 8 artifacts, or lifecycle advancement records.
+Persistence validates the locked Stage 3 schema before writing `.dce/review/{section_id}.stage3_review.json`. Invalid records fail before writing. Persistence does not create approval artifacts, gate artifacts, alignment artifacts, simulation artifacts, Stage 8 artifacts, output artifacts, or lifecycle advancement records beyond review.
 
 ## Read Model
 
@@ -105,6 +107,6 @@ The API and SDK only read already-persisted Stage 3 Review Bundle artifacts. The
 
 ## Explicit Boundary
 
-Stage 3 does not approve, execute, mutate Blueprints, write Unreal project files, parse binary Blueprint assets, simulate, evaluate Guardrail policy, or advance lifecycle.
+Stage 3 does not approve, execute, mutate Blueprints, write Unreal project files, parse binary Blueprint assets, simulate, evaluate Guardrail policy, or advance lifecycle beyond review.
 
-This slice also does not modify Stage 4 Approval, Stage 6 Gate, Stage 7 Alignment, Stage 7.5, Stage 8, Code Graph enrichment, `dcg.facts.v1`, resolver behavior, Guardrail builds, Unreal writes, Blueprint mutation, binary Blueprint parsing, simulation engines, policy logic, or lifecycle wiring.
+This slice also does not modify Stage 4 Approval, Stage 6 Gate, Stage 7 Alignment, Stage 7.5, Stage 8, Code Graph enrichment, `dcg.facts.v1`, resolver behavior, Guardrail builds, Unreal writes, Blueprint mutation, binary Blueprint parsing, simulation engines, policy logic, or lifecycle behavior after review.

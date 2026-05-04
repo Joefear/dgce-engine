@@ -11,6 +11,33 @@ from packages.dgce_contracts.game_adapter_stage3_review_bundle_builder import va
 
 
 TIMESTAMP = "2026-05-04T12:00:00Z"
+READ_MODEL_FIELDS = {
+    "section_id",
+    "review_id",
+    "review_status",
+    "ready_for_approval",
+    "blocking_review_issues_count",
+    "informational_review_issues_count",
+    "proposed_change_count",
+    "proposed_change_targets",
+    "proposed_change_operations",
+    "output_strategies",
+    "review_risk_summary",
+    "operator_question_count",
+    "evidence_sources",
+    "forbidden_runtime_actions",
+}
+FORBIDDEN_READ_MODEL_FIELDS = {
+    "source_preview_fingerprint",
+    "source_input_fingerprint",
+    "proposed_changes",
+    "evidence",
+    "raw_preview",
+    "raw_symbols",
+    "symbol_table",
+    "resolver_payload",
+    "model_text",
+}
 
 
 def _workspace_dir(name: str) -> Path:
@@ -121,6 +148,10 @@ def _assert_no_downstream_artifacts(workspace: Path, section_id: str = "mission-
     assert not (workspace / ".dce" / "output").exists()
 
 
+def _workspace_files(workspace: Path) -> list[str]:
+    return sorted(path.relative_to(workspace).as_posix() for path in workspace.rglob("*") if path.is_file())
+
+
 def test_stage3_review_bundle_is_produced_after_stage2_preview_and_readable():
     workspace = _workspace_dir("stage3_lifecycle_ready")
 
@@ -140,6 +171,7 @@ def test_stage3_review_bundle_is_produced_after_stage2_preview_and_readable():
     assert validate_stage3_review_bundle_v1(review_bundle) is True
     assert get_game_adapter_stage3_review_bundle_read_model(workspace, "mission-board") == result.stage3_review_read_model
     assert result.stage3_review_read_model["review_status"] == "ready_for_operator_review"
+    assert set(result.stage3_review_read_model) == READ_MODEL_FIELDS
     assert result.stage3_review_read_model["proposed_change_targets"] == [
         "/Game/Blueprints/BP_Player",
         "/Game/Input/IA_Interact",
@@ -176,6 +208,53 @@ def test_blocked_stage3_review_does_not_proceed_to_stage4_6_7_75_or_8():
     assert result.stage3_review_read_model["ready_for_approval"] is False
     assert result.stage3_review_read_model["operator_question_count"] == 1
     _assert_no_downstream_artifacts(workspace)
+
+
+def test_lifecycle_stage3_writes_only_review_artifact_after_stage2_preview():
+    workspace = _workspace_dir("stage3_lifecycle_only_review_after_preview")
+    stage0_path = _persisted_stage0(workspace)
+
+    result = build_game_adapter_stage2_preview_from_released_stage0(
+        stage0_path,
+        workspace_path=workspace,
+        build_stage3_review=False,
+        stage3_created_at=TIMESTAMP,
+    )
+    before_stage3_files = _workspace_files(workspace)
+
+    stage3 = build_game_adapter_stage3_review_bundle_from_stage2_preview(
+        result.preview_artifact,
+        workspace_path=workspace,
+        section_id="mission-board",
+        created_at=TIMESTAMP,
+        source_preview_reference=result.artifact_path,
+    )
+    after_stage3_files = _workspace_files(workspace)
+
+    assert stage3.artifact_path == ".dce/review/mission-board.stage3_review.json"
+    assert sorted(set(after_stage3_files) - set(before_stage3_files)) == [
+        ".dce/review/mission-board.stage3_review.json"
+    ]
+    _assert_no_downstream_artifacts(workspace)
+
+
+def test_lifecycle_read_api_projection_excludes_raw_and_fingerprint_fields():
+    workspace = _workspace_dir("stage3_lifecycle_read_surface_bounded")
+
+    build_game_adapter_stage2_preview_from_released_stage0(
+        _persisted_stage0(workspace),
+        workspace_path=workspace,
+        stage3_created_at=TIMESTAMP,
+    )
+    read_model = get_game_adapter_stage3_review_bundle_read_model(workspace, "mission-board")
+    serialized = json.dumps(read_model, sort_keys=True)
+
+    assert set(read_model) == READ_MODEL_FIELDS
+    assert len(read_model) == 14
+    for forbidden in FORBIDDEN_READ_MODEL_FIELDS:
+        assert forbidden not in read_model
+        if forbidden != "evidence":
+            assert forbidden not in serialized
 
 
 def test_missing_structured_stage2_change_data_persists_blocked_review_only():

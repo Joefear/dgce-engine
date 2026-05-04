@@ -78,6 +78,9 @@ def test_stage3_review_bundle_document_covers_locked_surfaces_and_boundaries():
     for required in (
         "Game Adapter Stage 3 Review Bundle",
         "human-inspectable review slice between Stage 2 Preview and Stage 4 Approval",
+        "Lifecycle wiring is implemented at `4c03488`",
+        "before any Stage 4 Approval can be considered",
+        "This wiring stops at review and does not auto-approve or advance blocked reviews.",
         "packages/dgce-contracts/schemas/game_adapter/stage3_review_bundle.v1.schema.json",
         ".dce/review/{section_id}.stage3_review.json",
         "packages/dgce_contracts/game_adapter_stage3_review_bundle_builder.py",
@@ -99,7 +102,8 @@ def test_stage3_review_bundle_document_covers_locked_surfaces_and_boundaries():
         "symbol tables",
         "resolver payloads",
         "model text",
-        "Stage 3 does not approve, execute, mutate Blueprints, write Unreal project files, parse binary Blueprint assets, simulate, evaluate Guardrail policy, or advance lifecycle.",
+        "Persistence does not create approval artifacts, gate artifacts, alignment artifacts, simulation artifacts, Stage 8 artifacts, output artifacts, or lifecycle advancement records beyond review.",
+        "Stage 3 does not approve, execute, mutate Blueprints, write Unreal project files, parse binary Blueprint assets, simulate, evaluate Guardrail policy, or advance lifecycle beyond review.",
         "do not create review bundles from the API",
         "does not modify Stage 4 Approval",
         "Stage 6 Gate",
@@ -110,7 +114,7 @@ def test_stage3_review_bundle_document_covers_locked_surfaces_and_boundaries():
         "dcg.facts.v1",
         "resolver behavior",
         "Guardrail builds",
-        "lifecycle wiring",
+        "lifecycle behavior after review",
     ):
         assert required in text
 
