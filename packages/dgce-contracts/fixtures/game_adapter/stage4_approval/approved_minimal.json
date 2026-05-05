@@ -1,0 +1,59 @@
+{
+  "adapter": "game",
+  "approval_constraints": [
+    "Approval is limited to the proposed Stage 3 review bundle changes and still requires downstream gates."
+  ],
+  "approval_id": "approval:mission-board:approved",
+  "approval_status": "approved",
+  "approval_summary": {
+    "approval_scope_summary": "Operator approves the listed review bundle changes for later lifecycle processing.",
+    "operator_summary": "Approved for downstream lifecycle consideration only.",
+    "risk_acknowledgement": "Approval does not grant execution permission or bypass gate, alignment, simulation, or execution controls."
+  },
+  "approved_by": "operator",
+  "approved_change_ids": [
+    "change.player-component",
+    "change.interact-binding"
+  ],
+  "artifact_type": "game_adapter_stage4_approval",
+  "contract_name": "DGCEGameAdapterStage4Approval",
+  "contract_version": "dgce.game_adapter.stage4.approval.v1",
+  "created_at": "2026-05-05T12:00:00Z",
+  "domain": "game_adapter",
+  "evidence": [
+    {
+      "reference": ".dce/review/mission-board.stage3_review.json",
+      "source": "review_bundle"
+    },
+    {
+      "reference": ".dce/plans/game-adapter-stage2.preview.json",
+      "source": "preview"
+    }
+  ],
+  "forbidden_runtime_actions": [
+    "no_auto_approval",
+    "no_binary_blueprint_parsing",
+    "no_blueprint_mutation",
+    "no_execution_performed",
+    "no_execution_permission_granted",
+    "no_guardrail_policy_decision",
+    "no_stage6_gate_decision",
+    "no_stage7_alignment_result",
+    "no_stage75_simulation_result",
+    "no_stage8_execution_stamp",
+    "no_unreal_project_writes",
+    "no_write_directives"
+  ],
+  "rejected_change_ids": [],
+  "section_id": "mission-board",
+  "source_input_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+  "source_preview_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+  "source_review_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+  "source_review_id": "review:mission-board:stage3",
+  "stale_detection": {
+    "captured_input_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+    "captured_preview_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+    "captured_review_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "stale_check_required": true
+  }
+}

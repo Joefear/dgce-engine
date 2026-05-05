@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://defiantinds.com/schemas/dgce/game_adapter/stage4_approval.v1.schema.json",
+  "title": "game_adapter_stage4_approval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "contract_name",
+    "contract_version",
+    "adapter",
+    "domain",
+    "approval_id",
+    "section_id",
+    "created_at",
+    "approved_by",
+    "approval_status",
+    "source_review_id",
+    "source_review_fingerprint",
+    "source_preview_fingerprint",
+    "source_input_fingerprint",
+    "approved_change_ids",
+    "rejected_change_ids",
+    "approval_summary",
+    "stale_detection",
+    "approval_constraints",
+    "evidence",
+    "forbidden_runtime_actions"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "game_adapter_stage4_approval"
+    },
+    "contract_name": {
+      "const": "DGCEGameAdapterStage4Approval"
+    },
+    "contract_version": {
+      "const": "dgce.game_adapter.stage4.approval.v1"
+    },
+    "adapter": {
+      "const": "game"
+    },
+    "domain": {
+      "const": "game_adapter"
+    },
+    "approval_id": {
+      "$ref": "#/$defs/SafeIdentifier"
+    },
+    "section_id": {
+      "$ref": "#/$defs/SafeIdentifier"
+    },
+    "created_at": {
+      "$ref": "#/$defs/Timestamp"
+    },
+    "approved_by": {
+      "$ref": "#/$defs/SafeIdentifier"
+    },
+    "approval_status": {
+      "$ref": "#/$defs/ApprovalStatus"
+    },
+    "source_review_id": {
+      "$ref": "#/$defs/SafeIdentifier"
+    },
+    "source_review_fingerprint": {
+      "$ref": "#/$defs/Fingerprint"
+    },
+    "source_preview_fingerprint": {
+      "$ref": "#/$defs/Fingerprint"
+    },
+    "source_input_fingerprint": {
+      "$ref": "#/$defs/NullableFingerprint"
+    },
+    "approved_change_ids": {
+      "$ref": "#/$defs/ChangeIdList"
+    },
+    "rejected_change_ids": {
+      "$ref": "#/$defs/ChangeIdList"
+    },
+    "approval_summary": {
+      "$ref": "#/$defs/ApprovalSummary"
+    },
+    "stale_detection": {
+      "$ref": "#/$defs/StaleDetection"
+    },
+    "approval_constraints": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/BoundedText"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/EvidenceItem"
+      }
+    },
+    "forbidden_runtime_actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/ForbiddenRuntimeAction"
+      }
+    }
+  },
+  "$defs": {
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "Fingerprint": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "NullableFingerprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Fingerprint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "SafeIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:/+#-]+$"
+    },
+    "BoundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "ApprovalStatus": {
+      "enum": [
+        "approved",
+        "rejected",
+        "blocked"
+      ]
+    },
+    "ChangeIdList": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/SafeIdentifier"
+      }
+    },
+    "ApprovalSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator_summary",
+        "approval_scope_summary",
+        "risk_acknowledgement"
+      ],
+      "properties": {
+        "operator_summary": {
+          "$ref": "#/$defs/BoundedText"
+        },
+        "approval_scope_summary": {
+          "$ref": "#/$defs/BoundedText"
+        },
+        "risk_acknowledgement": {
+          "$ref": "#/$defs/BoundedText"
+        }
+      }
+    },
+    "StaleDetection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "captured_review_fingerprint",
+        "captured_preview_fingerprint",
+        "captured_input_fingerprint",
+        "stale_check_required"
+      ],
+      "properties": {
+        "captured_review_fingerprint": {
+          "$ref": "#/$defs/Fingerprint"
+        },
+        "captured_preview_fingerprint": {
+          "$ref": "#/$defs/Fingerprint"
+        },
+        "captured_input_fingerprint": {
+          "$ref": "#/$defs/NullableFingerprint"
+        },
+        "stale_check_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EvidenceSource": {
+      "enum": [
+        "review_bundle",
+        "preview",
+        "unreal_manifest",
+        "symbol_candidate_index",
+        "resolver",
+        "alignment",
+        "operator_context"
+      ]
+    },
+    "EvidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "reference"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/EvidenceSource"
+        },
+        "reference": {
+          "$ref": "#/$defs/BoundedText"
+        },
+        "snippet_hash": {
+          "$ref": "#/$defs/Fingerprint"
+        }
+      }
+    },
+    "ForbiddenRuntimeAction": {
+      "enum": [
+        "no_execution_permission_granted",
+        "no_execution_performed",
+        "no_stage6_gate_decision",
+        "no_stage7_alignment_result",
+        "no_stage75_simulation_result",
+        "no_stage8_execution_stamp",
+        "no_write_directives",
+        "no_blueprint_mutation",
+        "no_unreal_project_writes",
+        "no_binary_blueprint_parsing",
+        "no_guardrail_policy_decision",
+        "no_auto_approval"
+      ]
+    }
+  }
+}
